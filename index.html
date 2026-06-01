@@ -1,0 +1,1439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BurpOllama — Bug Hunting Pipeline</title>
+<style>
+/* ============================================================
+   ROOT / DESIGN SYSTEM — Cyberpunk Industrial
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-deep: #0a0b0e;
+  --bg-panel: #11131a;
+  --bg-card: #161922;
+  --bg-card-hover: #1c2030;
+  --bg-input: #0e1017;
+  --border: #1e2235;
+  --border-accent: #2a2f4a;
+
+  --cyan: #00f0ff;
+  --cyan-dim: rgba(0, 240, 255, 0.15);
+  --cyan-glow: rgba(0, 240, 255, 0.3);
+  --magenta: #ff2d88;
+  --magenta-dim: rgba(255, 45, 136, 0.15);
+  --green: #00ff88;
+  --green-dim: rgba(0, 255, 136, 0.12);
+  --orange: #ff7a00;
+  --orange-dim: rgba(255, 122, 0, 0.15);
+  --red: #ff3355;
+  --red-dim: rgba(255, 51, 85, 0.15);
+  --yellow: #ffcc00;
+  --yellow-dim: rgba(255, 204, 0, 0.1);
+  --purple: #8844ff;
+  --purple-dim: rgba(136, 68, 255, 0.12);
+  --blue: #4488ff;
+  --blue-dim: rgba(68, 136, 255, 0.1);
+
+  --text-primary: #e8eaf0;
+  --text-secondary: #8a8fa8;
+  --text-dim: #4a4f6a;
+  --text-accent: #00f0ff;
+
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-display: 'Space Grotesk', sans-serif;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================
+   GLOBAL
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 14px;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-mono);
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.6;
+}
+
+/* Subtle grid background */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,240,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,240,255,0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg-deep); }
+::-webkit-scrollbar-thumb { background: var(--border-accent); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+
+/* ============================================================
+   HEADER / TOP BAR
+   ============================================================ */
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(10, 11, 14, 0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+}
+
+.logo-icon {
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--cyan);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  color: var(--cyan);
+  text-shadow: 0 0 12px var(--cyan-glow);
+  position: relative;
+}
+
+.logo-icon::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 10px;
+  border: 1px solid var(--cyan-dim);
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.logo-sub {
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: block;
+  margin-top: -2px;
+}
+
+.top-stats {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.header-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.header-stat .num {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 1rem;
+  min-width: 24px;
+  text-align: right;
+}
+
+.header-stat .label {
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.status-dot.online { background: var(--green); box-shadow: 0 0 8px var(--green-dim); }
+.status-dot.offline { background: var(--red); box-shadow: 0 0 8px var(--red-dim); }
+.status-dot.busy { background: var(--orange); animation: blink 1s ease-in-out infinite; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ============================================================
+   MAIN LAYOUT
+   ============================================================ */
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 0;
+  min-height: calc(100vh - 61px);
+  position: relative;
+  z-index: 1;
+}
+
+.main-panel {
+  padding: 20px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.side-panel {
+  padding: 20px;
+  overflow-y: auto;
+  background: var(--bg-panel);
+}
+
+/* ============================================================
+   STATS GRID
+   ============================================================ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: var(--transition);
+}
+
+.stat-card:hover {
+  border-color: var(--border-accent);
+  background: var(--bg-card-hover);
+}
+
+.stat-card .icon {
+  font-size: 1.2rem;
+  margin-bottom: 8px;
+  opacity: 0.6;
+}
+
+.stat-card .value {
+  font-size: 2rem;
+  font-weight: 700;
+  font-family: var(--font-display);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.stat-card .label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.stat-card.severity-critical .value { color: var(--red); }
+.stat-card.severity-high .value { color: var(--orange); }
+.stat-card.severity-medium .value { color: var(--yellow); }
+.stat-card.severity-low .value { color: var(--blue); }
+.stat-card.severity-info .value { color: var(--text-secondary); }
+.stat-card.total .value { color: var(--cyan); }
+
+.stat-card .bar-bg {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--border);
+}
+
+.stat-card .bar-fill {
+  height: 100%;
+  transition: width 0.5s ease;
+  border-radius: 0 2px 0 0;
+}
+
+.severity-critical .bar-fill { background: var(--red); width: 0%; }
+.severity-high .bar-fill { background: var(--orange); width: 0%; }
+.severity-medium .bar-fill { background: var(--yellow); width: 0%; }
+.severity-low .bar-fill { background: var(--blue); width: 0%; }
+
+/* ============================================================
+   FINDINGS LIST (Main)
+   ============================================================ */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-header h2 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.section-header .count {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  padding: 2px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.finding-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  transition: var(--transition);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.finding-item:hover {
+  border-color: var(--border-accent);
+  background: var(--bg-card-hover);
+}
+
+.finding-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+
+.finding-item.severity-critical::before { background: var(--red); box-shadow: 0 0 8px var(--red-dim); }
+.finding-item.severity-high::before { background: var(--orange); box-shadow: 0 0 8px var(--orange-dim); }
+.finding-item.severity-medium::before { background: var(--yellow); }
+.finding-item.severity-low::before { background: var(--blue); }
+.finding-item.severity-info::before { background: var(--text-dim); }
+
+.finding-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.finding-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  flex: 1;
+}
+
+.finding-tag {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tag-critical { background: var(--red-dim); color: var(--red); }
+.tag-high { background: var(--orange-dim); color: var(--orange); }
+.tag-medium { background: var(--yellow-dim); color: var(--yellow); }
+.tag-low { background: var(--blue-dim); color: var(--blue); }
+.tag-info { background: rgba(138, 143, 168, 0.15); color: var(--text-secondary); }
+
+.finding-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.finding-meta .url-text {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.finding-meta .category {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  text-transform: lowercase;
+}
+
+.finding-source {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.source-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+}
+
+.source-pattern { background: var(--cyan-dim); color: var(--cyan); }
+.source-ai { background: var(--purple-dim); color: var(--purple); }
+
+/* ============================================================
+   SIDE PANEL
+   ============================================================ */
+.side-panel .section-header {
+  margin-top: 8px;
+}
+
+.side-panel .section-header:first-child {
+  margin-top: 0;
+}
+
+.host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.host-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  transition: var(--transition);
+  cursor: pointer;
+}
+
+.host-item:hover {
+  border-color: var(--border-accent);
+  background: var(--bg-card-hover);
+}
+
+.host-item .hostname {
+  color: var(--text-primary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-item .host-count {
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.host-item .host-count .sev-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.recent-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  animation: slide-in 0.3s ease;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.activity-item .time {
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  flex-shrink: 0;
+}
+
+.activity-item .act-icon {
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   DETAILS MODAL
+   ============================================================ */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-accent);
+  border-radius: 12px;
+  width: 640px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  animation: modal-in 0.2s ease;
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-header h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.modal-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  transition: var(--transition);
+}
+
+.modal-close:hover {
+  border-color: var(--red);
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.detail-field {
+  margin-bottom: 16px;
+}
+
+.detail-field .label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.detail-field .value {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.detail-field .value.code {
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+/* ============================================================
+   CONFIG PANEL
+   ============================================================ */
+.config-section {
+  display: none;
+}
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.empty-state .icon {
+  font-size: 2.5rem;
+  margin-bottom: 16px;
+  opacity: 0.3;
+}
+
+.empty-state h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.empty-state p {
+  font-size: 0.8rem;
+  max-width: 360px;
+  line-height: 1.7;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .main-panel {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .top-stats {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .header-stat .label {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .top-bar {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+  }
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .stat-card .value {
+    font-size: 1.4rem;
+  }
+}
+
+/* ============================================================
+   TOAST NOTIFICATIONS
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  background: var(--bg-card);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  box-shadow: var(--shadow);
+  animation: toast-in 0.3s ease;
+  max-width: 320px;
+}
+
+.toast.toast-critical { border-left: 3px solid var(--red); }
+.toast.toast-high { border-left: 3px solid var(--orange); }
+.toast.toast-medium { border-left: 3px solid var(--yellow); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ============================================================
+   FILTER / SEARCH
+   ============================================================ */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: 4px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.filter-btn:hover {
+  border-color: var(--border-accent);
+  color: var(--text-secondary);
+}
+
+.filter-btn.active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: var(--cyan-dim);
+}
+
+.filter-btn.active-sev-critical { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+.filter-btn.active-sev-high { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+.filter-btn.active-sev-medium { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+.filter-btn.active-sev-low { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+
+/* Truncated long text animation for findings list */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.scanline-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 240, 255, 0.008) 2px,
+    rgba(0, 240, 255, 0.008) 4px
+  );
+}
+</style>
+</head>
+<body>
+
+<!-- Scanline overlay for cyberpunk feel -->
+<div class="scanline-overlay"></div>
+
+<!-- ============================================================
+TOP BAR
+============================================================ -->
+<header class="top-bar">
+  <div class="logo">
+    <div class="logo-icon">⛓</div>
+    <div>
+      <span>BurpOllama</span>
+      <span class="logo-sub">Bug Hunting Pipeline</span>
+    </div>
+  </div>
+  <div class="top-stats">
+    <div class="header-stat">
+      <span class="status-dot online" id="ollamaStatus"></span>
+      <span class="label">Ollama</span>
+    </div>
+    <div class="header-stat">
+      <span class="num" id="trafficCount">0</span>
+      <span class="label">Requests</span>
+    </div>
+    <div class="header-stat">
+      <span class="num" id="findingCount">0</span>
+      <span class="label">Findings</span>
+    </div>
+    <div class="header-stat">
+      <span class="num" id="hostCount">0</span>
+      <span class="label">Hosts</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================
+MAIN LAYOUT
+============================================================ -->
+<div class="layout">
+
+  <!-- Main Panel -->
+  <div class="main-panel" id="mainPanel">
+    <!-- Severity Stats -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card total">
+        <div class="icon">⚡</div>
+        <div class="value" id="statTotal">0</div>
+        <div class="label">Total Findings</div>
+      </div>
+      <div class="stat-card severity-critical">
+        <div class="icon">🔴</div>
+        <div class="value" id="statCritical">0</div>
+        <div class="label">Critical</div>
+        <div class="bar-bg"><div class="bar-fill" id="barCritical"></div></div>
+      </div>
+      <div class="stat-card severity-high">
+        <div class="icon">🟠</div>
+        <div class="value" id="statHigh">0</div>
+        <div class="label">High</div>
+        <div class="bar-bg"><div class="bar-fill" id="barHigh"></div></div>
+      </div>
+      <div class="stat-card severity-medium">
+        <div class="icon">🟡</div>
+        <div class="value" id="statMedium">0</div>
+        <div class="label">Medium</div>
+        <div class="bar-bg"><div class="bar-fill" id="barMedium"></div></div>
+      </div>
+      <div class="stat-card severity-low">
+        <div class="icon">🔵</div>
+        <div class="value" id="statLow">0</div>
+        <div class="label">Low</div>
+        <div class="bar-bg"><div class="bar-fill" id="barLow"></div></div>
+      </div>
+      <div class="stat-card severity-info">
+        <div class="icon">⚪</div>
+        <div class="value" id="statInfo">0</div>
+        <div class="label">Info</div>
+      </div>
+    </div>
+
+    <!-- Filter Bar -->
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
+      <button class="filter-btn" data-filter="critical" onclick="setFilter('critical', this)">Critical</button>
+      <button class="filter-btn" data-filter="high" onclick="setFilter('high', this)">High</button>
+      <button class="filter-btn" data-filter="medium" onclick="setFilter('medium', this)">Medium</button>
+      <button class="filter-btn" data-filter="low" onclick="setFilter('low', this)">Low</button>
+      <button class="filter-btn" data-filter="pattern" onclick="setFilter('pattern', this)">Patterns</button>
+      <button class="filter-btn" data-filter="ai" onclick="setFilter('ai', this)">AI</button>
+      <button class="filter-btn" onclick="clearFindings()">✕ Clear</button>
+    </div>
+
+    <!-- Section Header -->
+    <div class="section-header">
+      <h2>Live Findings</h2>
+      <span class="count" id="findingsCount">0 findings</span>
+    </div>
+
+    <!-- Findings List -->
+    <div id="findingsList">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🔍</div>
+        <h3>Waiting for traffic</h3>
+        <p>Configure Burp Suite to send intercepted traffic to the analyzer server. Findings from pattern detection and AI analysis will appear here in real time.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side Panel -->
+  <div class="side-panel" id="sidePanel">
+    <!-- Categories -->
+    <div class="section-header">
+      <h2>Categories</h2>
+      <span class="count" id="categoryCount">0</span>
+    </div>
+    <div id="categoryList"></div>
+
+    <!-- Hosts -->
+    <div class="section-header" style="margin-top: 20px;">
+      <h2>Hosts</h2>
+      <span class="count" id="hostCountSide">0</span>
+    </div>
+    <div id="hostList"></div>
+
+    <!-- Activity Feed -->
+    <div class="section-header" style="margin-top: 20px;">
+      <h2>Activity</h2>
+    </div>
+    <div id="activityFeed"></div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+MODAL
+============================================================ -->
+<div class="modal-overlay" id="detailModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">Finding Details</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <div class="detail-field">
+        <div class="label">Vulnerability</div>
+        <div class="value" id="modalName"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Severity</div>
+        <div class="value" id="modalSeverity"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Category</div>
+        <div class="value" id="modalCategory"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">URL</div>
+        <div class="value" id="modalUrl"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Evidence</div>
+        <div class="value code" id="modalEvidence"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Impact</div>
+        <div class="value" id="modalImpact"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Remediation</div>
+        <div class="value" id="modalRemediation"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Source</div>
+        <div class="value" id="modalSource"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Confidence</div>
+        <div class="value" id="modalConfidence"></div>
+      </div>
+      <div class="detail-field">
+        <div class="label">Timestamp</div>
+        <div class="value" id="modalTimestamp"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ============================================================
+JAVASCRIPT
+============================================================ -->
+<script>
+// ---- Configuration ----
+const WS_URL = `ws://${location.host}/ws`;
+const API_URL = `${location.protocol}//${location.host}`;
+
+let ws = null;
+let allFindings = [];
+let currentFilter = 'all';
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 50;
+
+// ---- WebSocket Connection ----
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    console.log('[+] WebSocket connected');
+    document.getElementById('ollamaStatus').className = 'status-dot online';
+    reconnectAttempts = 0;
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      handleMessage(msg);
+    } catch (e) {
+      console.error('[!] WS message error:', e);
+    }
+  };
+
+  ws.onclose = () => {
+    console.log('[-] WebSocket disconnected');
+    document.getElementById('ollamaStatus').className = 'status-dot offline';
+    scheduleReconnect();
+  };
+
+  ws.onerror = (err) => {
+    console.error('[!] WebSocket error:', err);
+    document.getElementById('ollamaStatus').className = 'status-dot offline';
+  };
+}
+
+function scheduleReconnect() {
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+  const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+  reconnectAttempts++;
+  setTimeout(connectWebSocket, delay);
+}
+
+// ---- Message Handler ----
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'init':
+      handleInit(msg);
+      break;
+    case 'new_finding':
+      handleNewFinding(msg);
+      break;
+    case 'pong':
+      break;
+    case 'config':
+      break;
+    default:
+      console.log('[?] Unknown message type:', msg.type);
+  }
+}
+
+function handleInit(msg) {
+  const stats = msg.stats || {};
+  updateStats(stats);
+
+  if (msg.ollama_available) {
+    document.getElementById('ollamaStatus').className = 'status-dot online';
+  } else {
+    document.getElementById('ollamaStatus').className = 'status-dot offline';
+  }
+
+  // Load existing findings
+  if (stats.recent_findings) {
+    allFindings = stats.recent_findings;
+    renderFindings();
+    updateSidePanel(stats);
+  }
+}
+
+function handleNewFinding(msg) {
+  const finding = msg.data;
+  if (!finding) return;
+
+  // Prepend to findings
+  allFindings.unshift(finding);
+
+  // Update stats
+  if (msg.stats) {
+    updateStats(msg.stats);
+    updateSidePanel(msg.stats);
+  }
+
+  // Render
+  renderFindings();
+
+  // Toast for high severity
+  const sev = (finding.severity || '').toLowerCase();
+  if (sev === 'critical' || sev === 'high') {
+    showToast(finding);
+  }
+
+  // Update header counts
+  if (msg.stats) {
+    document.getElementById('findingCount').textContent = msg.stats.total_findings || 0;
+    document.getElementById('trafficCount').textContent = msg.stats.total_traffic || 0;
+    document.getElementById('hostCount').textContent = msg.stats.total_hosts || 0;
+  }
+}
+
+// ---- Stats Update ----
+function updateStats(stats) {
+  if (!stats) return;
+  const sev = stats.severity_counts || {};
+  const total = stats.total_findings || 0;
+
+  document.getElementById('statTotal').textContent = total;
+  document.getElementById('statCritical').textContent = sev.critical || 0;
+  document.getElementById('statHigh').textContent = sev.high || 0;
+  document.getElementById('statMedium').textContent = sev.medium || 0;
+  document.getElementById('statLow').textContent = sev.low || 0;
+  document.getElementById('statInfo').textContent = sev.info || 0;
+
+  // Update bars
+  if (total > 0) {
+    document.getElementById('barCritical').style.width = `${((sev.critical || 0) / total) * 100}%`;
+    document.getElementById('barHigh').style.width = `${((sev.high || 0) / total) * 100}%`;
+    document.getElementById('barMedium').style.width = `${((sev.medium || 0) / total) * 100}%`;
+    document.getElementById('barLow').style.width = `${((sev.low || 0) / total) * 100}%`;
+  }
+
+  document.getElementById('findingsCount').textContent = `${allFindings.length} findings`;
+}
+
+// ---- Render Findings ----
+function renderFindings() {
+  const container = document.getElementById('findingsList');
+  const emptyState = document.getElementById('emptyState');
+
+  let filtered = allFindings;
+  if (currentFilter === 'critical') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'critical');
+  else if (currentFilter === 'high') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'high');
+  else if (currentFilter === 'medium') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'medium');
+  else if (currentFilter === 'low') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'low');
+  else if (currentFilter === 'pattern') filtered = allFindings.filter(f => (f.type || '') === 'pattern');
+  else if (currentFilter === 'ai') filtered = allFindings.filter(f => (f.type || '') === 'ai_analysis');
+
+  if (filtered.length === 0 && allFindings.length > 0) {
+    container.innerHTML = `<div class="empty-state" style="padding: 30px">
+      <p style="color:var(--text-dim)">No findings match this filter</p>
+    </div>`;
+    return;
+  }
+
+  if (allFindings.length === 0) {
+    container.innerHTML = `<div class="empty-state" id="emptyState">
+      <div class="icon">🔍</div>
+      <h3>Waiting for traffic</h3>
+      <p>Configure Burp Suite to send intercepted traffic to the analyzer server. Findings from pattern detection and AI analysis will appear here in real time.</p>
+    </div>`;
+    return;
+  }
+
+  let html = '';
+  filtered.slice(0, 100).forEach((f, i) => {
+    const sev = (f.severity || 'info').toLowerCase();
+    const name = f.name || f.vulnerability || 'Unknown';
+    const url = f.url || '';
+    const cat = f.category || 'other';
+    const source = f.type || 'pattern';
+    const evidence = f.evidence || f.match || '';
+    const impact = f.impact || '';
+    const remediation = f.remediation || '';
+    const confidence = f.confidence || 0;
+    const ts = f.timestamp || '';
+
+    html += `
+      <div class="finding-item severity-${sev}" onclick="showDetail(${i})">
+        <div class="finding-top">
+          <span class="finding-name">${escapeHtml(name)}</span>
+          <span class="finding-tag tag-${sev}">${sev.toUpperCase()}</span>
+        </div>
+        <div class="finding-meta">
+          <span class="url-text" title="${escapeHtml(url)}">${escapeHtml(url) || '—'}</span>
+          <span class="category">${cat}</span>
+        </div>
+        <div class="finding-source">
+          <span class="source-badge source-${source === 'ai_analysis' ? 'ai' : 'pattern'}">
+            ${source === 'ai_analysis' ? 'AI' : 'Pattern'}
+          </span>
+          ${confidence ? `<span style="color:var(--text-dim)">${Math.round(confidence * 100)}% confidence</span>` : ''}
+          ${ts ? `<span style="color:var(--text-dim);margin-left:auto">${formatTime(ts)}</span>` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  container.innerHTML = html;
+}
+
+// ---- Side Panel ----
+function updateSidePanel(stats) {
+  if (!stats) return;
+  updateCategoryList(stats);
+  updateHostList(stats);
+  updateActivity();
+}
+
+function updateCategoryList(stats) {
+  const container = document.getElementById('categoryList');
+  const categories = stats.top_categories || [];
+
+  if (categories.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-dim);font-size:0.75rem;padding:8px 0">No categories yet</div>';
+    return;
+  }
+
+  let html = '';
+  categories.forEach(([cat, count]) => {
+    html += `
+      <div class="host-item" onclick="setFilter('${cat}', null)" style="cursor:pointer;margin-bottom:2px">
+        <span class="hostname">${cat}</span>
+        <span class="host-count">${count}</span>
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+  document.getElementById('categoryCount').textContent = categories.length;
+}
+
+function updateHostList(stats) {
+  const container = document.getElementById('hostList');
+  const hosts = stats.hosts || {};
+
+  const entries = Object.entries(hosts);
+  if (entries.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-dim);font-size:0.75rem;padding:8px 0">No hosts yet</div>';
+    return;
+  }
+
+  let html = '';
+  entries.slice(0, 20).forEach(([host, data]) => {
+    const total = data.findings || 0;
+    let sevColor = 'var(--text-dim)';
+    if (data.critical > 0) sevColor = 'var(--red)';
+    else if (data.high > 0) sevColor = 'var(--orange)';
+    else if (data.medium > 0) sevColor = 'var(--yellow)';
+
+    html += `
+      <div class="host-item">
+        <span class="hostname">${escapeHtml(host)}</span>
+        <span class="host-count">
+          <span class="sev-dot" style="background:${sevColor}"></span>
+          ${total}
+        </span>
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+  document.getElementById('hostCountSide').textContent = entries.length;
+}
+
+function updateActivity() {
+  const container = document.getElementById('activityFeed');
+  const recent = allFindings.slice(0, 15);
+
+  if (recent.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-dim);font-size:0.75rem;padding:8px 0">No activity yet</div>';
+    return;
+  }
+
+  let html = '';
+  recent.forEach(f => {
+    const sev = (f.severity || 'info').toLowerCase();
+    const icons = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+    const icon = icons[sev] || '⚪';
+    const name = f.name || f.vulnerability || 'Finding';
+    const ts = f.timestamp || '';
+
+    html += `
+      <div class="activity-item">
+        <span class="act-icon">${icon}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(name)}</span>
+        <span class="time">${formatTime(ts)}</span>
+      </div>
+    `;
+  });
+  container.innerHTML = html;
+}
+
+// ---- Detail Modal ----
+function showDetail(index) {
+  // Find the original index in allFindings
+  let filtered = allFindings;
+  if (currentFilter === 'critical') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'critical');
+  else if (currentFilter === 'high') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'high');
+  else if (currentFilter === 'medium') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'medium');
+  else if (currentFilter === 'low') filtered = allFindings.filter(f => (f.severity || '').toLowerCase() === 'low');
+  else if (currentFilter === 'pattern') filtered = allFindings.filter(f => (f.type || '') === 'pattern');
+  else if (currentFilter === 'ai') filtered = allFindings.filter(f => (f.type || '') === 'ai_analysis');
+
+  const f = filtered[index];
+  if (!f) return;
+
+  const sev = (f.severity || 'info').toUpperCase();
+  const sevColors = { CRITICAL: 'var(--red)', HIGH: 'var(--orange)', MEDIUM: 'var(--yellow)', LOW: 'var(--blue)', INFO: 'var(--text-secondary)' };
+
+  document.getElementById('modalTitle').textContent = f.name || f.vulnerability || 'Finding Details';
+  document.getElementById('modalName').textContent = f.name || f.vulnerability || 'N/A';
+  document.getElementById('modalSeverity').innerHTML = `<span style="color:${sevColors[sev] || 'var(--text-secondary)'};font-weight:600">${sev}</span>`;
+  document.getElementById('modalCategory').textContent = f.category || 'other';
+  document.getElementById('modalUrl').textContent = f.url || 'N/A';
+  document.getElementById('modalEvidence').textContent = f.evidence || f.match || 'N/A';
+  document.getElementById('modalImpact').textContent = f.impact || 'See vulnerability description';
+  document.getElementById('modalRemediation').textContent = f.remediation || 'Review and fix the identified issue.';
+  document.getElementById('modalSource').textContent = f.type === 'ai_analysis' ? 'Ollama AI Analysis' : 'Pattern Detection Engine';
+  document.getElementById('modalConfidence').textContent = f.confidence ? `${Math.round(f.confidence * 100)}%` : 'N/A';
+  document.getElementById('modalTimestamp').textContent = f.timestamp ? new Date(f.timestamp).toLocaleString() : 'N/A';
+
+  document.getElementById('detailModal').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('detailModal').classList.remove('active');
+}
+
+// ---- Filter ----
+function setFilter(filter, btn) {
+  currentFilter = filter;
+
+  // Update button states
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.remove('active', 'active-sev-critical', 'active-sev-high', 'active-sev-medium', 'active-sev-low');
+  });
+
+  if (btn) {
+    if (['critical', 'high', 'medium', 'low'].includes(filter)) {
+      btn.classList.add('active', `active-sev-${filter}`);
+    } else {
+      btn.classList.add('active');
+    }
+  }
+
+  renderFindings();
+}
+
+// ---- Clear ----
+async function clearFindings() {
+  try {
+    await fetch(`${API_URL}/api/clear`, { method: 'POST' });
+    allFindings = [];
+    renderFindings();
+    updateStats({
+      total_findings: 0,
+      severity_counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      total_traffic: 0,
+      total_hosts: 0,
+      top_categories: [],
+      hosts: {}
+    });
+    document.getElementById('findingCount').textContent = '0';
+    document.getElementById('hostCount').textContent = '0';
+  } catch (e) {
+    console.error('[!] Clear error:', e);
+  }
+}
+
+// ---- Toast ----
+function showToast(finding) {
+  const container = document.getElementById('toastContainer');
+  const sev = (f.severity || 'info').toLowerCase();
+  const name = f.name || f.vulnerability || 'Finding';
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${sev}`;
+  toast.textContent = `[${sev.toUpperCase()}] ${name}`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(20px)';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+// ---- Utilities ----
+function escapeHtml(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return d.toLocaleDateString();
+  } catch (e) {
+    return '';
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('detailModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('detailModal')) closeModal();
+});
+
+// Keyboard shortcut
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ---- Init ----
+connectWebSocket();
+
+// Ping keep-alive
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'ping' }));
+  }
+}, 30000);
+</script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a05186fdaa4de30a',t:'MTc4MDM1MTYwNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
