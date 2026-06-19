@@ -82,6 +82,14 @@ from behavioral_anomaly_detector import detect_anomalies
 from prototype_pollution_tester import test_prototype_pollution
 from request_smuggling_detector import detect_smuggling
 from api_version_tester import test_api_versions
+from adaptive_scan import (
+    AdaptivePlan,
+    ResourceController,
+    TargetProfile,
+    build_adaptive_plan,
+    profile_target,
+    refine_profile,
+)
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 scans:          dict[str, dict] = {}
@@ -90,6 +98,7 @@ ws_clients:     set[WebSocket]  = set()
 stats:          dict            = defaultdict(int)
 burp_queue:     asyncio.Queue   = asyncio.Queue()
 response_deduper = ResponseDeduplicator()
+target_profile_cache: dict[str, tuple[float, dict]] = {}
 
 # ── Burp passive patterns ─────────────────────────────────────────────────────
 PATTERNS = [
@@ -192,6 +201,7 @@ class ScanRequest(BaseModel):
     target:  str
     api_key: Optional[str] = ""
     scan_mode: Optional[str] = None
+    authorization_confirmed: bool = False
 
 class SessionConfig(BaseModel):
     session_a_cookie: Optional[str] = ""
@@ -811,13 +821,77 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     try:
         event_store.append(scan_id, "scan.started", {"target": target})
         await enforce_scan_control(scan_id)
+        await progress("profiling", 1, 1, "Analyzing target behavior")
+        cached_profile = target_profile_cache.get(target)
+        if cached_profile and time.time() - cached_profile[0] <= 300:
+            target_profile = TargetProfile(**cached_profile[1])
+            await log("Using recent authorized target profile.", "adaptive")
+        else:
+            target_profile = await profile_target(target, scope_policy, log)
+        adaptive_plan = build_adaptive_plan(
+            target_profile,
+            scan.get("requested_scan_mode", ""),
+        )
+        resources = ResourceController(
+            cpu_limit_percent=adaptive_plan.cpu_limit_percent
+        )
+        scan["target_profile"] = target_profile.to_dict()
+        scan["adaptive_plan"] = adaptive_plan.to_dict()
+        scan["resource_control"] = resources.status()
+        await broadcast({
+            "type": "target_profile",
+            "scan_id": scan_id,
+            "data": scan["target_profile"],
+        })
+        await broadcast({
+            "type": "adaptive_plan",
+            "scan_id": scan_id,
+            "data": scan["adaptive_plan"],
+        })
+        await log(
+            "Target Profile: {} | Recommended Scan: {} SCAN".format(
+                target_profile.profile_type,
+                adaptive_plan.level,
+            ),
+            "success",
+        )
+        for message in adaptive_plan.progress_messages:
+            await log(message, "adaptive")
+        await resources.gate()
         # PHASE 1: RECON
         await _save_scan_transition(scan_id, "recon")
         await log("P1: RECON", "phase")
         def recon_log(msg, level="info"):
             asyncio.create_task(log(msg, level))
         with metrics.span("phase.recon", scan_id=scan_id):
-            recon_data = await run_full_recon(target, recon_log)
+            recon_data = await run_full_recon(
+                target,
+                recon_log,
+                adaptive_plan=adaptive_plan.to_dict(),
+            )
+        previous_level = adaptive_plan.level
+        target_profile = refine_profile(target_profile, recon_data)
+        adaptive_plan = build_adaptive_plan(
+            target_profile,
+            scan.get("requested_scan_mode", ""),
+        )
+        resources.cpu_limit_percent = adaptive_plan.cpu_limit_percent
+        scan["target_profile"] = target_profile.to_dict()
+        scan["adaptive_plan"] = adaptive_plan.to_dict()
+        if adaptive_plan.level != previous_level:
+            await log(
+                "Adaptive scan level changed: {} -> {} ({})".format(
+                    previous_level,
+                    adaptive_plan.level,
+                    adaptive_plan.reason,
+                ),
+                "adaptive",
+            )
+        await broadcast({
+            "type": "adaptive_plan",
+            "scan_id": scan_id,
+            "data": scan["adaptive_plan"],
+        })
         scan["recon"] = recon_data
         autopilot_state.output(scan_id, "recon", "recon_data", {
             "stats": recon_data.get("stats", {}),
@@ -859,7 +933,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await enforce_scan_control(scan_id)
         await log("P1.5a: OOB ENGINE", "phase")
         oob_started = False
-        if scope_policy.config.oob_testing_enabled and not scope_policy.config.passive_only_mode:
+        oob_relevant = any(name in adaptive_plan.enabled_modules for name in (
+            "SSRF", "SQL Injection", "OS Command Injection", "Blind XSS"
+        ))
+        if (
+            oob_relevant
+            and scope_policy.config.oob_testing_enabled
+            and not scope_policy.config.passive_only_mode
+        ):
             oob_started = await oob.start(log)
         else:
             await log("OOB disabled by ScopePolicy", "warning")
@@ -889,13 +970,32 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
         # PHASE 1.5c: API SCHEMA INGESTION
         await enforce_scan_control(scan_id)
+        await resources.gate()
         await log("P1.5c: API SCHEMA INGESTION", "phase")
         known_swagger = [jf["file"] for jf in recon_data.get("js_findings", [])
                          if any(k in jf.get("file","").lower()
                                 for k in ["swagger","openapi","api-docs"])
                          and scope_policy.validate_target(jf.get("file", ""), action="scan")[0]]
-        schema_data = await ingest_schemas(
-            allowed_live_hosts, known_swagger, [], log)
+        schema_data = (
+            await ingest_schemas(allowed_live_hosts, known_swagger, [], log)
+            if adaptive_plan.level != "LIGHT"
+            or target_profile.api_heavy
+            or target_profile.graphql_detected
+            else {
+                "openapi_endpoints": [],
+                "graphql_endpoints": [],
+                "graphql_schemas": [],
+                "all_urls": [],
+                "schemas_found": 0,
+            }
+        )
+        target_profile = refine_profile(target_profile, recon_data, schema_data)
+        adaptive_plan = build_adaptive_plan(
+            target_profile,
+            scan.get("requested_scan_mode", ""),
+        )
+        scan["target_profile"] = target_profile.to_dict()
+        scan["adaptive_plan"] = adaptive_plan.to_dict()
         scan["schema_data"] = schema_data
         schema_urls = scope_policy.filter_urls(schema_data.get("all_urls", []), action="scan")
         scan["schema"] = {
@@ -933,6 +1033,12 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 waf_info=waf_info, schema_urls=schema_urls,
                 graphql_schemas=schema_data.get("graphql_schemas", []),
                 schema_endpoints=schema_data.get("openapi_endpoints", []),
+                enabled_modules=adaptive_plan.enabled_modules,
+                max_urls=adaptive_plan.max_urls,
+                concurrency_override=adaptive_plan.concurrency,
+                request_timeout=adaptive_plan.request_timeout,
+                batch_size=adaptive_plan.request_batch_size,
+                resource_controller=resources,
             )
         raw_findings = normalize_findings(raw_findings, scan_id=scan_id)
 
@@ -949,7 +1055,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         business_logic_candidates = normalize_findings(
             classify_business_logic_candidates(raw_findings, classification_recon),
             scan_id=scan_id,
-        )
+        ) if adaptive_plan.run_business_logic else []
         raw_findings.extend(business_logic_candidates)
         scan["business_logic_candidates"] = business_logic_candidates
         await log(
@@ -960,10 +1066,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         )
 
         # Phase 2 supplement: bounded nuclei CVE/exposure/misconfiguration scan.
-        nuclei_findings = await run_nuclei_scan(
-            recon_data.get("live_hosts", []),
-            scope_policy,
-            log,
+        await resources.gate()
+        nuclei_findings = (
+            await run_nuclei_scan(
+                recon_data.get("live_hosts", []),
+                scope_policy,
+                log,
+            )
+            if adaptive_plan.run_nuclei else []
         )
         nuclei_findings = normalize_findings(nuclei_findings, scan_id=scan_id)
         raw_findings.extend(nuclei_findings)
@@ -1035,8 +1145,43 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             await broadcast({"type": "triage_update", "scan_id": scan_id,
                              "current": cur, "total": total, "label": label})
 
-        triaged, verdict_counts = await batch_triage(
-            unique_triage, api_key, log, triage_progress)
+        reasoning_terms = (
+            "idor", "bola", "auth", "authorization", "oauth", "jwt",
+            "business logic", "privilege", "account takeover", "chain",
+        )
+        if adaptive_plan.level == "DEEP":
+            ai_candidates = unique_triage
+        else:
+            ai_candidates = [
+                finding for finding in unique_triage
+                if str(finding.get("severity", "")).upper() in {"CRITICAL", "HIGH"}
+                or any(
+                    term in "{} {}".format(
+                        finding.get("vuln_type", ""),
+                        finding.get("title", ""),
+                    ).lower()
+                    for term in reasoning_terms
+                )
+            ]
+        if ai_candidates:
+            await resources.gate()
+            ai_triaged, verdict_counts = await batch_triage(
+                ai_candidates, api_key, log, triage_progress
+            )
+            ai_map = {finding.get("id"): finding for finding in ai_triaged}
+            triaged = [
+                ai_map.get(finding.get("id"), {
+                    **finding,
+                    "verdict": finding.get("verdict", "DOWNGRADE"),
+                })
+                for finding in unique_triage
+            ]
+        else:
+            triaged = [
+                {**finding, "verdict": finding.get("verdict", "DOWNGRADE")}
+                for finding in unique_triage
+            ]
+            verdict_counts = {"adaptive_no_ai_needed": len(triaged)}
         triaged = normalize_findings(triaged, scan_id=scan_id)
         scan["triaged_findings"] = triaged
         triaged_map = {f["id"]: f for f in triaged}
@@ -1054,7 +1199,18 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await _save_scan_transition(scan_id, "analysis")
         await log("P4: DEEP ANALYSIS", "phase")
         passable = [f for f in triaged if f.get("verdict") in ("PASS","DOWNGRADE")]
-        analysis = await run_deep_analysis(passable, recon_data, api_key)
+        await resources.gate()
+        analysis = (
+            await run_deep_analysis(passable, recon_data, api_key)
+            if adaptive_plan.run_deep_analysis
+            else {
+                "chains": [],
+                "high_priority": passable[:10],
+                "adaptive_skip": (
+                    "Deep AI analysis was not needed for the selected target profile."
+                ),
+            }
+        )
         ato_recon = dict(recon_data)
         ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
         ato_chains = detect_ato_chains(triaged, ato_recon)
@@ -1067,6 +1223,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         analysis["coverage"] = coverage
         analysis["coverage_v2"] = coverage2
         scan["analysis"] = analysis
+        scan["resource_control"] = resources.status()
         autopilot_state.output(scan_id, "analysis", "coverage_attack_graph", {
             "coverage_v2": coverage2,
             "attack_graph": attack_graph,
@@ -1101,15 +1258,25 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
         # PHASE 6: ANALYST INTELLIGENCE
         await enforce_scan_control(scan_id)
+        await resources.gate()
         await _save_scan_transition(scan_id, "intelligence")
         await log("P6: ANALYST INTELLIGENCE BRIEFING", "phase")
-        intelligence = await generate_scan_intelligence(
-            scan_id,
-            triaged,
-            recon_data,
-            attack_graph,
-            coverage2,
-            api_key,
+        intelligence = (
+            _fallback_scan_intelligence(
+                triaged,
+                recon_data,
+                attack_graph,
+                coverage2,
+            )
+            if adaptive_plan.level == "LIGHT" or not triaged
+            else await generate_scan_intelligence(
+                scan_id,
+                triaged,
+                recon_data,
+                attack_graph,
+                coverage2,
+                api_key,
+            )
         )
         scan["intelligence"] = intelligence
         autopilot_state.output(
@@ -1226,6 +1393,23 @@ async def _resume_pipeline_from_checkpoint(
         waf_info = scan.get("waf") or {}
         if not recon_data:
             raise RuntimeError("Recon checkpoint is missing recon artifacts.")
+        if scan.get("adaptive_plan"):
+            adaptive_plan = AdaptivePlan(**scan["adaptive_plan"])
+        else:
+            resume_profile = refine_profile(
+                TargetProfile(target=target),
+                recon_data,
+                schema_data,
+            )
+            adaptive_plan = build_adaptive_plan(
+                resume_profile,
+                scan.get("requested_scan_mode", ""),
+            )
+            scan["target_profile"] = resume_profile.to_dict()
+            scan["adaptive_plan"] = adaptive_plan.to_dict()
+        resources = ResourceController(
+            cpu_limit_percent=adaptive_plan.cpu_limit_percent
+        )
         prioritized_urls = prioritize_urls(
             recon_data.get("urls", []),
             recon_data.get("live_hosts", []),
@@ -1255,6 +1439,12 @@ async def _resume_pipeline_from_checkpoint(
                     schema_urls=schema_urls,
                     graphql_schemas=schema_data.get("graphql_schemas", []),
                     schema_endpoints=schema_data.get("openapi_endpoints", []),
+                    enabled_modules=adaptive_plan.enabled_modules,
+                    max_urls=adaptive_plan.max_urls,
+                    concurrency_override=adaptive_plan.concurrency,
+                    request_timeout=adaptive_plan.request_timeout,
+                    batch_size=adaptive_plan.request_batch_size,
+                    resource_controller=resources,
                 )
             raw_findings = normalize_findings(raw_findings, scan_id=scan_id)
             classification_recon = dict(recon_data)
@@ -1264,21 +1454,24 @@ async def _resume_pipeline_from_checkpoint(
             classification_recon["graphql_endpoints"] = schema_data.get(
                 "graphql_endpoints", []
             )
-            raw_findings.extend(normalize_findings(
-                classify_business_logic_candidates(
-                    raw_findings,
-                    classification_recon,
-                ),
-                scan_id=scan_id,
-            ))
-            raw_findings.extend(normalize_findings(
-                await run_nuclei_scan(
-                    recon_data.get("live_hosts", []),
-                    scope_policy,
-                    log,
-                ),
-                scan_id=scan_id,
-            ))
+            if adaptive_plan.run_business_logic:
+                raw_findings.extend(normalize_findings(
+                    classify_business_logic_candidates(
+                        raw_findings,
+                        classification_recon,
+                    ),
+                    scan_id=scan_id,
+                ))
+            if adaptive_plan.run_nuclei:
+                await resources.gate()
+                raw_findings.extend(normalize_findings(
+                    await run_nuclei_scan(
+                        recon_data.get("live_hosts", []),
+                        scope_policy,
+                        log,
+                    ),
+                    scan_id=scan_id,
+                ))
             scan["raw_findings"] = raw_findings
             existing_ids = {
                 finding.get("id")
@@ -1309,12 +1502,48 @@ async def _resume_pipeline_from_checkpoint(
             async def triage_progress(phase, cur, total, label):
                 await progress("triage", cur, total, label)
 
-            triaged, verdict_counts = await batch_triage(
-                raw_findings,
-                api_key,
-                log,
-                triage_progress,
-            )
+            if adaptive_plan.level == "DEEP":
+                resume_ai_candidates = raw_findings
+            else:
+                resume_ai_candidates = [
+                    finding for finding in raw_findings
+                    if str(finding.get("severity", "")).upper() in {"CRITICAL", "HIGH"}
+                    or any(
+                        term in "{} {}".format(
+                            finding.get("vuln_type", ""),
+                            finding.get("title", ""),
+                        ).lower()
+                        for term in (
+                            "idor", "bola", "auth", "authorization", "oauth",
+                            "jwt", "business logic", "privilege",
+                            "account takeover", "chain",
+                        )
+                    )
+                ]
+            if resume_ai_candidates:
+                await resources.gate()
+                ai_triaged, verdict_counts = await batch_triage(
+                    resume_ai_candidates,
+                    api_key,
+                    log,
+                    triage_progress,
+                )
+                resume_ai_map = {
+                    finding.get("id"): finding for finding in ai_triaged
+                }
+                triaged = [
+                    resume_ai_map.get(finding.get("id"), {
+                        **finding,
+                        "verdict": finding.get("verdict", "DOWNGRADE"),
+                    })
+                    for finding in raw_findings
+                ]
+            else:
+                triaged = [
+                    {**finding, "verdict": finding.get("verdict", "DOWNGRADE")}
+                    for finding in raw_findings
+                ]
+                verdict_counts = {"adaptive_no_ai_needed": len(triaged)}
             triaged = normalize_findings(triaged, scan_id=scan_id)
             scan["triaged_findings"] = triaged
             await broadcast({
@@ -1338,10 +1567,21 @@ async def _resume_pipeline_from_checkpoint(
                 finding for finding in triaged
                 if finding.get("verdict") in ("PASS", "DOWNGRADE")
             ]
-            analysis = await run_deep_analysis(
-                passable,
-                recon_data,
-                api_key,
+            await resources.gate()
+            analysis = (
+                await run_deep_analysis(
+                    passable,
+                    recon_data,
+                    api_key,
+                )
+                if adaptive_plan.run_deep_analysis
+                else {
+                    "chains": [],
+                    "high_priority": passable[:10],
+                    "adaptive_skip": (
+                        "Deep AI analysis was not needed for the selected target profile."
+                    ),
+                }
             )
             ato_recon = dict(recon_data)
             ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
@@ -1410,15 +1650,25 @@ async def _resume_pipeline_from_checkpoint(
 
         if "intelligence" not in completed_phases:
             await enforce_scan_control(scan_id)
+            await resources.gate()
             await _save_scan_transition(scan_id, "intelligence")
             await log("P6: ANALYST INTELLIGENCE BRIEFING (checkpoint resume)", "phase")
-            intelligence = await generate_scan_intelligence(
-                scan_id,
-                triaged,
-                recon_data,
-                analysis.get("attack_graph", {}),
-                analysis.get("coverage_v2") or analysis.get("coverage") or {},
-                api_key,
+            intelligence = (
+                _fallback_scan_intelligence(
+                    triaged,
+                    recon_data,
+                    analysis.get("attack_graph", {}),
+                    analysis.get("coverage_v2") or analysis.get("coverage") or {},
+                )
+                if adaptive_plan.level == "LIGHT" or not triaged
+                else await generate_scan_intelligence(
+                    scan_id,
+                    triaged,
+                    recon_data,
+                    analysis.get("attack_graph", {}),
+                    analysis.get("coverage_v2") or analysis.get("coverage") or {},
+                    api_key,
+                )
             )
             scan["intelligence"] = intelligence
             autopilot_state.output(
@@ -1689,9 +1939,16 @@ async def get_oob_status():
 
 @app.post("/scan")
 async def start_scan(req: ScanRequest):
+    if not req.authorization_confirmed:
+        raise HTTPException(
+            403,
+            "Confirm that you own the target or have written permission to test it.",
+        )
+    requested_scan_mode = ""
     if req.scan_mode:
         scan_mode = scope_policy.normalize_scan_mode_label(req.scan_mode)
         scope_policy.update({"scan_mode": scan_mode})
+        requested_scan_mode = scan_mode
     key = req.api_key or _gc.GEMINI_API_KEY
     ok, reason = scope_policy.validate_target(req.target, action="scan")
     if not ok:
@@ -1705,6 +1962,7 @@ async def start_scan(req: ScanRequest):
         "id":scan_id,"target":req.target,
         "status":"queued","phase":"queued",
         "control":"run",
+        "requested_scan_mode": requested_scan_mode,
         "started":datetime.utcnow().isoformat(),"logs":[],
     }
     resume_token = autopilot_state.create_run(scan_id, req.target, status="queued", phase="queued")
@@ -2312,6 +2570,7 @@ def _system_check_results() -> dict:
         "request_smuggling_detector": callable(detect_smuggling),
         "api_version_tester": callable(test_api_versions),
         "ato_chain_detector": callable(detect_ato_chains),
+        "adaptive_scan_engine": callable(profile_target),
         "class_25_stored_xss": callable(hunt_stored_xss),
         "class_26_dom_xss": callable(hunt_dom_xss),
         "class_27_blind_xss": callable(hunt_blind_xss),
@@ -2587,6 +2846,43 @@ async def get_ai_audit(limit: int = 200):
 @app.get("/scope")
 async def get_scope():
     return scope_policy.to_dict()
+
+@app.post("/auto/profile-target")
+async def auto_profile_target(payload: dict):
+    target = str(payload.get("target", "")).strip()
+    if not target:
+        raise HTTPException(422, "Enter a website to profile.")
+    if not bool(payload.get("authorization_confirmed", False)):
+        raise HTTPException(
+            403,
+            "Confirm that you own the target or have written permission to test it.",
+        )
+    allowed, reason = scope_policy.validate_target(target, action="scan")
+    if not allowed:
+        raise HTTPException(403, reason)
+    try:
+        profile = await profile_target(target, scope_policy)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    plan = build_adaptive_plan(
+        profile,
+        str(payload.get("scan_mode", "") or ""),
+    )
+    if len(target_profile_cache) >= 100:
+        oldest_target = min(
+            target_profile_cache,
+            key=lambda key: target_profile_cache[key][0],
+        )
+        target_profile_cache.pop(oldest_target, None)
+    target_profile_cache[target] = (time.time(), profile.to_dict())
+    return {
+        "target_profile": profile.to_dict(),
+        "adaptive_plan": plan.to_dict(),
+        "summary": "Target Profile: {} | Recommended Scan: {} SCAN".format(
+            profile.profile_type,
+            plan.level,
+        ),
+    }
 
 @app.post("/scope")
 async def set_scope(cfg: dict):

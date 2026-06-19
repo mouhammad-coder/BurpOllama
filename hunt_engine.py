@@ -6,6 +6,7 @@ Upgraded: time-based SQLi, XSS context tracking, structural IDOR,
 """
 
 import asyncio
+import contextvars
 import copy
 import html
 import re
@@ -38,6 +39,7 @@ from request_smuggling_detector import detect_smuggling
 from api_version_tester import test_api_versions
 from scope_policy import scope_policy
 from finding_model import normalize_finding
+from adaptive_scan import ResourceController
 
 # ── Shared config ─────────────────────────────────────────────────────────────
 BASE_HEADERS = {
@@ -46,6 +48,9 @@ BASE_HEADERS = {
 }
 TIMEOUT      = httpx.Timeout(12.0)
 MAX_CONC     = 8   # reduced from 10 — more polite default
+REQUEST_TIMEOUT = contextvars.ContextVar(
+    "burpollama_hunt_timeout", default=TIMEOUT
+)
 
 # ── Infrastructure-trust bypass headers (Classes 8 & 9) ──────────────────────
 INFRA_TRUST_HEADERS = [
@@ -100,7 +105,7 @@ async def tget(client, url, **kwargs):
     async with await throttle.gate():
         await throttle.record_request(url)
         try:
-            r = await client.get(url, timeout=TIMEOUT, **kwargs)
+            r = await client.get(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             return r
@@ -123,7 +128,7 @@ async def tpost(client, url, **kwargs):
     async with await throttle.gate():
         await throttle.record_request(url)
         try:
-            r = await client.post(url, timeout=TIMEOUT, **kwargs)
+            r = await client.post(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             return r
@@ -1422,7 +1427,7 @@ async def _provider_request(client, method, url):
         return await client.request(
             method,
             url,
-            timeout=TIMEOUT,
+            timeout=REQUEST_TIMEOUT.get(),
             follow_redirects=False,
             headers={**BASE_HEADERS, "Accept": "*/*"},
         )
@@ -1966,7 +1971,7 @@ async def _mass_assignment_request(client, method, url, headers, **kwargs):
         await throttle.record_request(url)
         try:
             response = await client.request(
-                method, url, headers=headers, timeout=TIMEOUT,
+                method, url, headers=headers, timeout=REQUEST_TIMEOUT.get(),
                 follow_redirects=False, **kwargs
             )
             if throttle.is_block_response(response.status_code, response.text[:500]):
@@ -2427,7 +2432,7 @@ async def _authenticated_request(client, method, url, **kwargs):
             response = await client.request(
                 method,
                 url,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 follow_redirects=False,
                 **kwargs
             )
@@ -4073,6 +4078,12 @@ async def run_hunt(
     schema_urls:    list     = None,
     graphql_schemas:list     = None,
     schema_endpoints:list    = None,
+    enabled_modules:list     = None,
+    max_urls:       int      = 200,
+    concurrency_override:int = None,
+    request_timeout:float    = None,
+    batch_size:     int      = 0,
+    resource_controller:ResourceController = None,
 ) -> list:
     """
     Run all hunt classes + dual-session auth matrix + OOB SQLi payloads.
@@ -4082,6 +4093,18 @@ async def run_hunt(
     a target that is actively blocking all requests.
     """
     log("[Hunt] ━━━ Phase 2: HUNT ━━━")
+    enabled_set = set(enabled_modules or [])
+    resources = resource_controller or ResourceController()
+
+    def _activation_allowed(name: str):
+        if enabled_modules is not None and name not in enabled_set:
+            return False, "disabled by adaptive module plan"
+        return scope_policy.vulnerability_allowed(name)
+
+    timeout_token = REQUEST_TIMEOUT.set(
+        httpx.Timeout(float(request_timeout))
+        if request_timeout else TIMEOUT
+    )
 
     # Merge schema-derived URLs into test set
     all_urls = list(urls)
@@ -4091,13 +4114,20 @@ async def run_hunt(
 
     strategy    = scope_policy.normalize_mode((waf_info or {}).get("strategy", scope_policy.config.scan_mode))
     conc_map    = {"passive_only": 0, "conservative": 3, "normal": 8, "intensive_authorized": 12}
-    concurrency = conc_map.get(strategy, 8)
+    concurrency = (
+        max(1, int(concurrency_override))
+        if concurrency_override is not None
+        else conc_map.get(strategy, 8)
+    )
     log("[Hunt] Strategy: {} | Concurrency: {} | URLs: {}".format(
         strategy, concurrency, min(len(all_urls), 200)))
 
     all_findings = []
     tested_bases = set()
-    urls_to_test = scope_policy.filter_urls(list(set(all_urls))[:200], action="active")
+    urls_to_test = scope_policy.filter_urls(
+        list(dict.fromkeys(all_urls))[:max(1, int(max_urls))],
+        action="active",
+    )
 
     base_urls = []
     for h in live_hosts:
@@ -4125,7 +4155,7 @@ async def run_hunt(
 
     async with httpx.AsyncClient(
         headers=BASE_HEADERS, verify=False, follow_redirects=True,
-        timeout=TIMEOUT,
+        timeout=REQUEST_TIMEOUT.get(),
         limits=httpx.Limits(max_connections=concurrency + 5)
     ) as client:
 
@@ -4134,8 +4164,9 @@ async def run_hunt(
 
         # ── Per-URL classes ───────────────────────────────────────────────────
         for name, fn in PER_URL_CLASSES:
+            await resources.gate()
             class_idx += 1
-            allowed_class, class_reason = scope_policy.vulnerability_allowed(name)
+            allowed_class, class_reason = _activation_allowed(name)
             if not allowed_class:
                 log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
                 continue
@@ -4155,14 +4186,22 @@ async def run_hunt(
                     except Exception:
                         return []
 
-            batch = await asyncio.gather(*[run_one(u) for u in urls_to_test])
-            for r in batch:
-                all_findings.extend(r)
+            effective_batch = max(1, int(batch_size or len(urls_to_test) or 1))
+            for offset in range(0, len(urls_to_test), effective_batch):
+                await resources.gate()
+                batch = await asyncio.gather(*[
+                    run_one(u)
+                    for u in urls_to_test[offset:offset + effective_batch]
+                ])
+                for r in batch:
+                    all_findings.extend(r)
+                await asyncio.sleep(0)
 
         # ── Per-base classes ──────────────────────────────────────────────────
         for name, fn in PER_BASE_CLASSES:
+            await resources.gate()
             class_idx += 1
-            allowed_class, class_reason = scope_policy.vulnerability_allowed(name)
+            allowed_class, class_reason = _activation_allowed(name)
             if not allowed_class:
                 log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
                 continue
@@ -4186,7 +4225,7 @@ async def run_hunt(
         # ── Parameter Mining (with OOB RCE injection) ─────────────────────────
         class_idx += 1
         if not throttle._host_dead:
-            allowed_class, class_reason = scope_policy.vulnerability_allowed("Parameter Mining")
+            allowed_class, class_reason = _activation_allowed("Parameter Mining")
             if not allowed_class:
                 log("[Hunt] Skipping Parameter Mining — {}".format(class_reason))
             else:
@@ -4198,7 +4237,7 @@ async def run_hunt(
 
         # ── Web Cache Deception ───────────────────────────────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed("Web Cache Deception")
+        allowed_class, class_reason = _activation_allowed("Web Cache Deception")
         if allowed_class:
             log("[Hunt] {}/{} Web Cache Deception".format(class_idx, total_classes))
             if progress_cb:
@@ -4213,7 +4252,13 @@ async def run_hunt(
         log("[Hunt] {}/{} Dual-Session Auth Matrix".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "Auth Matrix")
-        if not scope_policy.config.authenticated_testing_enabled:
+        auth_matrix_enabled = any(
+            name in enabled_set
+            for name in ("IDOR", "Auth Bypass", "Business Logic")
+        ) or enabled_modules is None
+        if not auth_matrix_enabled:
+            log("[Hunt] Auth matrix skipped by adaptive module plan")
+        elif not scope_policy.config.authenticated_testing_enabled:
             log("[Hunt] Auth matrix skipped by ScopePolicy")
         elif auth_matrix.configured:
             matrix_findings = await auth_matrix.run_matrix(urls_to_test, log)
@@ -4227,7 +4272,14 @@ async def run_hunt(
         log("[Hunt] {}/{} OOB Blind SQLi Injection".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "OOB Blind SQLi")
-        if scope_policy.config.oob_testing_enabled and oob.available:
+        oob_sqli_enabled = (
+            enabled_modules is None or "SQL Injection" in enabled_set
+        )
+        if (
+            oob_sqli_enabled
+            and scope_policy.config.oob_testing_enabled
+            and oob.available
+        ):
             oob_findings = await _hunt_oob_sqli(client, urls_to_test, waf_info, log)
             all_findings.extend(oob_findings)
         else:
@@ -4238,7 +4290,13 @@ async def run_hunt(
         log("[Hunt] {}/{} GraphQL Authorization Tester".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "GraphQL Authorization Tester")
-        if not scope_policy.config.authenticated_testing_enabled:
+        graphql_auth_enabled = (
+            enabled_modules is None
+            or "GraphQL Authorization" in enabled_set
+        )
+        if not graphql_auth_enabled:
+            log("[Hunt] GraphQL authorization tester skipped by adaptive module plan")
+        elif not scope_policy.config.authenticated_testing_enabled:
             log("[Hunt] GraphQL authorization tester skipped by ScopePolicy")
         elif not auth_matrix.configured:
             log("[Hunt] GraphQL authorization tester skipped: dual sessions not configured")
@@ -4280,7 +4338,7 @@ async def run_hunt(
         if not oauth_urls:
             log("[Hunt] Class 19 OAuth Flow Tester skipped: no OAuth endpoints discovered")
         else:
-            allowed_class, class_reason = scope_policy.vulnerability_allowed("OAuth Flow")
+            allowed_class, class_reason = _activation_allowed("OAuth Flow")
             if not allowed_class:
                 log("[Hunt] Class 19 OAuth Flow Tester skipped — {}".format(class_reason))
             elif throttle.host_dead:
@@ -4324,7 +4382,7 @@ async def run_hunt(
         if not mutation_endpoints:
             log("[Hunt] Class 20 Mass Assignment skipped: no JSON mutation endpoints discovered")
         else:
-            allowed_class, class_reason = scope_policy.vulnerability_allowed(
+            allowed_class, class_reason = _activation_allowed(
                 "Mass Assignment"
             )
             if not allowed_class:
@@ -4356,7 +4414,7 @@ async def run_hunt(
 
         # ── Class 21: Behavioral Anomaly Detector ────────────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Behavioral Anomaly"
         )
         if not scope_policy.config.active_testing_enabled:
@@ -4409,7 +4467,7 @@ async def run_hunt(
             and isinstance(endpoint.get("body"), dict)
             and endpoint.get("url")
         ))
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Prototype Pollution"
         )
         if not prototype_endpoints:
@@ -4442,7 +4500,7 @@ async def run_hunt(
                 headers={**BASE_HEADERS, **session_a_headers},
                 verify=False,
                 follow_redirects=False,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 limits=httpx.Limits(max_connections=3),
             )
             try:
@@ -4471,12 +4529,12 @@ async def run_hunt(
             for url in urls_to_test
             if urlparse(url).scheme.lower() == "https"
         ))
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Request Smuggling"
         )
         deep_authorized = scope_policy.normalize_mode(
             scope_policy.config.scan_mode
-        ) == "normal"
+        ) in {"normal", "intensive_authorized"}
         if not deep_authorized:
             log("[Hunt] Class 23 Request Smuggling skipped: Deep Authorized Scan required")
         elif not allowed_class:
@@ -4510,7 +4568,7 @@ async def run_hunt(
 
         # ── Class 24: API Version Differential Testing ──────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "API Version"
         )
         versioned_urls = [
@@ -4557,7 +4615,7 @@ async def run_hunt(
             and isinstance(endpoint.get("body"), dict)
             and _string_field_paths(endpoint.get("body"))
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Stored XSS"
         )
         if not stored_xss_endpoints:
@@ -4581,7 +4639,7 @@ async def run_hunt(
                 headers={**BASE_HEADERS, **session_a_headers},
                 verify=False,
                 follow_redirects=False,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 limits=httpx.Limits(max_connections=3),
             )
             try:
@@ -4604,7 +4662,7 @@ async def run_hunt(
             if urlparse(url).path.lower().endswith(".js")
             and ".min.js" not in urlparse(url).path.lower()
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "DOM XSS"
         )
         if not js_urls:
@@ -4633,7 +4691,7 @@ async def run_hunt(
             endpoint for endpoint in (schema_endpoints or [])
             if isinstance(endpoint, dict) and _blind_xss_endpoint(endpoint)
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Blind XSS"
         )
         if not blind_xss_endpoints:
@@ -4657,7 +4715,7 @@ async def run_hunt(
                 headers={**BASE_HEADERS, **session_a_headers},
                 verify=False,
                 follow_redirects=False,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 limits=httpx.Limits(max_connections=2),
             )
             try:
@@ -4682,7 +4740,7 @@ async def run_hunt(
                 for hint in CSRF_SENSITIVE_HINTS
             )
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed("CSRF")
+        allowed_class, class_reason = _activation_allowed("CSRF")
         if not csrf_endpoints:
             log("[Hunt] Class 28 CSRF skipped: no auth-sensitive state-changing endpoints")
         elif not allowed_class:
@@ -4704,7 +4762,7 @@ async def run_hunt(
                 headers={**BASE_HEADERS, **session_a_headers},
                 verify=False,
                 follow_redirects=False,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 limits=httpx.Limits(max_connections=2),
             )
             try:
@@ -4718,7 +4776,7 @@ async def run_hunt(
 
         # ── Class 29: Path Traversal and LFI ─────────────────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Path Traversal and LFI"
         )
         if not allowed_class:
@@ -4742,7 +4800,7 @@ async def run_hunt(
                 headers={**BASE_HEADERS, **session_headers},
                 verify=False,
                 follow_redirects=False,
-                timeout=TIMEOUT,
+                timeout=REQUEST_TIMEOUT.get(),
                 limits=httpx.Limits(max_connections=3),
             )
             try:
@@ -4765,7 +4823,7 @@ async def run_hunt(
             and str(endpoint.get("content_type", "")).lower() == "application/json"
             and isinstance(endpoint.get("body"), dict)
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "NoSQL Injection"
         )
         if not nosql_endpoints:
@@ -4827,7 +4885,7 @@ async def run_hunt(
                 )
             )
         ]
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "OS Command Injection"
         )
         if not command_query_urls and not command_json_endpoints:
@@ -4871,7 +4929,7 @@ async def run_hunt(
 
         # ── Class 32: Host Header Injection ──────────────────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "Host Header Injection"
         )
         if not live_hosts:
@@ -4902,7 +4960,7 @@ async def run_hunt(
 
         # ── Class 33: CRLF Injection ─────────────────────────────────────────
         class_idx += 1
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        allowed_class, class_reason = _activation_allowed(
             "CRLF Injection"
         )
         if not allowed_class:
@@ -4935,8 +4993,8 @@ async def run_hunt(
         ]
         deep_authorized = scope_policy.normalize_mode(
             scope_policy.config.scan_mode
-        ) == "normal"
-        allowed_class, class_reason = scope_policy.vulnerability_allowed(
+        ) in {"normal", "intensive_authorized"}
+        allowed_class, class_reason = _activation_allowed(
             "Default Credentials"
         )
         if not deep_authorized:
@@ -4975,6 +5033,7 @@ async def run_hunt(
             seen.add(key)
             dedup.append(f)
 
+    REQUEST_TIMEOUT.reset(timeout_token)
     log("[Hunt] ━━━ Phase 2 complete: {} raw findings | OOB payloads: {} ━━━".format(
         len(dedup), oob.payload_count))
     return dedup

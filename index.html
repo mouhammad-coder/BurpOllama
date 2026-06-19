@@ -248,6 +248,8 @@
       config: {settings:{}, configured:{}},
       ollamaModels: {installed:[], missing:[], required:[]},
       providerTest: null,
+      targetProfile: {},
+      adaptivePlan: {},
       systemCheck: {},
       storage: {},
       dryRunResult: null,
@@ -407,6 +409,8 @@
         if(m.type === 'scan_stopped') patchScan(m.scan_id, {status:'stopped', phase:'stopped'});
         if(m.type === 'attack_graph' && m.scan_id === state.selectedScanId) state.graph = m.data || {};
         if(m.type === 'coverage' && m.scan_id === state.selectedScanId) state.coverage = m.data || {};
+        if(m.type === 'target_profile' && m.scan_id === state.selectedScanId) state.targetProfile = m.data || {};
+        if(m.type === 'adaptive_plan' && m.scan_id === state.selectedScanId) state.adaptivePlan = m.data || {};
         if(m.type === 'throttle_warning' && m.scan_id === state.selectedScanId){
           state.autopilot.smart_throttle = m.status_snapshot || state.autopilot.smart_throttle || {};
           state.autopilot.smart_throttle.last_block_reason = m.reason || state.autopilot.smart_throttle.last_block_reason;
@@ -464,14 +468,15 @@
     }
     async function refreshSelectedArtifacts(){
       if(!state.selectedScanId) return;
-      const [coverage, coverageV2, graph, bounty, autopilot, findingBuckets, throttleStatus] = await Promise.all([
+      const [coverage, coverageV2, graph, bounty, autopilot, findingBuckets, throttleStatus, scanData] = await Promise.all([
         json(`/scan/${state.selectedScanId}/coverage`, {}),
         json(`/scan/${state.selectedScanId}/coverage/v2`, {}),
         json(`/scan/${state.selectedScanId}/attack-graph`, {}),
         json(`/scan/${state.selectedScanId}/bounty`, {}),
         json(`/scan/${state.selectedScanId}/autopilot`, {}),
         json(`/findings/${state.selectedScanId}/buckets`, {}),
-        json('/throttle/status', {})
+        json('/throttle/status', {}),
+        json(`/scan/${state.selectedScanId}`, {})
       ]);
       state.coverage = coverage || {};
       state.coverageV2 = coverageV2 || {};
@@ -480,6 +485,8 @@
       state.autopilot = autopilot || {};
       state.findingBuckets = findingBuckets || {};
       state.throttleStatus = throttleStatus || {};
+      state.targetProfile = scanData.target_profile || state.targetProfile || {};
+      state.adaptivePlan = scanData.adaptive_plan || state.adaptivePlan || {};
     }
     function selectScan(id, navigate=true){
       state.selectedScanId = id || '';
@@ -490,10 +497,11 @@
       const target = document.getElementById('target-input')?.value.trim();
       const key = document.getElementById('quick-api-key')?.value.trim() || '';
       if(!target){ alert('Enter a target URL or domain first.'); return; }
+      if(!confirm('Confirm that you own this website or have written permission to test it.')) return;
       const r = await fetch(endpoint('/scan'), {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({target, api_key:key})
+        body:JSON.stringify({target, api_key:key, authorization_confirmed:true})
       });
       if(!r.ok){ alert(await r.text()); return; }
       const d = await r.json();
@@ -612,10 +620,11 @@
       const target = document.getElementById('autopilot-target-input')?.value.trim() || document.getElementById('target-input')?.value.trim();
       const key = document.getElementById('autopilot-api-key')?.value.trim() || '';
       if(!target){ alert('Enter an authorized target first.'); return; }
+      if(!confirm('Confirm that you own this website or have written permission to test it.')) return;
       const r = await fetch(endpoint('/autopilot/start'), {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({target, api_key:key})
+        body:JSON.stringify({target, api_key:key, authorization_confirmed:true})
       });
       if(!r.ok){ alert(await r.text()); return; }
       const d = await r.json();
@@ -871,7 +880,7 @@
           <div class="wizard-help">Balanced Scan is recommended for most authorized tests.</div>
           <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <button class="choice-card ${w.scanMode === 'passive_only' ? 'selected' : ''}" onclick="wizardChoice('scanMode','passive_only')"><span class="choice-title">Quick Scan</span><span class="choice-copy">A lighter, faster first look.</span></button>
-            <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">A thorough scan with careful request limits.</span></button>
+            <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">Automatically adjusts depth and modules after checking the website.</span></button>
             <button class="choice-card ${w.scanMode === 'intensive_authorized' ? 'selected' : ''}" onclick="wizardChoice('scanMode','intensive_authorized')"><span class="choice-title">Deep Authorized Scan</span><span class="choice-copy">More thorough testing when your written permission allows it.</span></button>
             <button class="choice-card ${w.scanMode === 'bounty' ? 'selected' : ''}" onclick="wizardChoice('scanMode','bounty')"><span class="choice-title">Bounty Mode</span><span class="choice-copy">Prioritize strong, report-ready bug bounty evidence.</span></button>
           </div>
@@ -994,9 +1003,18 @@
         const validation = await validationResponse.json();
         if(!validation.allowed) throw new Error(validation.reason || 'The target is outside the saved scope.');
 
+        const profileResponse = await fetch(endpoint('/auto/profile-target'), {
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({target:w.target,scan_mode:backendMode,authorization_confirmed:true})
+        });
+        if(!profileResponse.ok) throw new Error(await profileResponse.text());
+        const profileData = await profileResponse.json();
+        state.targetProfile = profileData.target_profile || {};
+        state.adaptivePlan = profileData.adaptive_plan || {};
+
         const scanResponse = await fetch(endpoint('/autopilot/start'), {
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({target:w.target,scan_mode:backendMode})
+          body:JSON.stringify({target:w.target,scan_mode:backendMode,authorization_confirmed:true})
         });
         if(!scanResponse.ok) throw new Error(await scanResponse.text());
         const scan = await scanResponse.json();
@@ -1072,6 +1090,8 @@
       const logs = (state.autopilot.live_logs || scan.logs || []).slice(-12).reverse();
       const done = ['complete','completed'].includes(String(scan.status || '').toLowerCase());
       const progressCards = beginnerProgressCards(scan);
+      const profile = state.targetProfile || {};
+      const plan = state.adaptivePlan || {};
       el.innerHTML = `
         <div class="card pad">
           <div class="card-head"><div><div class="card-title">${esc(scan.target)}</div><div class="card-sub">Scan ${esc(scan.id)}</div></div><span class="status ${esc(scan.status)}">${esc(scan.status)}</span></div>
@@ -1084,6 +1104,8 @@
           </div>
         </div>
         <div style="height:14px"></div>
+        <div class="grid cols-3">${metric('Target profile', profile.profile_type || 'Analyzing', profile.confidence ? `${profile.confidence}% confidence` : 'Automatic classification')}${metric('Adaptive level', plan.level || 'Selecting', plan.reason || 'Based on target behavior')}${metric('Active modules', (plan.enabled_modules || []).length, `Concurrency ${plan.concurrency ?? '-'} · URL budget ${plan.max_urls ?? '-'}`)}</div>
+        <div style="height:14px"></div>
         <div class="grid cols-3">${metric('Current step', progressCards.find(x => x.state === 'active')?.label || (done ? 'Finished' : 'Starting'), 'Scan progress')}${metric('Findings so far', state.findings.filter(f => !f.scan_id || f.scan_id === scan.id).length, 'Updates live')}${metric('Status', scan.status || '-', done ? 'Scan finished' : 'Please keep this page open')}</div>
         <div style="height:14px"></div>
         <div class="card pad"><div class="card-title">Scan progress</div><div class="card-sub">BurpOllama handles these steps automatically.</div><div style="height:12px"></div>
@@ -1094,11 +1116,13 @@
     function beginnerProgressCards(scan){
       const phase = String(scan?.phase || 'queued').toLowerCase();
       const complete = ['complete','completed'].includes(String(scan?.status || '').toLowerCase());
+      const profile = state.targetProfile || {};
+      const plan = state.adaptivePlan || {};
       const phases = [
-        {label:'Checking target', keys:['queued','waf_check']},
-        {label:'Discovering URLs', keys:['recon']},
-        {label:'Finding interesting endpoints', keys:['schema','content']},
-        {label:'Testing vulnerabilities', keys:['hunt','oob']},
+        {label:'Checking target behavior', keys:['queued','profiling','waf_check']},
+        {label:'Discovering endpoints (high confidence)', keys:['recon']},
+        {label:profile.api_heavy ? 'Expanding attack surface (API detected)' : 'Finding interesting endpoints', keys:['schema','content']},
+        {label:(plan.level === 'DEEP' && profile.authentication_detected) ? 'Switching to deep analysis (auth system found)' : `Testing selected modules (${(plan.enabled_modules || []).length || 'adaptive'})`, keys:['hunt','oob']},
         {label:'Running AI triage', keys:['triage','analysis']},
         {label:'Building report', keys:['report','intelligence','complete']}
       ];
@@ -1710,6 +1734,7 @@
           <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Backend</div><div class="mono">http://127.0.0.1:8888</div><div>Dashboard</div><div class="mono">http://127.0.0.1:8888/ui</div><div>Local domain</div><div class="mono">http://burpollama.localhost:8888/ui</div></div></div>
           <div class="card pad"><div class="card-title">Workflow</div><div style="height:12px"></div><div class="list"><div class="row-card">Configure AI and sessions</div><div class="row-card">Start an authorized scan</div><div class="row-card">Review findings and ambiguous queue</div><div class="row-card">Open coverage, attack graph, and reports</div></div></div>
           <div class="card pad" style="grid-column:1/-1"><div class="card-title">API Reference</div><div style="height:12px"></div><pre class="pre">POST /scan
+POST /auto/profile-target
 POST /autopilot/start
 POST /autopilot/resume
 GET /autopilot/dry-run

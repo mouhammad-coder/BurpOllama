@@ -27,6 +27,21 @@ reasoning limits, storage, and callback verification. BurpOllama creates and
 updates `.env` automatically, masks saved secrets, tests providers, and can
 download missing `mistral` or `llama3.1:8b` models from the browser.
 
+## Adaptive Scan Engine
+
+BurpOllama profiles each authorized target before testing and selects a
+LIGHT, BALANCED, or DEEP execution plan based on endpoint count, response
+complexity, APIs, authentication, GraphQL, JavaScript usage, admin panels,
+and parameter density.
+
+- LIGHT limits discovery and runs static, low-cost checks.
+- BALANCED is the default and selectively activates relevant modules.
+- DEEP expands authenticated, IDOR/BOLA, business-logic, and exploit-chain analysis.
+
+The plan controls URL budgets, request batching, concurrency, timeouts, CPU
+backpressure, and AI depth. Use `POST /auto/profile-target` with an authorized
+target to preview the profile and selected plan.
+
 API health: `http://127.0.0.1:8888/health`
 
 Metrics: `http://127.0.0.1:8888/metrics`
@@ -84,6 +99,7 @@ Install Jython in Burp Suite, then add `BurpOllama.py` as a Python extension. Th
 ## Key Endpoints
 
 - `POST /scan` starts a scan
+- `POST /auto/profile-target` previews the adaptive target profile and scan plan
 - `GET /scan/{scan_id}` returns scan state
 - `GET /scan/{scan_id}/report` returns Markdown report
 - `GET /scan/{scan_id}/attack-graph` returns exploit-chain graph output

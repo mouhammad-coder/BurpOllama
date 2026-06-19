@@ -362,7 +362,12 @@ FALLBACK_SUBS = [
 ]
 
 # Asynchronous DNS brute-forcer for fallback wordlist
-async def _dns_brute(domain: str, prefixes: list, log: Callable) -> list:
+async def _dns_brute(
+    domain: str,
+    prefixes: list,
+    log: Callable,
+    concurrency: int = 20,
+) -> list:
     """
     Fix 6 (v3.4): Async concurrent DNS resolution for subdomain wordlist.
     Uses asyncio to resolve all prefixes concurrently (100 at a time)
@@ -370,7 +375,7 @@ async def _dns_brute(domain: str, prefixes: list, log: Callable) -> list:
     """
     import asyncio as _aio
     valid = []
-    sem   = _aio.Semaphore(100)
+    sem   = _aio.Semaphore(max(1, int(concurrency)))
 
     async def resolve(prefix):
         fqdn = "{}.{}".format(prefix, domain)
@@ -397,12 +402,19 @@ async def _dns_brute(domain: str, prefixes: list, log: Callable) -> list:
     return valid
 
 
-async def enumerate_subdomains(domain: str, log: Callable) -> list:
+async def enumerate_subdomains(
+    domain: str,
+    log: Callable,
+    concurrency: int = 20,
+) -> list:
     subs = set()
 
     if tool_available("subfinder"):
         log("[Recon] Running subfinder on {}".format(domain))
-        out = await run_cmd(["subfinder", "-d", domain, "-silent", "-t", "50"], timeout=120)
+        out = await run_cmd([
+            "subfinder", "-d", domain, "-silent",
+            "-t", str(max(1, int(concurrency))),
+        ], timeout=120)
         for line in out.strip().splitlines():
             line = line.strip()
             if line and "." in line:
@@ -412,7 +424,9 @@ async def enumerate_subdomains(domain: str, log: Callable) -> list:
         log("[Recon] subfinder not installed — async DNS brute with {} prefixes".format(
             len(FALLBACK_SUBS)))
         # Fix 6: Use async concurrent DNS resolution instead of blind set-add
-        brute_results = await _dns_brute(domain, FALLBACK_SUBS, log)
+        brute_results = await _dns_brute(
+            domain, FALLBACK_SUBS, log, concurrency=concurrency
+        )
         subs.update(brute_results)
 
     # Always include the domain itself
@@ -423,7 +437,11 @@ async def enumerate_subdomains(domain: str, log: Callable) -> list:
 
 # ── Phase 1b: Live Host Probing ───────────────────────────────────────────────
 
-async def probe_live_hosts(subdomains: list[str], log: Callable) -> list[dict]:
+async def probe_live_hosts(
+    subdomains: list[str],
+    log: Callable,
+    concurrency: int = 10,
+) -> list[dict]:
     """
     Returns list of live hosts:
     {"url": "https://...", "status": 200, "title": "...", "tech": [...], "ip": "..."}
@@ -437,6 +455,7 @@ async def probe_live_hosts(subdomains: list[str], log: Callable) -> list[dict]:
         proc = await asyncio.create_subprocess_exec(
             "httpx", "-silent", "-status-code", "-title",
             "-tech-detect", "-json", "-timeout", "8",
+            "-threads", str(max(1, int(concurrency))),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -461,15 +480,20 @@ async def probe_live_hosts(subdomains: list[str], log: Callable) -> list[dict]:
             proc.kill()
     else:
         log("[Recon] httpx not installed — using fallback HTTP prober")
-        await _fallback_probe(subdomains, live, log)
+        await _fallback_probe(subdomains, live, log, concurrency=concurrency)
 
     log("[Recon] {} live hosts found".format(len(live)))
     return live
 
 
-async def _fallback_probe(subdomains: list[str], live: list, log: Callable):
+async def _fallback_probe(
+    subdomains: list[str],
+    live: list,
+    log: Callable,
+    concurrency: int = 10,
+):
     """Pure-Python fallback when httpx binary isn't available."""
-    sem = asyncio.Semaphore(30)
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
 
     async def probe_one(sub: str):
         async with sem:
@@ -669,6 +693,7 @@ async def discover_content(
     live_hosts: list,
     tech_stack: list,
     log: Callable,
+    concurrency: int = 6,
 ) -> list[str]:
     """Actively probe scoped, technology-aware paths and return existing URLs."""
     hosts = [
@@ -682,7 +707,7 @@ async def discover_content(
 
     _CONTENT_DISCOVERY_STATUS.clear()
     discovered: set[str] = set()
-    sem = asyncio.Semaphore(12)
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
 
     async def probe(client: httpx.AsyncClient, url: str):
         # Validate immediately before every request, then record it through the
@@ -707,7 +732,7 @@ async def discover_content(
         verify=False,
         headers={"User-Agent": "Mozilla/5.0 (BugHunter ContentDiscovery)"},
     ) as client:
-        tasks = []
+        probe_urls = []
         for host in hosts:
             base_url = str(host["url"])
             parsed_base = urlparse(base_url)
@@ -715,11 +740,17 @@ async def discover_content(
             host_tech = list(tech_stack or []) + list(host.get("tech") or [])
             for path in _content_paths_for_tech(host_tech):
                 url = urljoin(origin + "/", path.lstrip("/"))
-                tasks.append(probe(client, url))
+                probe_urls.append(url)
         log("[Recon] Active content discovery probing {} scoped paths".format(
-            len(tasks)
+            len(probe_urls)
         ))
-        await asyncio.gather(*tasks)
+        batch_size = max(4, int(concurrency) * 4)
+        for offset in range(0, len(probe_urls), batch_size):
+            await asyncio.gather(*[
+                probe(client, url)
+                for url in probe_urls[offset:offset + batch_size]
+            ])
+            await asyncio.sleep(0)
 
     results = sorted(discovered)
     protected = sum(
@@ -1093,7 +1124,11 @@ def cluster_urls(
 
 # ── Master recon runner ────────────────────────────────────────────────────────
 
-async def run_full_recon(target: str, log: Callable) -> dict:
+async def run_full_recon(
+    target: str,
+    log: Callable,
+    adaptive_plan: dict | None = None,
+) -> dict:
     """
     Run the full recon pipeline.
     Returns a dict with all discovered assets.
@@ -1110,20 +1145,35 @@ async def run_full_recon(target: str, log: Callable) -> dict:
             "stats": {"subdomains": 0, "live_hosts": 0, "urls_raw": 0,
                       "urls_clustered": 0, "js_findings": 0},
         }
-    log("[Recon] ━━━ Phase 1: RECON starting on {} ━━━".format(target))
+    plan = adaptive_plan or {}
+    scan_level = str(plan.get("level", "BALANCED")).upper()
+    max_urls = max(10, int(plan.get("max_urls", 200) or 200))
+    concurrency = max(1, int(plan.get("concurrency", 4) or 4))
+    log("[Recon] ━━━ Phase 1: {} discovery starting on {} ━━━".format(
+        scan_level, target
+    ))
     domain = target.replace("https://", "").replace("http://", "").split("/")[0]
 
     # 1a. Subdomains
     log("[Recon] 1a — Subdomain enumeration")
-    subdomains = await enumerate_subdomains(domain, log)
+    if scan_level == "LIGHT":
+        subdomains = [domain]
+        log("[Recon] LIGHT plan: broad subdomain enumeration skipped")
+    else:
+        subdomains = await enumerate_subdomains(
+            domain, log, concurrency=concurrency
+        )
 
     # 1b. Live hosts
     log("[Recon] 1b — Probing live hosts")
-    live_hosts = await probe_live_hosts(subdomains, log)
+    live_hosts = await probe_live_hosts(
+        subdomains, log, concurrency=concurrency
+    )
 
     # 1c. URL discovery
     log("[Recon] 1c — URL/endpoint discovery")
     raw_urls = await discover_urls(live_hosts, log)
+    raw_urls = raw_urls[:max_urls * 3]
 
     # ── Replace naive [:500] cap with structural clustering ───────────────────
     raw_urls = scope_policy.filter_urls(raw_urls, action="scan")
@@ -1140,7 +1190,13 @@ async def run_full_recon(target: str, log: Callable) -> dict:
         for tech in (host.get("tech") or [])
         if str(tech).strip()
     })
-    content_discovery = await discover_content(live_hosts, tech_stack, log)
+    content_discovery = (
+        []
+        if scan_level == "LIGHT"
+        else await discover_content(
+            live_hosts, tech_stack, log, concurrency=concurrency
+        )
+    )
     content_urls = list(content_discovery)
     if content_urls:
         urls = cluster_urls(scope_policy.filter_urls(urls + content_urls, action="scan"), max_variants=3)
@@ -1149,7 +1205,7 @@ async def run_full_recon(target: str, log: Callable) -> dict:
 
     # 1d. JS analysis
     log("[Recon] 1d — JS file analysis")
-    js_findings = await analyze_js_files(urls, log)
+    js_findings = await analyze_js_files(urls[:max_urls], log)
 
     # 1e. Runtime JavaScript endpoint extraction
     js_urls = [
@@ -1173,6 +1229,7 @@ async def run_full_recon(target: str, log: Callable) -> dict:
             scope_policy.filter_urls(urls + js_endpoints, action="scan"),
             max_variants=3,
         )
+    urls = urls[:max_urls]
     log("JS endpoint extraction: found {} additional API endpoints".format(
         len(js_endpoints)
     ))
@@ -1181,6 +1238,7 @@ async def run_full_recon(target: str, log: Callable) -> dict:
         "domain":      domain,
         "subdomains":  subdomains,
         "live_hosts":  live_hosts,
+        "tech_stack":  tech_stack,
         "urls":        urls,          # clustered — no arbitrary cap
         "content_discovery": content_discovery,
         "js_endpoints": js_endpoints,
