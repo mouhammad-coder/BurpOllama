@@ -14,9 +14,18 @@ bash setup.sh
 bash start.sh
 ```
 
-Dashboard: `http://127.0.0.1:8888/ui`
+Guided Start Wizard: `http://127.0.0.1:8888/ui/start`
 
-Local domain style: `http://burpollama.localhost:8888/ui`
+Local domain style: `http://burpollama.localhost:8888/ui/start`
+
+The default interface guides users through target, authorization, scope, scan mode,
+AI mode, optional login sessions, final review, live progress, and results. The
+original expert dashboard remains available under **Advanced Console**.
+
+Open **Settings** in the sidebar to configure API keys, local Ollama models,
+reasoning limits, storage, and callback verification. BurpOllama creates and
+updates `.env` automatically, masks saved secrets, tests providers, and can
+download missing `mistral` or `llama3.1:8b` models from the browser.
 
 API health: `http://127.0.0.1:8888/health`
 
@@ -48,7 +57,10 @@ go install github.com/lc/gau/v2/cmd/gau@latest
 
 BurpOllama now routes AI calls through a provider-agnostic layer:
 
-- Local Ollama: `OLLAMA_ENABLED=1`, default model `llama3.1`
+- Fast local Ollama model: `mistral`
+- High-risk reasoning model: `llama3.1:8b`, loaded only when needed
+- Laptop-safe defaults: 8 CPU threads, one loaded model, 4096/6144 context
+- Memory-aware fallback: reasoning is skipped below 3.5 GB free physical RAM
 - Gemini: `GEMINI_API_KEY`
 - OpenAI: `OPENAI_API_KEY`
 - Anthropic: `ANTHROPIC_API_KEY`

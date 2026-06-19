@@ -17,6 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
+from config_manager import load_project_env, public_settings, save_settings
+
+load_project_env()
+
 from gemini_client import ask_gemini_json, set_api_key
 import gemini_client as _gc
 from recon_engine  import (
@@ -188,9 +192,6 @@ class ScanRequest(BaseModel):
     target:  str
     api_key: Optional[str] = ""
     scan_mode: Optional[str] = None
-
-class ConfigRequest(BaseModel):
-    gemini_api_key: str
 
 class SessionConfig(BaseModel):
     session_a_cookie: Optional[str] = ""
@@ -1499,26 +1500,160 @@ async def observability_middleware(request, call_next):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.post("/config")
-async def set_config(cfg: ConfigRequest):
-    set_api_key(cfg.gemini_api_key)
-    event_store.audit("local-user", "config.set_ai_key", "gemini", {"key_set": bool(cfg.gemini_api_key)})
+async def set_config(cfg: dict):
+    """Validate and persist project settings to .env from the web UI."""
+    if "gemini_api_key" in cfg and "GEMINI_API_KEY" not in cfg:
+        cfg["GEMINI_API_KEY"] = cfg.pop("gemini_api_key")
     try:
-        valid = False
-        if ai_privacy_guard.is_cloud_allowed():
-            async with httpx.AsyncClient(timeout=5) as c:
-                r = await c.get(
-                    "https://generativelanguage.googleapis.com/v1beta/models?key={}".format(
-                        cfg.gemini_api_key))
-                valid = r.status_code == 200
-    except Exception:
-        valid = False
-    return {"saved":True,"valid":valid}
+        result = save_settings(cfg)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    set_api_key(os.getenv("GEMINI_API_KEY", ""))
+    ai_router.configure_key("openai", os.getenv("OPENAI_API_KEY", ""))
+    ai_router.configure_key("anthropic", os.getenv("ANTHROPIC_API_KEY", ""))
+    ai_router.reload_from_env()
+    event_store.audit(
+        "local-user",
+        "config.saved",
+        ".env",
+        {"keys_updated": sorted(key for key in cfg if key in result["settings"])},
+    )
+    return {
+        **result,
+        "saved": True,
+        "ai_router": ai_router.status(),
+        "restart_recommended": any(
+            key in cfg
+            for key in ("BURPOLLAMA_DATABASE_URL", "BURPOLLAMA_RETENTION_DAYS")
+        ),
+    }
 
 @app.get("/config")
 async def get_config():
-    key    = _gc.GEMINI_API_KEY
-    masked = (key[:6]+"..."+key[-4:]) if len(key) > 10 else ("set" if key else "not set")
-    return {"key_status":masked,"model":"gemini-2.0-flash-exp","ai_router":ai_router.status()}
+    settings = public_settings()
+    return {
+        **settings,
+        "key_status": "set" if settings.get("configured", {}).get("GEMINI_API_KEY") else "not set",
+        "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        "ai_router": ai_router.status(),
+    }
+
+
+async def _ollama_model_status() -> dict:
+    required = [
+        os.getenv("OLLAMA_FAST_MODEL", "mistral"),
+        os.getenv("OLLAMA_REASONING_MODEL", "llama3.1:8b"),
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get("http://127.0.0.1:11434/api/tags")
+            response.raise_for_status()
+            payload = response.json()
+        installed = [
+            str(model.get("name") or model.get("model") or "")
+            for model in payload.get("models", [])
+        ]
+        installed_bases = {name.split(":")[0] for name in installed}
+        missing = [
+            model for model in required
+            if model not in installed and model.split(":")[0] not in installed_bases
+        ]
+        return {
+            "available": True,
+            "installed": installed,
+            "required": required,
+            "missing": missing,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "installed": [],
+            "required": required,
+            "missing": required,
+            "error": str(exc),
+        }
+
+
+@app.get("/ollama/models")
+async def get_ollama_models():
+    return await _ollama_model_status()
+
+
+@app.post("/ollama/pull")
+async def pull_ollama_model(payload: dict):
+    model = str(payload.get("model", "")).strip()
+    allowed = {
+        os.getenv("OLLAMA_MODEL", "mistral"),
+        os.getenv("OLLAMA_FAST_MODEL", "mistral"),
+        os.getenv("OLLAMA_REASONING_MODEL", "llama3.1:8b"),
+    }
+    if model not in allowed:
+        raise HTTPException(422, "Choose one of the configured Ollama models.")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0)) as client:
+            response = await client.post(
+                "http://127.0.0.1:11434/api/pull",
+                json={"name": model, "stream": False},
+            )
+            response.raise_for_status()
+        return {"pulled": True, "model": model, "models": await _ollama_model_status()}
+    except Exception as exc:
+        raise HTTPException(503, "Ollama could not pull {}: {}".format(model, exc)) from exc
+
+
+@app.post("/ai/providers/test")
+async def test_ai_providers():
+    checks: list[dict] = []
+    ollama = await _ollama_model_status()
+    checks.append({
+        "provider": "Ollama",
+        "ok": ollama.get("available", False),
+        "detail": "Local Ollama is reachable." if ollama.get("available") else "Start Ollama, then try again.",
+    })
+    tests = [
+        (
+            "Gemini",
+            os.getenv("GEMINI_API_KEY", ""),
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            lambda key: {"key": key},
+            {},
+        ),
+        (
+            "OpenAI",
+            os.getenv("OPENAI_API_KEY", ""),
+            "https://api.openai.com/v1/models",
+            lambda key: {},
+            {"Authorization": "Bearer {}"},
+        ),
+        (
+            "Anthropic",
+            os.getenv("ANTHROPIC_API_KEY", ""),
+            "https://api.anthropic.com/v1/models",
+            lambda key: {},
+            {"x-api-key": "{}", "anthropic-version": "2023-06-01"},
+        ),
+    ]
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for name, key, url, params_factory, header_templates in tests:
+            if not key:
+                checks.append({"provider": name, "ok": False, "configured": False, "detail": "No API key saved."})
+                continue
+            headers = {
+                header: template.format(key)
+                for header, template in header_templates.items()
+            }
+            try:
+                response = await client.get(url, params=params_factory(key), headers=headers)
+                ok = response.status_code < 400
+                checks.append({
+                    "provider": name,
+                    "ok": ok,
+                    "configured": True,
+                    "detail": "Connection succeeded." if ok else "Provider returned HTTP {}.".format(response.status_code),
+                })
+            except Exception as exc:
+                checks.append({"provider": name, "ok": False, "configured": True, "detail": str(exc)})
+    return {"providers": checks}
 
 @app.post("/config/sessions")
 async def set_sessions(cfg: SessionConfig):
@@ -2401,6 +2536,17 @@ def _create_autopilot_dry_run() -> dict:
 async def get_system_check():
     return JSONResponse(_system_check_results())
 
+@app.get("/system/check")
+async def get_system_check_compat():
+    """Beginner settings compatibility route."""
+    result = _system_check_results()
+    result["ollama"] = await _ollama_model_status()
+    result["config"] = {
+        "env_exists": public_settings().get("env_exists", False),
+        "configured": public_settings().get("configured", {}),
+    }
+    return JSONResponse(result)
+
 @app.post("/system-check/run")
 async def run_system_check():
     return JSONResponse(_system_check_results())
@@ -2822,10 +2968,13 @@ def _render_ui() -> HTMLResponse:
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    return RedirectResponse("/ui")
+    return RedirectResponse("/ui/start")
 
 @app.get("/ui", include_in_schema=False)
 @app.get("/ui/", include_in_schema=False)
+async def ui_redirect():
+    return RedirectResponse("/ui/start")
+
 @app.get("/ui/{route:path}", include_in_schema=False)
 async def ui_app(route: str = ""):
     return _render_ui()

@@ -2,7 +2,10 @@
 # BurpOllama — Quick Start
 CYAN="\033[1;36m"; GREEN="\033[1;32m"; YELLOW="\033[1;33m"; RED="\033[1;31m"; RESET="\033[0m"
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODEL="${OLLAMA_MODEL:-llama3.1}"
+[[ -f "$INSTALL_DIR/.env" ]] && set -a && source "$INSTALL_DIR/.env" && set +a
+MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-mistral}}"
+export OLLAMA_NUM_THREADS="${OLLAMA_NUM_THREADS:-8}"
+export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-1}"
 
 echo -e "${CYAN}  BurpOllama — Starting...${RESET}\n"
 
@@ -18,9 +21,11 @@ if command -v ollama >/dev/null 2>&1; then
     fi
 
     if ! ollama list 2>/dev/null | grep -q "$MODEL"; then
-        echo -e "${YELLOW}[!]${RESET} Model '$MODEL' not found. Pulling now..."
+        echo -e "${YELLOW}[!]${RESET} Fast model '$MODEL' not found. Pulling now..."
         ollama pull "$MODEL"
     fi
+    echo -e "${GREEN}[+]${RESET} Ollama laptop-safe mode: 1 loaded model, ${OLLAMA_NUM_THREADS} threads"
+    echo -e "${YELLOW}[i]${RESET} Reasoning model loads lazily when a high-risk prompt needs it."
 else
     echo -e "${YELLOW}[!]${RESET} Ollama not found; cloud AI providers or API keys will be used."
 fi

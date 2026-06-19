@@ -116,6 +116,34 @@
     .timeline-dot.failed,.timeline-dot.stopped{background:var(--red)}
     .logbox{height:310px;overflow:auto;background:#0d1218;border:1px solid var(--line);border-radius:7px;padding:12px;font-size:12px}
     .logline{display:grid;grid-template-columns:70px 70px 1fr;gap:8px;border-bottom:1px solid rgba(255,255,255,.04);padding:6px 0}
+    .wizard-shell{max-width:920px;margin:0 auto}
+    .wizard-hero{padding:30px;background:linear-gradient(135deg,#15243a,#13251e);border-color:#35516d}
+    .wizard-hero h1{font-size:28px;line-height:1.25;margin:0 0 10px}
+    .wizard-hero p{font-size:15px;line-height:1.65;color:var(--soft);margin:0}
+    .wizard-steps{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;margin-bottom:16px}
+    .wizard-step{height:7px;border-radius:999px;background:#25313d}
+    .wizard-step.active{background:var(--blue)}
+    .wizard-step.done{background:var(--green)}
+    .wizard-card{padding:24px}
+    .wizard-question{font-size:22px;font-weight:800;margin:0 0 8px}
+    .wizard-help{color:var(--muted);line-height:1.55;margin-bottom:20px}
+    .choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .choice-card{display:block;text-align:left;border:1px solid var(--line);background:var(--panel-2);color:var(--text);border-radius:10px;padding:16px;min-height:118px}
+    .choice-card:hover{border-color:#4b6680;background:var(--panel-3)}
+    .choice-card.selected{border-color:var(--green);box-shadow:0 0 0 1px var(--green) inset;background:#173522}
+    .choice-title{display:block;font-weight:800;margin-bottom:7px}
+    .choice-copy{display:block;color:var(--muted);font-size:12px;line-height:1.45}
+    .wizard-actions{display:flex;justify-content:space-between;gap:12px;margin-top:22px}
+    .wizard-field{display:grid;gap:8px;margin-bottom:14px}
+    .wizard-field label{font-size:13px;font-weight:750;color:var(--soft)}
+    .wizard-field .input,.wizard-field .textarea,.wizard-field .select{width:100%}
+    .authorization-box{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);background:#111a23;border-radius:9px;padding:16px;line-height:1.5}
+    .authorization-box input{margin-top:4px;transform:scale(1.2)}
+    .review-list{display:grid;gap:10px}
+    .review-item{display:grid;grid-template-columns:160px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+    .review-item:last-child{border-bottom:0}
+    .review-item span:first-child{color:var(--muted)}
+    .beginner-tip{border-left-color:var(--green);background:#13231a}
     @media(max-width:1100px){
       body{overflow:auto}
       .app{grid-template-columns:1fr;min-width:0;height:auto}
@@ -127,6 +155,8 @@
       .state-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
       .input{min-width:0;width:100%}
       .topbar{height:auto;min-height:64px;align-items:flex-start;padding:14px;gap:12px;flex-direction:column}
+      .wizard-steps{grid-template-columns:repeat(8,26px)}
+      .choice-grid{grid-template-columns:1fr}
     }
   </style>
 </head>
@@ -141,12 +171,11 @@
         </div>
       </div>
       <nav class="nav" id="nav">
-        <a href="/ui" data-route="dashboard"><span class="ico">H</span>Home</a>
-        <a href="/ui/autopilot" data-route="autopilot"><span class="ico">A</span>Autopilot</a>
-        <a href="/ui/findings" data-route="findings"><span class="ico">F</span>Findings</a>
-        <a href="/ui/reports" data-route="reports"><span class="ico">P</span>Reports</a>
-        <a href="/ui/system-check" data-route="system-check"><span class="ico">K</span>System Check</a>
+        <a href="/ui/start" data-route="start"><span class="ico">▶</span>Start</a>
+        <a href="/ui/active-scan" data-route="active-scan"><span class="ico">●</span>Active Scan</a>
+        <a href="/ui/results" data-route="results"><span class="ico">✓</span>Results</a>
         <a href="/ui/settings" data-route="settings"><span class="ico">S</span>Settings</a>
+        <a href="/ui/advanced-console" data-route="advanced-console"><span class="ico">›_</span>Advanced Console</a>
       </nav>
       <div class="sidebar-foot">
         <div class="mono">127.0.0.1:8888</div>
@@ -164,13 +193,16 @@
           <span class="pill"><span class="dot" id="health-dot"></span><span id="health-label">Health unknown</span></span>
           <span class="pill">Queue <span class="mono" id="queue-size">0</span></span>
           <span class="pill">Findings <span class="mono" id="top-findings">0</span></span>
-          <label class="pill"><input type="checkbox" id="advanced-toggle" onchange="toggleAdvancedMode(this.checked)"> Advanced Mode</label>
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
       </header>
       <div class="workflow" id="workflow-bar"></div>
 
       <section class="content">
+        <section id="route-start" class="route"></section>
+        <section id="route-active-scan" class="route"></section>
+        <section id="route-results" class="route"></section>
+        <section id="route-advanced-console" class="route"></section>
         <section id="route-dashboard" class="route"></section>
         <section id="route-scans" class="route"></section>
         <section id="route-scan-detail" class="route"></section>
@@ -213,6 +245,9 @@
       scope: {},
       aiPrivacy: {},
       aiAudit: [],
+      config: {settings:{}, configured:{}},
+      ollamaModels: {installed:[], missing:[], required:[]},
+      providerTest: null,
       systemCheck: {},
       storage: {},
       dryRunResult: null,
@@ -220,11 +255,30 @@
       findingBuckets: {},
       findingTab: 'valid_bugs',
       advancedMode: localStorage.getItem('burpollama.advancedMode') === 'true',
-      route: 'dashboard',
-      routeParam: ''
+      route: 'start',
+      routeParam: '',
+      wizard: {
+        step: 1,
+        target: '',
+        authorized: false,
+        scopeType: 'exact',
+        customScope: '',
+        scanMode: 'conservative',
+        aiMode: 'auto_local',
+        sessionACookie: '',
+        sessionAToken: '',
+        sessionBCookie: '',
+        sessionBToken: '',
+        busy: false,
+        error: ''
+      }
     };
 
     const titles = {
+      start: ['Guided Start', 'A simple step-by-step setup for your authorized scan.'],
+      'active-scan': ['Active Scan', 'Watch progress and control the current scan.'],
+      results: ['Results', 'Review findings and download your report.'],
+      'advanced-console': ['Advanced Console', 'The original expert dashboard and technical tools.'],
       dashboard: ['Home', 'Start here: check status, start a scan, and open reports.'],
       scans: ['Scans', 'Active and historical scan sessions'],
       'scan-detail': ['Scan Detail', 'Pipeline state, report links, coverage, and graph'],
@@ -242,7 +296,7 @@
       storage: ['Storage', 'Durable local state and event store details'],
       help: ['Help', 'Local workflow and endpoint reference']
     };
-    const knownRoutes = new Set(['dashboard','scans','scan-detail','findings','review','coverage','attack-graph','autopilot','bounty','reports','settings','ai','scope','storage','system-check','help']);
+    const knownRoutes = new Set(['start','active-scan','results','advanced-console','dashboard','scans','scan-detail','findings','review','coverage','attack-graph','autopilot','bounty','reports','settings','ai','scope','storage','system-check','help']);
 
     function esc(v){
       return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -301,11 +355,11 @@
     function workflowStage(){
       const r = state.route;
       const s = selectedScan();
-      if(r === 'reports') return 'Report';
-      if(r === 'findings' || r === 'review') return 'Review';
+      if(r === 'reports' || (r === 'results' && s && ['complete','completed'].includes(String(s.status)))) return 'Report';
+      if(r === 'findings' || r === 'review' || r === 'results') return 'Review';
       if(s && ['running','queued','paused'].includes(String(s.status))) return 'Scan';
       if(s && ['complete','completed'].includes(String(s.status))) return 'Validate';
-      if(r === 'autopilot') return 'Setup';
+      if(r === 'autopilot' || r === 'start') return 'Setup';
       return 'Setup';
     }
     function renderWorkflow(){
@@ -320,13 +374,22 @@
       render();
     }
 
+    let wsFailures = 0;
     function connectWs(){
       const label = document.getElementById('ws-state');
       let ws;
-      try{ ws = new WebSocket(WS_URL); }catch(e){ label.textContent = 'WebSocket unavailable'; return; }
-      ws.onopen = () => { label.textContent = 'WebSocket connected'; };
-      ws.onclose = () => { label.textContent = 'WebSocket reconnecting'; setTimeout(connectWs, 2500); };
-      ws.onerror = () => { label.textContent = 'WebSocket error'; };
+      try{ ws = new WebSocket(WS_URL); }catch(e){ label.textContent = 'Live updates: polling'; return; }
+      ws.onopen = () => { wsFailures = 0; label.textContent = 'Live updates connected'; };
+      ws.onclose = () => {
+        wsFailures += 1;
+        if(wsFailures <= 3){
+          label.textContent = 'Reconnecting live updates';
+          setTimeout(connectWs, 2500 * wsFailures);
+        }else{
+          label.textContent = 'Live updates: polling';
+        }
+      };
+      ws.onerror = () => { label.textContent = 'Live updates: polling'; };
       ws.onmessage = ev => {
         const m = JSON.parse(ev.data || '{}');
         if(m.type === 'init'){
@@ -363,7 +426,7 @@
     }
 
     async function refreshAll(){
-      const [health, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage] = await Promise.all([
+      const [health, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage, config, ollamaModels] = await Promise.all([
         json('/health', {}),
         json('/scans', []),
         json('/findings?limit=500', {findings:[]}),
@@ -374,7 +437,9 @@
         json('/ai/privacy', {}),
         json('/ai/audit', {events:[]}),
         json('/throttle/status', {}),
-        json('/storage', {})
+        json('/storage', {}),
+        json('/config', {settings:{},configured:{}}),
+        json('/ollama/models', {installed:[],missing:[],required:[]})
       ]);
       state.health = health || {};
       state.scans = mergeScans(scans || []);
@@ -387,6 +452,8 @@
       state.aiAudit = aiAudit.events || [];
       state.throttleStatus = throttleStatus || {};
       state.storage = storage || {};
+      state.config = config || state.config;
+      state.ollamaModels = ollamaModels || state.ollamaModels;
       const latestCompleted = state.scans.find(scan => ['complete','completed'].includes(String(scan.status || '').toLowerCase()));
       state.advancedCoverage = latestCompleted
         ? await json(`/scan/${latestCompleted.id}/coverage`, {})
@@ -444,6 +511,62 @@
       });
       alert(r.ok ? 'Saved.' : await r.text());
       refreshAll();
+    }
+    function configValue(key, fallback=''){
+      const value = state.config?.settings?.[key];
+      return value === undefined || value === null ? fallback : value;
+    }
+    async function saveWebSettings(){
+      const ids = [
+        'GEMINI_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','OLLAMA_MODEL',
+        'OLLAMA_FAST_MODEL','OLLAMA_REASONING_MODEL','AI_REASONING_THRESHOLD',
+        'OLLAMA_NUM_THREADS','OLLAMA_MAX_LOADED_MODELS','OLLAMA_FAST_NUM_CTX',
+        'OLLAMA_REASONING_NUM_CTX','OLLAMA_REASONING_TIMEOUT',
+        'OLLAMA_REASONING_TEMPERATURE','OLLAMA_KEEP_ALIVE',
+        'BURPOLLAMA_DATABASE_URL','BURPOLLAMA_RETENTION_DAYS',
+        'BURPOLLAMA_OOB_SIGNING_KEY','BURPOLLAMA_OOB_PROVIDER'
+      ];
+      const body = Object.fromEntries(ids.map(id => [id, document.getElementById(`cfg-${id}`)?.value ?? '']));
+      body.OLLAMA_ENABLED = document.getElementById('cfg-OLLAMA_ENABLED')?.checked ? '1' : '0';
+      body.AI_AUTO_REASONING = document.getElementById('cfg-AI_AUTO_REASONING')?.checked ? '1' : '0';
+      const r = await fetch(endpoint('/config'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const responseText = await r.text();
+      if(!r.ok){ alert(responseText); return; }
+      state.config = JSON.parse(responseText);
+      alert(state.config.restart_recommended ? 'Settings saved. Restart BurpOllama to apply storage changes.' : 'Settings saved.');
+      await refreshAll();
+    }
+    async function testOllama(){
+      state.ollamaModels = await json('/ollama/models', {available:false,installed:[],missing:[]});
+      alert(state.ollamaModels.available ? `Ollama is working. ${state.ollamaModels.installed.length} model(s) installed.` : 'Ollama is not reachable. Start Ollama and try again.');
+      renderSettings();
+    }
+    async function testAIProviders(){
+      const r = await fetch(endpoint('/ai/providers/test'), {method:'POST'});
+      if(!r.ok){ alert(await r.text()); return; }
+      state.providerTest = await r.json();
+      renderSettings();
+    }
+    async function pullOllamaModel(model){
+      if(!model) return;
+      const r = await fetch(endpoint('/ollama/pull'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model})});
+      if(!r.ok){ alert(await r.text()); return; }
+      const d = await r.json();
+      state.ollamaModels = d.models || state.ollamaModels;
+      alert(`${model} downloaded successfully.`);
+      renderSettings();
+    }
+    async function pullMissingModels(){
+      const missing = state.ollamaModels.missing || [];
+      if(!missing.length){ alert('All configured Ollama models are already installed.'); return; }
+      for(const model of missing){
+        const r = await fetch(endpoint('/ollama/pull'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model})});
+        if(!r.ok){ alert(await r.text()); return; }
+        const d = await r.json();
+        state.ollamaModels = d.models || state.ollamaModels;
+      }
+      alert('Missing models downloaded successfully.');
+      renderSettings();
     }
     async function saveSessions(){
       const body = {
@@ -614,6 +737,271 @@
       renderFindings();
     }
 
+    function normalizeWizardTarget(value){
+      const raw = String(value || '').trim();
+      return raw;
+    }
+    function wizardChoice(field, value){
+      state.wizard[field] = value;
+      state.wizard.error = '';
+      renderStart();
+    }
+    function wizardNext(){
+      const w = state.wizard;
+      w.error = '';
+      if(w.step === 1){
+        w.target = normalizeWizardTarget(w.target);
+        if(!/^https?:\/\//i.test(w.target)){
+          w.error = 'Please start the address with http:// or https://';
+          renderStart();
+          return;
+        }
+        try{
+          const parsed = new URL(w.target);
+          if(!['http:','https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('invalid');
+        }catch(e){
+          w.error = 'Enter a valid website, for example https://example.com';
+          renderStart();
+          return;
+        }
+      }
+      if(w.step === 3 && w.scopeType === 'custom' && !w.customScope.trim()){
+        w.error = 'Add at least one authorized domain or URL to the custom scope.';
+        renderStart();
+        return;
+      }
+      w.step = Math.min(8, w.step + 1);
+      renderStart();
+    }
+    function wizardBack(){
+      state.wizard.error = '';
+      state.wizard.step = Math.max(1, state.wizard.step - 1);
+      renderStart();
+    }
+    function resetWizard(){
+      state.wizard = {
+        step:1,target:'',authorized:false,scopeType:'exact',customScope:'',
+        scanMode:'conservative',aiMode:'auto_local',sessionACookie:'',sessionAToken:'',
+        sessionBCookie:'',sessionBToken:'',busy:false,error:''
+      };
+      go('/ui/start');
+    }
+    function wizardScopeSummary(){
+      const w = state.wizard;
+      if(w.scopeType === 'subdomains') return 'Target domain and its subdomains';
+      if(w.scopeType === 'custom') return w.customScope.split(/\r?\n/).map(x => x.trim()).filter(Boolean).join(', ') || 'Custom scope';
+      return 'Only the website entered above';
+    }
+    function wizardModeLabel(){
+      return {
+        passive_only:'Quick Scan',
+        conservative:'Balanced Scan',
+        intensive_authorized:'Deep Authorized Scan',
+        bounty:'Bounty Mode'
+      }[state.wizard.scanMode] || 'Balanced Scan';
+    }
+    function wizardAiLabel(){
+      return {
+        auto_local:'Automatic local AI',
+        local_only:'Local Ollama only',
+        cloud_fallback:'Local AI with cloud fallback'
+      }[state.wizard.aiMode] || 'Automatic local AI';
+    }
+    function wizardHasSessions(){
+      const w = state.wizard;
+      return !!(w.sessionACookie || w.sessionAToken || w.sessionBCookie || w.sessionBToken);
+    }
+    function wizardProgress(){
+      const step = state.wizard.step;
+      return `<div class="wizard-steps" aria-label="Wizard step ${step} of 8">${Array.from({length:8}, (_,i) => `<span class="wizard-step ${i + 1 < step ? 'done' : (i + 1 === step ? 'active' : '')}"></span>`).join('')}</div>`;
+    }
+    function wizardActions(nextLabel='Continue'){
+      const w = state.wizard;
+      return `<div class="wizard-actions">
+        <button class="btn" onclick="wizardBack()" ${w.step === 1 ? 'disabled' : ''}>Back</button>
+        <button class="btn primary" onclick="wizardNext()">${esc(nextLabel)}</button>
+      </div>`;
+    }
+    function renderStart(){
+      const el = document.getElementById('route-start');
+      const w = state.wizard;
+      let body = '';
+      if(w.step === 1){
+        body = `<div class="card wizard-hero">
+          <h1>Welcome to BurpOllama. I’ll guide you step by step. What website do you want to scan?</h1>
+          <p>You will choose the website, confirm permission, set safe boundaries, and review everything before the scan starts. No terminal commands are needed.</p>
+          <div style="height:22px"></div><div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="https://example.com" value="${esc(w.target)}" oninput="state.wizard.target=this.value"></div>
+          <div class="wizard-actions"><span></span><button class="btn primary" onclick="wizardNext()">Continue</button></div>
+        </div>`;
+      }else if(w.step === 2){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">Do you own this website or have written permission to test it?</div>
+          <div class="wizard-help">Only scan websites you own or are explicitly authorized to test.</div>
+          <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+            <button class="choice-card ${w.authorized ? 'selected' : ''}" onclick="state.wizard.authorized=true;wizardNext()"><span class="choice-title">Yes, I am authorized</span><span class="choice-copy">Continue to the scan boundaries.</span></button>
+            <button class="choice-card" onclick="state.wizard.authorized=false;resetWizard()"><span class="choice-title">No, cancel</span><span class="choice-copy">Return to the welcome screen without starting anything.</span></button>
+          </div>
+          <div class="wizard-actions"><button class="btn" onclick="wizardBack()">Back</button><span></span></div>
+        </div>`;
+      }else if(w.step === 3){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">What scan scope do you want?</div>
+          <div class="wizard-help">Choose which authorized websites BurpOllama may visit.</div>
+          <div class="choice-grid">
+            <button class="choice-card ${w.scopeType === 'exact' ? 'selected' : ''}" onclick="wizardChoice('scopeType','exact')"><span class="choice-title">Same domain only — recommended</span><span class="choice-copy">Stay on the website you entered.</span></button>
+            <button class="choice-card ${w.scopeType === 'subdomains' ? 'selected' : ''}" onclick="wizardChoice('scopeType','subdomains')"><span class="choice-title">Include subdomains</span><span class="choice-copy">Also include authorized addresses such as api.example.com.</span></button>
+            <button class="choice-card ${w.scopeType === 'custom' ? 'selected' : ''}" onclick="wizardChoice('scopeType','custom')"><span class="choice-title">Custom allowed domains</span><span class="choice-copy">Enter the exact domains listed in your permission.</span></button>
+          </div>
+          ${w.scopeType === 'custom' ? `<div class="wizard-field" style="margin-top:16px"><label for="wizard-custom-scope">One domain or URL per line</label><textarea class="textarea" id="wizard-custom-scope" placeholder="example.com&#10;api.example.com" oninput="state.wizard.customScope=this.value">${esc(w.customScope)}</textarea></div>` : ''}
+          ${wizardActions('Use this scope')}
+        </div>`;
+      }else if(w.step === 4){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">What type of scan do you want?</div>
+          <div class="wizard-help">Balanced Scan is recommended for most authorized tests.</div>
+          <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+            <button class="choice-card ${w.scanMode === 'passive_only' ? 'selected' : ''}" onclick="wizardChoice('scanMode','passive_only')"><span class="choice-title">Quick Scan</span><span class="choice-copy">A lighter, faster first look.</span></button>
+            <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">Good coverage with careful request limits.</span></button>
+            <button class="choice-card ${w.scanMode === 'intensive_authorized' ? 'selected' : ''}" onclick="wizardChoice('scanMode','intensive_authorized')"><span class="choice-title">Deep Authorized Scan</span><span class="choice-copy">More thorough testing when your written permission allows it.</span></button>
+            <button class="choice-card ${w.scanMode === 'bounty' ? 'selected' : ''}" onclick="wizardChoice('scanMode','bounty')"><span class="choice-title">Bounty Mode</span><span class="choice-copy">Prioritize strong, report-ready bug bounty evidence.</span></button>
+          </div>
+          ${wizardActions('Choose AI mode')}
+        </div>`;
+      }else if(w.step === 5){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">How should AI help with the scan?</div>
+          <div class="wizard-help">Local AI keeps scan data on this computer. Cloud fallback only works when a cloud provider is configured.</div>
+          <div class="choice-grid">
+            <button class="choice-card ${w.aiMode === 'auto_local' ? 'selected' : ''}" onclick="wizardChoice('aiMode','auto_local')"><span class="choice-title">Automatic local AI</span><span class="choice-copy">Recommended. Uses the fast model normally and reasoning only for high-risk analysis.</span></button>
+            <button class="choice-card ${w.aiMode === 'local_only' ? 'selected' : ''}" onclick="wizardChoice('aiMode','local_only')"><span class="choice-title">Local only</span><span class="choice-copy">Never send scan analysis to a cloud AI provider.</span></button>
+            <button class="choice-card ${w.aiMode === 'cloud_fallback' ? 'selected' : ''}" onclick="wizardChoice('aiMode','cloud_fallback')"><span class="choice-title">Allow cloud fallback</span><span class="choice-copy">Prefer local AI, but allow a configured cloud provider when needed.</span></button>
+          </div>
+          ${wizardActions('Continue')}
+        </div>`;
+      }else if(w.step === 6){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">Does the website require a login?</div>
+          <div class="wizard-help">Optional. Add one login session for signed-in pages, or two user sessions to compare what each account can access.</div>
+          <div class="grid cols-2">
+            <div><div class="card-title">Session A</div><div class="wizard-field"><label>Cookie</label><textarea class="textarea" placeholder="session=..." oninput="state.wizard.sessionACookie=this.value">${esc(w.sessionACookie)}</textarea></div><div class="wizard-field"><label>Bearer token</label><input class="input" type="password" value="${esc(w.sessionAToken)}" oninput="state.wizard.sessionAToken=this.value"></div></div>
+            <div><div class="card-title">Session B (optional)</div><div class="wizard-field"><label>Cookie</label><textarea class="textarea" placeholder="session=..." oninput="state.wizard.sessionBCookie=this.value">${esc(w.sessionBCookie)}</textarea></div><div class="wizard-field"><label>Bearer token</label><input class="input" type="password" value="${esc(w.sessionBToken)}" oninput="state.wizard.sessionBToken=this.value"></div></div>
+          </div>
+          <div class="notice beginner-tip">You can leave these fields empty and continue with an unauthenticated scan.</div>
+          ${wizardActions('Review setup')}
+        </div>`;
+      }else if(w.step === 7){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">Review your scan setup</div>
+          <div class="wizard-help">Nothing has started yet. Check these choices before moving to the final start screen.</div>
+          <div class="review-list">
+            <div class="review-item"><span>Target</span><strong>${esc(w.target)}</strong></div>
+            <div class="review-item"><span>Authorization</span><strong>Confirmed</strong></div>
+            <div class="review-item"><span>Scope</span><strong>${esc(wizardScopeSummary())}</strong></div>
+            <div class="review-item"><span>Scan mode</span><strong>${esc(wizardModeLabel())}</strong></div>
+            <div class="review-item"><span>AI mode</span><strong>${esc(wizardAiLabel())}</strong></div>
+            <div class="review-item"><span>Login sessions</span><strong>${wizardHasSessions() ? 'Configured' : 'Not configured'}</strong></div>
+          </div>
+          ${wizardActions('Continue to start')}
+        </div>`;
+      }else{
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">Ready to start</div>
+          <div class="wizard-help">BurpOllama will save this scope, validate the target, and begin the automated pipeline.</div>
+          <div class="notice beginner-tip"><strong>${esc(w.target)}</strong><br>${esc(wizardModeLabel())} · ${esc(wizardAiLabel())}</div>
+          ${w.error ? `<div style="height:14px"></div><div class="notice" style="border-left-color:var(--red)">${esc(w.error)}</div>` : ''}
+          <div class="wizard-actions"><button class="btn" onclick="wizardBack()" ${w.busy ? 'disabled' : ''}>Back</button><button class="btn primary" onclick="launchWizardScan()" ${w.busy ? 'disabled' : ''}>${w.busy ? 'Starting…' : 'Start scan'}</button></div>
+        </div>`;
+      }
+      el.innerHTML = `<div class="wizard-shell">${wizardProgress()}${w.error && w.step < 8 ? `<div class="notice" style="border-left-color:var(--red);margin-bottom:14px">${esc(w.error)}</div>` : ''}${body}</div>`;
+    }
+    async function launchWizardScan(){
+      const w = state.wizard;
+      if(w.busy) return;
+      w.busy = true;
+      w.error = '';
+      renderStart();
+      try{
+        const targetUrl = new URL(normalizeWizardTarget(w.target));
+        let allowedDomains = [targetUrl.hostname];
+        let allowedPatterns = w.scopeType === 'exact' ? [targetUrl.origin, `${targetUrl.origin}/*`] : [];
+        if(w.scopeType === 'custom'){
+          const entries = w.customScope.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+          allowedDomains = [];
+          allowedPatterns = [];
+          for(const entry of entries){
+            try{
+              const parsed = new URL(normalizeWizardTarget(entry));
+              allowedDomains.push(parsed.hostname);
+              if(/^https?:\/\//i.test(entry)) allowedPatterns.push(`${parsed.origin}${parsed.pathname === '/' ? '/*' : parsed.pathname + '*'}`);
+            }catch(e){
+              allowedDomains.push(entry.replace(/^\*\./, ''));
+            }
+          }
+          allowedDomains = [...new Set(allowedDomains.filter(Boolean))];
+        }
+        const backendMode = w.scanMode === 'bounty' ? 'conservative' : w.scanMode;
+        const passive = backendMode === 'passive_only';
+        const deep = w.scanMode === 'intensive_authorized';
+        const scopeBody = {
+          ...state.scope,
+          allowed_domains: allowedDomains,
+          allowed_url_patterns: allowedPatterns,
+          scan_mode: backendMode,
+          passive_only_mode: passive,
+          active_testing_enabled: !passive,
+          authenticated_testing_enabled: deep || wizardHasSessions(),
+          cloud_ai_enabled: w.aiMode === 'cloud_fallback',
+          emergency_stop: false
+        };
+        const scopeResponse = await fetch(endpoint('/scope'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(scopeBody)});
+        if(!scopeResponse.ok) throw new Error(await scopeResponse.text());
+        state.scope = await scopeResponse.json();
+
+        const privacyBody = {
+          ...state.aiPrivacy,
+          local_ollama_preferred: true,
+          cloud_ai_enabled: w.aiMode === 'cloud_fallback'
+        };
+        const privacyResponse = await fetch(endpoint('/ai/privacy'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(privacyBody)});
+        if(!privacyResponse.ok) throw new Error(await privacyResponse.text());
+        state.aiPrivacy = await privacyResponse.json();
+
+        if(wizardHasSessions()){
+          const sessionResponse = await fetch(endpoint('/config/sessions'), {
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+              session_a_cookie:w.sessionACookie,session_a_token:w.sessionAToken,
+              session_b_cookie:w.sessionBCookie,session_b_token:w.sessionBToken
+            })
+          });
+          if(!sessionResponse.ok) throw new Error(await sessionResponse.text());
+        }
+
+        const validationResponse = await fetch(endpoint('/scope/validate-target'), {
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({target:w.target,action:'scan'})
+        });
+        const validation = await validationResponse.json();
+        if(!validation.allowed) throw new Error(validation.reason || 'The target is outside the saved scope.');
+
+        const scanResponse = await fetch(endpoint('/autopilot/start'), {
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({target:w.target,scan_mode:backendMode})
+        });
+        if(!scanResponse.ok) throw new Error(await scanResponse.text());
+        const scan = await scanResponse.json();
+        state.scans.unshift({id:scan.scan_id,target:scan.target,status:'queued',phase:'queued',started:new Date().toISOString()});
+        selectScan(scan.scan_id, false);
+        await refreshSelectedArtifacts();
+        w.busy = false;
+        go('/ui/active-scan');
+      }catch(e){
+        w.busy = false;
+        w.error = String(e && e.message ? e.message : e);
+        renderStart();
+      }
+    }
+
     function render(){
       const route = state.route;
       document.querySelectorAll('.route').forEach(el => el.classList.remove('active'));
@@ -625,6 +1013,10 @@
       document.getElementById('page-subtitle').textContent = subtitle;
       renderTopbar();
       renderWorkflow();
+      renderStart();
+      renderActiveScan();
+      renderResults();
+      renderAdvancedConsole();
       renderDashboard();
       renderScans();
       renderScanDetail();
@@ -658,6 +1050,92 @@
       document.getElementById('top-findings').textContent = state.findings.length || state.health.findings_stored || 0;
       const toggle = document.getElementById('advanced-toggle');
       if(toggle) toggle.checked = state.advancedMode;
+    }
+    function renderActiveScan(){
+      const el = document.getElementById('route-active-scan');
+      const scan = selectedScan();
+      if(!scan){
+        el.innerHTML = `<div class="card pad"><div class="empty">No scan is active yet.</div><div style="height:14px"></div><div style="text-align:center"><button class="btn primary" onclick="go('/ui/start')">Start a guided scan</button></div></div>`;
+        return;
+      }
+      const pct = progressOf(scan);
+      const logs = (state.autopilot.live_logs || scan.logs || []).slice(-12).reverse();
+      const done = ['complete','completed'].includes(String(scan.status || '').toLowerCase());
+      const progressCards = beginnerProgressCards(scan);
+      el.innerHTML = `
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">${esc(scan.target)}</div><div class="card-sub">Scan ${esc(scan.id)}</div></div><span class="status ${esc(scan.status)}">${esc(scan.status)}</span></div>
+          <div class="progress"><div class="bar" style="width:${pct}%"></div></div>
+          <div class="card-sub" style="margin-top:8px">${pct}% complete · ${esc(progressCards.find(x => x.state === 'active')?.label || (done ? 'Finished' : 'Preparing scan'))}</div>
+          <div style="height:16px"></div>
+          <div class="toolbar">
+            ${done ? `<button class="btn primary" onclick="go('/ui/results')">View results</button>` : `<button class="btn" onclick="controlScan('${esc(scan.id)}','pause')">Pause</button><button class="btn" onclick="controlScan('${esc(scan.id)}','resume')">Resume</button><button class="btn danger" onclick="controlScan('${esc(scan.id)}','stop')">Stop</button>`}
+            <button class="btn" onclick="refreshAll()">Refresh</button>
+          </div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-3">${metric('Current step', progressCards.find(x => x.state === 'active')?.label || (done ? 'Finished' : 'Starting'), 'Scan progress')}${metric('Findings so far', state.findings.filter(f => !f.scan_id || f.scan_id === scan.id).length, 'Updates live')}${metric('Status', scan.status || '-', done ? 'Scan finished' : 'Please keep this page open')}</div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Scan progress</div><div class="card-sub">BurpOllama handles these steps automatically.</div><div style="height:12px"></div>
+          <div class="grid cols-3">${progressCards.map(item => `<div class="row-card" style="border-color:${item.state === 'done' ? 'var(--green)' : (item.state === 'active' ? 'var(--blue)' : 'var(--line)')}"><div><strong>${esc(item.label)}</strong><div class="small muted">${item.state === 'done' ? 'Complete' : (item.state === 'active' ? 'In progress' : 'Waiting')}</div></div><span class="dot ${item.state === 'done' ? 'ok' : (item.state === 'active' ? 'warn' : '')}"></span></div>`).join('')}</div>
+          <details style="margin-top:14px"><summary class="btn">Show advanced logs</summary><div style="height:12px"></div><div class="list">${logs.map(x => `<div class="row-card"><div><strong>${esc(x.msg || x.message || x.label || 'Scan update')}</strong><div class="small muted">${esc(x.ts || x.timestamp || '')}</div></div></div>`).join('') || '<div class="empty">No advanced logs yet.</div>'}</div></details>
+        </div>`;
+    }
+    function beginnerProgressCards(scan){
+      const phase = String(scan?.phase || 'queued').toLowerCase();
+      const complete = ['complete','completed'].includes(String(scan?.status || '').toLowerCase());
+      const phases = [
+        {label:'Checking target', keys:['queued','waf_check']},
+        {label:'Discovering URLs', keys:['recon']},
+        {label:'Finding interesting endpoints', keys:['schema','content']},
+        {label:'Testing vulnerabilities', keys:['hunt','oob']},
+        {label:'Running AI triage', keys:['triage','analysis']},
+        {label:'Building report', keys:['report','intelligence','complete']}
+      ];
+      let active = phases.findIndex(item => item.keys.some(key => phase.includes(key)));
+      if(active < 0) active = phase === 'queued' ? 0 : 1;
+      return phases.map((item,index) => ({...item,state:complete || index < active ? 'done' : (index === active ? 'active' : 'waiting')}));
+    }
+    function renderResults(){
+      const el = document.getElementById('route-results');
+      const scan = selectedScan();
+      if(!scan){
+        el.innerHTML = `<div class="empty">No scan results yet. Start with the Guided Start wizard.</div>`;
+        return;
+      }
+      const buckets = state.findingBuckets || {};
+      const valid = buckets.valid_bugs || [];
+      const needsProof = buckets.needs_more_proof || [];
+      const candidates = buckets.candidates || [];
+      const reportable = valid.filter(f => Number(f.quality_score || 0) >= 70);
+      const complete = ['complete','completed'].includes(String(scan.status || '').toLowerCase());
+      el.innerHTML = `
+        <div class="notice ${complete ? 'beginner-tip' : ''}">${complete ? 'Scan complete. Start with Valid Bugs, then review anything that needs more proof.' : 'This scan is still running. Results will update as findings are validated.'}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-3">${metric('Confirmed findings', valid.length, 'Validated by the quality gate')}${metric('Candidate findings', needsProof.length + candidates.length, 'May need manual checking')}${metric('Reportable findings', reportable.length, 'Ready for reports')}</div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-head"><div><div class="card-title">Valid bugs</div><div class="card-sub">Highest-confidence findings for this scan.</div></div><button class="btn" onclick="go('/ui/findings')">Open full findings</button></div><div class="list">${valid.slice(0,10).map(findingSimpleCard).join('') || '<div class="empty">No validated bugs are available yet.</div>'}</div></div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Report</div><div class="card-sub">Reports include only findings that pass the quality gate.</div><div style="height:12px"></div>
+          <div class="toolbar"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openReport('${esc(scan.id)}')">Generate Markdown Report</button><button class="btn" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><button class="btn primary" onclick="resetWizard()">Start New Scan</button></div>
+        </div>`;
+    }
+    function renderAdvancedConsole(){
+      const el = document.getElementById('route-advanced-console');
+      el.innerHTML = `
+        <div class="notice">This is the original expert workspace. Guided Start remains the recommended default for new users.</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-4">
+          ${metric('Total findings', state.stats.total ?? 0, 'Stored findings')}
+          ${metric('Critical', state.stats.CRITICAL ?? 0, 'Critical severity')}
+          ${metric('High', state.stats.HIGH ?? 0, 'High severity')}
+          ${metric('Active scans', state.stats.active_scans ?? 0, 'Queued, running, or paused')}
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Expert tools</div><div class="card-sub">All previous pages and backend endpoints are preserved.</div><div style="height:12px"></div>
+          <div class="toolbar"><button class="btn" onclick="go('/ui/dashboard')">Original Dashboard</button><button class="btn" onclick="go('/ui/autopilot')">Autopilot</button><button class="btn" onclick="go('/ui/scans')">Scans</button><button class="btn" onclick="go('/ui/findings')">Findings</button><button class="btn" onclick="go('/ui/reports')">Reports</button><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/system-check')">System Check</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div>
+          <label class="authorization-box" style="margin-top:12px"><input type="checkbox" ${state.advancedMode ? 'checked' : ''} onchange="toggleAdvancedMode(this.checked)"><span><strong>Show raw technical details</strong><br><span class="muted small">Enables advanced logs, raw finding metadata, and diagnostic exports on expert pages.</span></span></label>
+        </div>`;
     }
     function renderDashboard(){
       const el = document.getElementById('route-dashboard');
@@ -1036,19 +1514,57 @@
         </tbody></table></div></details>`;
     }
     function renderSettings(){
+      const models = state.ollamaModels || {installed:[],missing:[],required:[]};
+      const providerRows = state.providerTest?.providers || [];
       document.getElementById('route-settings').innerHTML = `
-        <div class="notice">Use Settings for configuration. Turn on Advanced Mode to see technical pages and raw details.</div>
+        <div class="notice beginner-tip">Configure BurpOllama here. Settings are saved to the project’s local <span class="mono">.env</span> file automatically; no terminal editing is needed.</div>
         <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">AI provider keys</div><div class="card-sub">Keys are masked after saving.</div><div style="height:12px"></div><div class="grid cols-3">
+          <div class="wizard-field"><label>Gemini API key</label><input class="input" id="cfg-GEMINI_API_KEY" type="password" value="${esc(configValue('GEMINI_API_KEY'))}" placeholder="Optional"></div>
+          <div class="wizard-field"><label>OpenAI API key</label><input class="input" id="cfg-OPENAI_API_KEY" type="password" value="${esc(configValue('OPENAI_API_KEY'))}" placeholder="Optional"></div>
+          <div class="wizard-field"><label>Anthropic API key</label><input class="input" id="cfg-ANTHROPIC_API_KEY" type="password" value="${esc(configValue('ANTHROPIC_API_KEY'))}" placeholder="Optional"></div>
+        </div></div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-head"><div><div class="card-title">Local Ollama</div><div class="card-sub">Laptop-safe defaults use one model at a time.</div></div><span class="pill"><span class="dot ${models.available ? 'ok' : 'warn'}"></span>${models.available ? 'Connected' : 'Not connected'}</span></div>
+          <div class="grid cols-3">
+            <label><input type="checkbox" id="cfg-OLLAMA_ENABLED" ${configValue('OLLAMA_ENABLED','1') === '1' ? 'checked' : ''}> Enable Ollama</label>
+            <div class="wizard-field"><label>Default model</label><input class="input" id="cfg-OLLAMA_MODEL" value="${esc(configValue('OLLAMA_MODEL','mistral'))}"></div>
+            <div class="wizard-field"><label>Fast model</label><input class="input" id="cfg-OLLAMA_FAST_MODEL" value="${esc(configValue('OLLAMA_FAST_MODEL','mistral'))}"></div>
+            <div class="wizard-field"><label>Reasoning model</label><input class="input" id="cfg-OLLAMA_REASONING_MODEL" value="${esc(configValue('OLLAMA_REASONING_MODEL','llama3.1:8b'))}"></div>
+            <div class="wizard-field"><label>CPU threads</label><input class="input" type="number" id="cfg-OLLAMA_NUM_THREADS" value="${esc(configValue('OLLAMA_NUM_THREADS','8'))}"></div>
+            <div class="wizard-field"><label>Maximum loaded models</label><input class="input" type="number" id="cfg-OLLAMA_MAX_LOADED_MODELS" value="${esc(configValue('OLLAMA_MAX_LOADED_MODELS','1'))}"></div>
+            <div class="wizard-field"><label>Fast context</label><input class="input" type="number" id="cfg-OLLAMA_FAST_NUM_CTX" value="${esc(configValue('OLLAMA_FAST_NUM_CTX','4096'))}"></div>
+            <div class="wizard-field"><label>Reasoning context</label><input class="input" type="number" id="cfg-OLLAMA_REASONING_NUM_CTX" value="${esc(configValue('OLLAMA_REASONING_NUM_CTX','6144'))}"></div>
+            <div class="wizard-field"><label>Reasoning timeout (seconds)</label><input class="input" type="number" id="cfg-OLLAMA_REASONING_TIMEOUT" value="${esc(configValue('OLLAMA_REASONING_TIMEOUT','180'))}"></div>
+            <div class="wizard-field"><label>Reasoning temperature</label><input class="input" type="number" step="0.01" id="cfg-OLLAMA_REASONING_TEMPERATURE" value="${esc(configValue('OLLAMA_REASONING_TEMPERATURE','0.03'))}"></div>
+            <div class="wizard-field"><label>Keep model loaded</label><input class="input" id="cfg-OLLAMA_KEEP_ALIVE" value="${esc(configValue('OLLAMA_KEEP_ALIVE','10m'))}"></div>
+          </div>
+          <div class="notice">Installed: ${esc((models.installed || []).join(', ') || 'None detected')}<br>Missing: ${esc((models.missing || []).join(', ') || 'None')}</div>
+          <div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="testOllama()">Test Ollama</button><button class="btn blue" onclick="pullMissingModels()">Pull Missing Models</button>${(models.missing || []).map(model => `<button class="btn" onclick="pullOllamaModel('${esc(model)}')">Download ${esc(model)}</button>`).join('')}</div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Automatic reasoning</div><div style="height:12px"></div><div class="grid cols-3">
+          <label><input type="checkbox" id="cfg-AI_AUTO_REASONING" ${configValue('AI_AUTO_REASONING','1') === '1' ? 'checked' : ''}> Enable automatic reasoning</label>
+          <div class="wizard-field"><label>Reasoning threshold</label><input class="input" type="number" id="cfg-AI_REASONING_THRESHOLD" value="${esc(configValue('AI_REASONING_THRESHOLD','5'))}"></div>
+        </div></div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Storage and verification</div><div style="height:12px"></div><div class="grid cols-2">
+          <div class="wizard-field"><label>Database URL</label><input class="input" type="password" id="cfg-BURPOLLAMA_DATABASE_URL" value="${esc(configValue('BURPOLLAMA_DATABASE_URL'))}" placeholder="Leave empty for local storage"></div>
+          <div class="wizard-field"><label>Retention days</label><input class="input" type="number" id="cfg-BURPOLLAMA_RETENTION_DAYS" value="${esc(configValue('BURPOLLAMA_RETENTION_DAYS','90'))}"></div>
+          <div class="wizard-field"><label>Callback signing key</label><input class="input" type="password" id="cfg-BURPOLLAMA_OOB_SIGNING_KEY" value="${esc(configValue('BURPOLLAMA_OOB_SIGNING_KEY'))}" placeholder="Optional secret"></div>
+          <div class="wizard-field"><label>Callback provider</label><input class="input" id="cfg-BURPOLLAMA_OOB_PROVIDER" value="${esc(configValue('BURPOLLAMA_OOB_PROVIDER','oast.fun'))}"></div>
+        </div></div>
+        <div style="height:14px"></div>
+        <div class="toolbar"><button class="btn primary" onclick="saveWebSettings()">Save Settings</button><button class="btn" onclick="testOllama()">Test Ollama</button><button class="btn" onclick="testAIProviders()">Test AI Providers</button><button class="btn blue" onclick="pullMissingModels()">Pull Missing Models</button></div>
+        ${providerRows.length ? `<div class="card pad"><div class="card-title">Provider test results</div><div style="height:12px"></div><div class="list">${providerRows.map(item => `<div class="row-card"><div><strong>${esc(item.provider)}</strong><div class="small muted">${esc(item.detail)}</div></div><span class="pill"><span class="dot ${item.ok ? 'ok' : 'warn'}"></span>${item.ok ? 'Working' : 'Needs attention'}</span></div>`).join('')}</div></div><div style="height:14px"></div>` : ''}
         <div class="grid cols-2">
-          <div class="card pad"><div class="card-title">AI Key</div><div style="height:12px"></div><input class="input" id="settings-gemini-key" type="password" placeholder="Gemini API key"><button class="btn primary" style="margin-left:8px" onclick="saveGeminiKey()">Save</button><div class="card-sub" style="margin-top:10px">Current: ${esc(state.health.gemini_api || 'unknown')}</div></div>
-          <div class="card pad"><div class="card-title">OOB Status</div><div style="height:12px"></div><div class="kv"><div>Available</div><div>${esc(state.health.oob_available || '-')}</div><div>Domain</div><div class="mono">${esc(state.health.oob_domain || '-')}</div><div>Payloads</div><div>${esc(state.health.oob_payloads || '-')}</div></div></div>
           <div class="card pad" style="grid-column:1/-1"><div class="card-title">Dual Session Authorization</div><div style="height:12px"></div><div class="grid cols-2"><textarea class="textarea" id="session-a-cookie" placeholder="Session A cookie"></textarea><textarea class="textarea" id="session-b-cookie" placeholder="Session B cookie"></textarea><input class="input" id="session-a-token" placeholder="Session A bearer token"><input class="input" id="session-b-token" placeholder="Session B bearer token"></div><div style="height:12px"></div><button class="btn primary" onclick="saveSessions()">Save sessions</button></div>
           <div class="card pad" style="grid-column:1/-1"><div class="card-title">Advanced</div><div class="card-sub">These pages are still available, but hidden from the main sidebar.</div><div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div></div>
         </div>`;
     }
     function renderAI(){
       document.getElementById('route-ai').innerHTML = `
-        <div class="grid cols-3">${metric('Total calls', state.ai.total_calls ?? 0, 'Router calls')}${metric('Estimated cost', `$${state.ai.estimated_cost_usd ?? 0}`, 'USD')}${metric('Providers', (state.ai.providers || []).length, 'Configured checks')}</div>
+        <div class="grid cols-4">${metric('Fast calls', state.ai.fast_calls ?? 0, state.ai.routing?.fast_model || 'mistral')}${metric('Reasoning calls', state.ai.reasoning_calls ?? 0, state.ai.routing?.reasoning_model || 'llama3.1:8b')}${metric('Cloud calls', state.ai.cloud_calls ?? 0, 'Privacy-gated')}${metric('Fallbacks', state.ai.reasoning_fallbacks ?? 0, state.ai.last_routing_reason || 'None')}</div>
         <div style="height:14px"></div>
         <div class="grid cols-2">
           <div class="card pad"><div class="card-title">Providers</div><div style="height:12px"></div>${providerList(state.ai.providers || [])}</div>
@@ -1062,6 +1578,8 @@
             <div class="card-sub" style="margin-top:10px">Cloud AI is effective only when both AI privacy and ScopePolicy allow it.</div>
           </div>
         </div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Last AI Route</div><div style="height:12px"></div><div class="kv"><div>Provider</div><div>${esc(state.ai.last_selected_provider || '-')}</div><div>Model</div><div>${esc(state.ai.last_selected_model || '-')}</div><div>Reason</div><div>${esc(state.ai.last_routing_reason || '-')}</div><div>Threads</div><div>${esc(state.ai.routing?.num_threads ?? 8)}</div><div>Reasoning context</div><div>${esc(state.ai.routing?.reasoning_num_ctx ?? 6144)}</div></div></div>
         <div style="height:14px"></div>
         <div class="card pad ${state.advancedMode ? '' : 'hidden'}"><div class="card-title">AI Audit</div><div style="height:12px"></div>
           <div class="table-wrap"><table><thead><tr><th>Time</th><th>Provider</th><th>Cloud</th><th>Allowed</th><th>Reason</th><th>Chars</th></tr></thead><tbody>
@@ -1220,7 +1738,7 @@ POST /analyze</pre></div>
     }
     function routeFromPath(){
       const parts = location.pathname.replace(/^\/ui\/?/, '').split('/').filter(Boolean);
-      let first = parts[0] || 'dashboard';
+      let first = parts[0] || 'start';
       if(first === 'home') first = 'dashboard';
       if(first === 'scans' && parts[1]){
         state.route = 'scan-detail';

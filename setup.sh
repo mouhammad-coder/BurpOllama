@@ -165,10 +165,26 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo -e "${CYAN}  BurpOllama v3 — Starting${RESET}\n"
 
-# Load env
-[[ -f "$INSTALL_DIR/.env" ]] && source "$INSTALL_DIR/.env"
+# Load env and export Ollama resource limits before starting the daemon.
+[[ -f "$INSTALL_DIR/.env" ]] && set -a && source "$INSTALL_DIR/.env" && set +a
+MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-mistral}}"
+export OLLAMA_NUM_THREADS="${OLLAMA_NUM_THREADS:-8}"
+export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-1}"
 [[ -n "$GEMINI_API_KEY" ]] && echo -e "${GREEN}[+]${RESET} Gemini API key loaded" \
     || echo -e "${YELLOW}[!]${RESET} No GEMINI_API_KEY found — set it in the dashboard"
+
+if command -v ollama >/dev/null 2>&1; then
+    if ! pgrep -x "ollama" >/dev/null; then
+        ollama serve &>/tmp/ollama.log &
+        sleep 3
+    fi
+    if ! ollama list 2>/dev/null | grep -q "$MODEL"; then
+        echo -e "${YELLOW}[!]${RESET} Pulling laptop-safe fast model '$MODEL'..."
+        ollama pull "$MODEL"
+    fi
+    echo -e "${GREEN}[+]${RESET} Ollama: 1 loaded model, ${OLLAMA_NUM_THREADS} threads"
+    echo -e "${YELLOW}[i]${RESET} Reasoning model downloads/loads only when needed"
+fi
 
 # Port check
 if lsof -i:8888 -t &>/dev/null; then
