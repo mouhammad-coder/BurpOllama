@@ -120,7 +120,7 @@
     .wizard-hero{padding:30px;background:linear-gradient(135deg,#15243a,#13251e);border-color:#35516d}
     .wizard-hero h1{font-size:28px;line-height:1.25;margin:0 0 10px}
     .wizard-hero p{font-size:15px;line-height:1.65;color:var(--soft);margin:0}
-    .wizard-steps{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;margin-bottom:16px}
+    .wizard-steps{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:6px;margin-bottom:16px}
     .wizard-step{height:7px;border-radius:999px;background:#25313d}
     .wizard-step.active{background:var(--blue)}
     .wizard-step.done{background:var(--green)}
@@ -155,7 +155,7 @@
       .state-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
       .input{min-width:0;width:100%}
       .topbar{height:auto;min-height:64px;align-items:flex-start;padding:14px;gap:12px;flex-direction:column}
-      .wizard-steps{grid-template-columns:repeat(8,26px)}
+      .wizard-steps{grid-template-columns:repeat(9,26px)}
       .choice-grid{grid-template-columns:1fr}
     }
   </style>
@@ -749,7 +749,7 @@
     function wizardNext(){
       const w = state.wizard;
       w.error = '';
-      if(w.step === 1){
+      if(w.step === 2){
         w.target = normalizeWizardTarget(w.target);
         if(!/^https?:\/\//i.test(w.target)){
           w.error = 'Please start the address with http:// or https://';
@@ -765,12 +765,12 @@
           return;
         }
       }
-      if(w.step === 3 && w.scopeType === 'custom' && !w.customScope.trim()){
+      if(w.step === 4 && w.scopeType === 'custom' && !w.customScope.trim()){
         w.error = 'Add at least one authorized domain or URL to the custom scope.';
         renderStart();
         return;
       }
-      w.step = Math.min(8, w.step + 1);
+      w.step = Math.min(9, w.step + 1);
       renderStart();
     }
     function wizardBack(){
@@ -813,7 +813,7 @@
     }
     function wizardProgress(){
       const step = state.wizard.step;
-      return `<div class="wizard-steps" aria-label="Wizard step ${step} of 8">${Array.from({length:8}, (_,i) => `<span class="wizard-step ${i + 1 < step ? 'done' : (i + 1 === step ? 'active' : '')}"></span>`).join('')}</div>`;
+      return `<div class="wizard-steps" aria-label="Wizard step ${step} of 9">${Array.from({length:9}, (_,i) => `<span class="wizard-step ${i + 1 < step ? 'done' : (i + 1 === step ? 'active' : '')}"></span>`).join('')}</div>`;
     }
     function wizardActions(nextLabel='Continue'){
       const w = state.wizard;
@@ -830,10 +830,16 @@
         body = `<div class="card wizard-hero">
           <h1>Welcome to BurpOllama. I’ll guide you step by step. What website do you want to scan?</h1>
           <p>You will choose the website, confirm permission, set safe boundaries, and review everything before the scan starts. No terminal commands are needed.</p>
-          <div style="height:22px"></div><div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="https://example.com" value="${esc(w.target)}" oninput="state.wizard.target=this.value"></div>
-          <div class="wizard-actions"><span></span><button class="btn primary" onclick="wizardNext()">Continue</button></div>
+          <div style="height:22px"></div><button class="btn primary" onclick="wizardNext()">Get started</button>
         </div>`;
       }else if(w.step === 2){
+        body = `<div class="card wizard-card">
+          <div class="wizard-question">What website do you want to scan?</div>
+          <div class="wizard-help">Enter the full website address, including http:// or https://.</div>
+          <div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="https://example.com" value="${esc(w.target)}" oninput="state.wizard.target=this.value"></div>
+          ${wizardActions('Continue')}
+        </div>`;
+      }else if(w.step === 3){
         body = `<div class="card wizard-card">
           <div class="wizard-question">Do you own this website or have written permission to test it?</div>
           <div class="wizard-help">Only scan websites you own or are explicitly authorized to test.</div>
@@ -843,7 +849,7 @@
           </div>
           <div class="wizard-actions"><button class="btn" onclick="wizardBack()">Back</button><span></span></div>
         </div>`;
-      }else if(w.step === 3){
+      }else if(w.step === 4){
         body = `<div class="card wizard-card">
           <div class="wizard-question">What scan scope do you want?</div>
           <div class="wizard-help">Choose which authorized websites BurpOllama may visit.</div>
@@ -855,7 +861,7 @@
           ${w.scopeType === 'custom' ? `<div class="wizard-field" style="margin-top:16px"><label for="wizard-custom-scope">One domain or URL per line</label><textarea class="textarea" id="wizard-custom-scope" placeholder="example.com&#10;api.example.com" oninput="state.wizard.customScope=this.value">${esc(w.customScope)}</textarea></div>` : ''}
           ${wizardActions('Use this scope')}
         </div>`;
-      }else if(w.step === 4){
+      }else if(w.step === 5){
         body = `<div class="card wizard-card">
           <div class="wizard-question">What type of scan do you want?</div>
           <div class="wizard-help">Balanced Scan is recommended for most authorized tests.</div>
@@ -867,7 +873,7 @@
           </div>
           ${wizardActions('Choose AI mode')}
         </div>`;
-      }else if(w.step === 5){
+      }else if(w.step === 6){
         body = `<div class="card wizard-card">
           <div class="wizard-question">How should AI help with the scan?</div>
           <div class="wizard-help">Local AI keeps scan data on this computer. Cloud fallback only works when a cloud provider is configured.</div>
@@ -878,7 +884,7 @@
           </div>
           ${wizardActions('Continue')}
         </div>`;
-      }else if(w.step === 6){
+      }else if(w.step === 7){
         body = `<div class="card wizard-card">
           <div class="wizard-question">Does the website require a login?</div>
           <div class="wizard-help">Optional. Add one login session for signed-in pages, or two user sessions to compare what each account can access.</div>
@@ -889,7 +895,7 @@
           <div class="notice beginner-tip">You can leave these fields empty and continue with an unauthenticated scan.</div>
           ${wizardActions('Review setup')}
         </div>`;
-      }else if(w.step === 7){
+      }else if(w.step === 8){
         body = `<div class="card wizard-card">
           <div class="wizard-question">Review your scan setup</div>
           <div class="wizard-help">Nothing has started yet. Check these choices before moving to the final start screen.</div>
@@ -906,13 +912,13 @@
       }else{
         body = `<div class="card wizard-card">
           <div class="wizard-question">Ready to start</div>
-          <div class="wizard-help">BurpOllama will save this scope, validate the target, and begin the automated pipeline.</div>
+          <div class="wizard-help">BurpOllama will save your choices, validate the website, and begin the automated scan.</div>
           <div class="notice beginner-tip"><strong>${esc(w.target)}</strong><br>${esc(wizardModeLabel())} · ${esc(wizardAiLabel())}</div>
           ${w.error ? `<div style="height:14px"></div><div class="notice" style="border-left-color:var(--red)">${esc(w.error)}</div>` : ''}
           <div class="wizard-actions"><button class="btn" onclick="wizardBack()" ${w.busy ? 'disabled' : ''}>Back</button><button class="btn primary" onclick="launchWizardScan()" ${w.busy ? 'disabled' : ''}>${w.busy ? 'Starting…' : 'Start scan'}</button></div>
         </div>`;
       }
-      el.innerHTML = `<div class="wizard-shell">${wizardProgress()}${w.error && w.step < 8 ? `<div class="notice" style="border-left-color:var(--red);margin-bottom:14px">${esc(w.error)}</div>` : ''}${body}</div>`;
+      el.innerHTML = `<div class="wizard-shell">${wizardProgress()}${w.error && w.step < 9 ? `<div class="notice" style="border-left-color:var(--red);margin-bottom:14px">${esc(w.error)}</div>` : ''}${body}</div>`;
     }
     async function launchWizardScan(){
       const w = state.wizard;
