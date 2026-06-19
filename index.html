@@ -834,6 +834,7 @@
         </div>`;
       }else if(w.step === 2){
         body = `<div class="card wizard-card">
+          <div class="tag" style="margin-bottom:12px">Setup step 1 of 4</div>
           <div class="wizard-question">What website do you want to scan?</div>
           <div class="wizard-help">Enter the full website address, including http:// or https://.</div>
           <div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="https://example.com" value="${esc(w.target)}" oninput="state.wizard.target=this.value"></div>
@@ -841,6 +842,7 @@
         </div>`;
       }else if(w.step === 3){
         body = `<div class="card wizard-card">
+          <div class="tag" style="margin-bottom:12px">Setup step 2 of 4</div>
           <div class="wizard-question">Do you own this website or have written permission to test it?</div>
           <div class="wizard-help">Only scan websites you own or are explicitly authorized to test.</div>
           <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
@@ -851,6 +853,7 @@
         </div>`;
       }else if(w.step === 4){
         body = `<div class="card wizard-card">
+          <div class="tag" style="margin-bottom:12px">Setup step 3 of 4</div>
           <div class="wizard-question">What scan scope do you want?</div>
           <div class="wizard-help">Choose which authorized websites BurpOllama may visit.</div>
           <div class="choice-grid">
@@ -863,11 +866,12 @@
         </div>`;
       }else if(w.step === 5){
         body = `<div class="card wizard-card">
+          <div class="tag" style="margin-bottom:12px">Setup step 4 of 4</div>
           <div class="wizard-question">What type of scan do you want?</div>
           <div class="wizard-help">Balanced Scan is recommended for most authorized tests.</div>
           <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <button class="choice-card ${w.scanMode === 'passive_only' ? 'selected' : ''}" onclick="wizardChoice('scanMode','passive_only')"><span class="choice-title">Quick Scan</span><span class="choice-copy">A lighter, faster first look.</span></button>
-            <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">Good coverage with careful request limits.</span></button>
+            <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">A thorough scan with careful request limits.</span></button>
             <button class="choice-card ${w.scanMode === 'intensive_authorized' ? 'selected' : ''}" onclick="wizardChoice('scanMode','intensive_authorized')"><span class="choice-title">Deep Authorized Scan</span><span class="choice-copy">More thorough testing when your written permission allows it.</span></button>
             <button class="choice-card ${w.scanMode === 'bounty' ? 'selected' : ''}" onclick="wizardChoice('scanMode','bounty')"><span class="choice-title">Bounty Mode</span><span class="choice-copy">Prioritize strong, report-ready bug bounty evidence.</span></button>
           </div>
@@ -1095,7 +1099,7 @@
         {label:'Discovering URLs', keys:['recon']},
         {label:'Finding interesting endpoints', keys:['schema','content']},
         {label:'Testing vulnerabilities', keys:['hunt','oob']},
-        {label:'Running AI triage', keys:['triage','analysis']},
+        {label:'Reviewing findings with AI', keys:['triage','analysis']},
         {label:'Building report', keys:['report','intelligence','complete']}
       ];
       let active = phases.findIndex(item => item.keys.some(key => phase.includes(key)));
@@ -1118,11 +1122,11 @@
       el.innerHTML = `
         <div class="notice ${complete ? 'beginner-tip' : ''}">${complete ? 'Scan complete. Start with Valid Bugs, then review anything that needs more proof.' : 'This scan is still running. Results will update as findings are validated.'}</div>
         <div style="height:14px"></div>
-        <div class="grid cols-3">${metric('Confirmed findings', valid.length, 'Validated by the quality gate')}${metric('Candidate findings', needsProof.length + candidates.length, 'May need manual checking')}${metric('Reportable findings', reportable.length, 'Ready for reports')}</div>
+        <div class="grid cols-3">${metric('Confirmed findings', valid.length, 'Passed automated validation')}${metric('Candidate findings', needsProof.length + candidates.length, 'May need manual checking')}${metric('Reportable findings', reportable.length, 'Ready for reports')}</div>
         <div style="height:14px"></div>
         <div class="card pad"><div class="card-head"><div><div class="card-title">Valid bugs</div><div class="card-sub">Highest-confidence findings for this scan.</div></div><button class="btn" onclick="go('/ui/findings')">Open full findings</button></div><div class="list">${valid.slice(0,10).map(findingSimpleCard).join('') || '<div class="empty">No validated bugs are available yet.</div>'}</div></div>
         <div style="height:14px"></div>
-        <div class="card pad"><div class="card-title">Report</div><div class="card-sub">Reports include only findings that pass the quality gate.</div><div style="height:12px"></div>
+        <div class="card pad"><div class="card-title">Report</div><div class="card-sub">Reports include only findings with enough evidence.</div><div style="height:12px"></div>
           <div class="toolbar"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openReport('${esc(scan.id)}')">Generate Markdown Report</button><button class="btn" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><button class="btn primary" onclick="resetWizard()">Start New Scan</button></div>
         </div>`;
     }
