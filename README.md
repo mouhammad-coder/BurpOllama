@@ -7,7 +7,7 @@ Use this only against targets you own or have explicit written authorization to 
 ## Kali Quick Start
 
 ```bash
-git clone https://github.com/YOUR-ORG/BurpOllama.git
+git clone https://github.com/mouhammad-coder/BurpOllama.git
 cd BurpOllama
 cp .env.example .env
 bash setup.sh
@@ -90,7 +90,6 @@ Install Jython in Burp Suite, then add `BurpOllama.py` as a Python extension. Th
 
 ## Publishing Checklist
 
-- Replace `YOUR-ORG` in this README after creating the GitHub repository.
 - Review `setup.sh` before running with sudo on a new Kali host.
 - Confirm the project license before public release.
 - Keep bug bounty program scope and rate limits in configuration or engagement notes.
