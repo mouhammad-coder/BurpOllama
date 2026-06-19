@@ -1,0 +1,28 @@
+services:
+  burpollama:
+    build: .
+    ports:
+      - "8888:8888"
+    env_file:
+      - .env
+    environment:
+      BURPOLLAMA_DATABASE_URL: postgresql://burpollama:burpollama@postgres:5432/burpollama
+    depends_on:
+      - postgres
+    volumes:
+      - burpollama_state:/root/.burpollama
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: burpollama
+      POSTGRES_USER: burpollama
+      POSTGRES_PASSWORD: burpollama
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  burpollama_state:
+  postgres_data:

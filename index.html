@@ -1,0 +1,1246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BurpOllama</title>
+  <style>
+    :root{
+      --bg:#0f1419;
+      --panel:#151b22;
+      --panel-2:#1b232c;
+      --panel-3:#202a34;
+      --line:#2b3744;
+      --text:#e8edf2;
+      --muted:#94a3b3;
+      --soft:#c6d1dc;
+      --green:#4ade80;
+      --blue:#60a5fa;
+      --amber:#f5c451;
+      --red:#fb7185;
+      --cyan:#22d3ee;
+      --violet:#a78bfa;
+      --shadow:0 18px 45px rgba(0,0,0,.28);
+      --radius:8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+    button,input,select,textarea{font:inherit}
+    button{cursor:pointer}
+    a{color:inherit;text-decoration:none}
+    .app{display:grid;grid-template-columns:260px 1fr;height:100vh;min-width:960px}
+    .sidebar{background:#111820;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+    .brand{height:64px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--line)}
+    .mark{width:32px;height:32px;border-radius:7px;background:linear-gradient(135deg,var(--green),var(--blue));display:grid;place-items:center;color:#071016;font-weight:900}
+    .brand-title{font-weight:800;letter-spacing:.2px}
+    .brand-sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .nav{padding:14px 10px;display:flex;flex-direction:column;gap:4px;overflow:auto}
+    .nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:7px;color:var(--soft);font-size:14px}
+    .nav a:hover{background:var(--panel-2);color:var(--text)}
+    .nav a.active{background:#213044;color:#fff;border:1px solid #31465f}
+    .nav .ico{width:20px;text-align:center;color:var(--muted)}
+    .sidebar-foot{margin-top:auto;padding:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+    .main{min-width:0;display:flex;flex-direction:column;height:100vh}
+    .topbar{height:64px;border-bottom:1px solid var(--line);background:rgba(18,24,31,.96);display:flex;align-items:center;justify-content:space-between;padding:0 22px}
+    .page-title{font-size:18px;font-weight:750}
+    .top-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+    .pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 10px;font-size:12px;color:var(--soft);white-space:nowrap}
+    .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+    .dot.ok{background:var(--green)} .dot.warn{background:var(--amber)} .dot.bad{background:var(--red)}
+    .content{flex:1;overflow:auto;padding:22px;background:linear-gradient(180deg,#10161d,#0f1419 280px)}
+    .grid{display:grid;gap:14px}
+    .grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+    .card.pad{padding:16px}
+    .card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .card-title{font-size:14px;font-weight:750;color:#f4f7fa}
+    .card-sub{font-size:12px;color:var(--muted)}
+    .metric{font-size:30px;font-weight:800;line-height:1.1}
+    .metric-label{font-size:12px;color:var(--muted);margin-top:5px}
+    .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+    .input,.select,.textarea{background:#10161d;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:10px 11px;outline:none}
+    .input:focus,.select:focus,.textarea:focus{border-color:var(--blue)}
+    .input{min-width:260px}
+    .textarea{width:100%;min-height:110px;resize:vertical}
+    .btn{border:1px solid var(--line);background:var(--panel-2);color:var(--text);border-radius:7px;padding:10px 12px;font-weight:700;font-size:13px}
+    .btn:hover{background:var(--panel-3)}
+    .btn.primary{background:#1d4f39;border-color:#2f8a5c;color:#effff6}
+    .btn.blue{background:#1d3f63;border-color:#315f91;color:#f1f8ff}
+    .btn.danger{background:#57202a;border-color:#8b3442;color:#fff1f3}
+    .progress{height:8px;background:#0d1218;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+    .bar{height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--green))}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;text-align:left;vertical-align:top}
+    th{color:var(--muted);font-size:12px;font-weight:700;background:#121922;position:sticky;top:0;z-index:1}
+    tr:hover td{background:rgba(255,255,255,.02)}
+    .table-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:auto;background:var(--panel);max-height:650px}
+    .sev{font-weight:800}
+    .sev.CRITICAL{color:var(--red)} .sev.HIGH{color:#fb923c} .sev.MEDIUM{color:var(--amber)}
+    .sev.LOW{color:var(--blue)} .sev.INFO{color:var(--muted)}
+    .status{font-weight:800;text-transform:uppercase;font-size:11px}
+    .status.running{color:var(--blue)} .status.complete{color:var(--green)} .status.error{color:var(--red)} .status.queued{color:var(--amber)}
+    .list{display:flex;flex-direction:column;gap:9px}
+    .row-card{padding:12px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .row-card:hover{border-color:#3e5268}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    .split{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr);gap:14px}
+    .pre{white-space:pre-wrap;word-break:break-word;background:#0d1218;border:1px solid var(--line);border-radius:7px;padding:12px;max-height:520px;overflow:auto;font-size:12px}
+    .empty{padding:28px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.015)}
+    .route{display:none}
+    .route.active{display:block}
+    .tag{display:inline-flex;border:1px solid var(--line);background:#111923;border-radius:999px;padding:4px 8px;font-size:11px;color:var(--soft)}
+    .kv{display:grid;grid-template-columns:170px minmax(0,1fr);gap:8px;font-size:13px}
+    .kv div:nth-child(odd){color:var(--muted)}
+    .notice{border-left:3px solid var(--blue);background:#121b25;padding:12px;border-radius:6px;color:var(--soft)}
+    .workflow{display:flex;gap:8px;align-items:center;padding:10px 22px;border-bottom:1px solid var(--line);background:#101720}
+    .workflow-step{flex:1;min-width:0;border:1px solid var(--line);background:#121a23;border-radius:999px;padding:7px 10px;text-align:center;font-size:12px;color:var(--muted);font-weight:800}
+    .workflow-step.active{background:#17314a;border-color:var(--blue);color:#fff}
+    .workflow-step.done{background:#173522;border-color:#2f8a5c;color:#dfffea}
+    .simple-section{display:grid;gap:14px}
+    .step-card{border-left:3px solid var(--blue)}
+    .hidden{display:none!important}
+    .state-strip{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:8px}
+    .state-chip{border:1px solid var(--line);background:#10161d;border-radius:7px;padding:9px 8px;text-align:center;font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase}
+    .state-chip.active{border-color:var(--blue);background:#17314a;color:#fff}
+    .state-chip.done{border-color:#2f8a5c;background:#173522;color:#dfffea}
+    .timeline{position:relative;display:flex;flex-direction:column;gap:10px}
+    .timeline-item{display:grid;grid-template-columns:110px 1fr;gap:12px;align-items:center}
+    .timeline-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:8px}
+    .timeline-dot.running,.timeline-dot.validating,.timeline-dot.reporting{background:var(--blue)}
+    .timeline-dot.completed{background:var(--green)}
+    .timeline-dot.failed,.timeline-dot.stopped{background:var(--red)}
+    .logbox{height:310px;overflow:auto;background:#0d1218;border:1px solid var(--line);border-radius:7px;padding:12px;font-size:12px}
+    .logline{display:grid;grid-template-columns:70px 70px 1fr;gap:8px;border-bottom:1px solid rgba(255,255,255,.04);padding:6px 0}
+    @media(max-width:1100px){
+      body{overflow:auto}
+      .app{grid-template-columns:1fr;min-width:0;height:auto}
+      .sidebar{position:relative}
+      .nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+      .main{height:auto;min-height:100vh}
+      .grid.cols-4,.grid.cols-3,.grid.cols-2,.split{grid-template-columns:1fr}
+      .workflow{padding:10px;overflow:auto}.workflow-step{min-width:110px}
+      .state-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .input{min-width:0;width:100%}
+      .topbar{height:auto;min-height:64px;align-items:flex-start;padding:14px;gap:12px;flex-direction:column}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">B</div>
+        <div>
+          <div class="brand-title">BurpOllama</div>
+          <div class="brand-sub">Local security platform</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="/ui" data-route="dashboard"><span class="ico">H</span>Home</a>
+        <a href="/ui/autopilot" data-route="autopilot"><span class="ico">A</span>Autopilot</a>
+        <a href="/ui/findings" data-route="findings"><span class="ico">F</span>Findings</a>
+        <a href="/ui/reports" data-route="reports"><span class="ico">P</span>Reports</a>
+        <a href="/ui/system-check" data-route="system-check"><span class="ico">K</span>System Check</a>
+        <a href="/ui/settings" data-route="settings"><span class="ico">S</span>Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="mono">127.0.0.1:8888</div>
+        <div id="ws-state">WebSocket connecting</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="page-title" id="page-title">Dashboard</div>
+          <div class="card-sub" id="page-subtitle">Local scanner control center</div>
+        </div>
+        <div class="top-meta">
+          <span class="pill"><span class="dot" id="health-dot"></span><span id="health-label">Health unknown</span></span>
+          <span class="pill">Queue <span class="mono" id="queue-size">0</span></span>
+          <span class="pill">Findings <span class="mono" id="top-findings">0</span></span>
+          <label class="pill"><input type="checkbox" id="advanced-toggle" onchange="toggleAdvancedMode(this.checked)"> Advanced Mode</label>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div>
+      </header>
+      <div class="workflow" id="workflow-bar"></div>
+
+      <section class="content">
+        <section id="route-dashboard" class="route"></section>
+        <section id="route-scans" class="route"></section>
+        <section id="route-scan-detail" class="route"></section>
+        <section id="route-findings" class="route"></section>
+        <section id="route-review" class="route"></section>
+        <section id="route-coverage" class="route"></section>
+        <section id="route-attack-graph" class="route"></section>
+        <section id="route-autopilot" class="route"></section>
+        <section id="route-bounty" class="route"></section>
+        <section id="route-reports" class="route"></section>
+        <section id="route-settings" class="route"></section>
+        <section id="route-ai" class="route"></section>
+        <section id="route-scope" class="route"></section>
+        <section id="route-storage" class="route"></section>
+        <section id="route-system-check" class="route"></section>
+        <section id="route-help" class="route"></section>
+        <section id="route-placeholder" class="route"></section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const API = location.origin;
+    const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+    const state = {
+      health: {},
+      scans: [],
+      findings: [],
+      review: {pending: [], all: [], count: 0},
+      ai: {},
+      stats: {},
+      selectedScanId: localStorage.getItem('burpollama.selectedScanId') || '',
+      coverage: {},
+      coverageV2: {},
+      advancedCoverage: {},
+      graph: {},
+      autopilot: {},
+      bounty: {},
+      scope: {},
+      aiPrivacy: {},
+      aiAudit: [],
+      systemCheck: {},
+      storage: {},
+      dryRunResult: null,
+      throttleStatus: {},
+      findingBuckets: {},
+      findingTab: 'valid_bugs',
+      advancedMode: localStorage.getItem('burpollama.advancedMode') === 'true',
+      route: 'dashboard',
+      routeParam: ''
+    };
+
+    const titles = {
+      dashboard: ['Home', 'Start here: check status, start a scan, and open reports.'],
+      scans: ['Scans', 'Active and historical scan sessions'],
+      'scan-detail': ['Scan Detail', 'Pipeline state, report links, coverage, and graph'],
+      findings: ['Findings', 'Review what was found and what is ready to submit.'],
+      review: ['Review Queue', 'Ambiguous AI triage requiring analyst action'],
+      coverage: ['Coverage', 'Tested and untested attack surface'],
+      'attack-graph': ['Attack Graph', 'Exploit chains and path prioritization'],
+      autopilot: ['Autopilot', 'Start and monitor an automated authorized scan.'],
+      bounty: ['Bounty Mode', 'High-impact findings, proof gaps, and bounty reports'],
+      reports: ['Reports', 'Export clean bounty reports.'],
+      settings: ['Settings', 'Configure sessions and open advanced tools.'],
+      ai: ['AI Providers', 'Provider availability, failures, and estimated cost'],
+      scope: ['Scope', 'Enforced authorization and safety policy'],
+      'system-check': ['System Check', 'Verify that the local platform is working.'],
+      storage: ['Storage', 'Durable local state and event store details'],
+      help: ['Help', 'Local workflow and endpoint reference']
+    };
+    const knownRoutes = new Set(['dashboard','scans','scan-detail','findings','review','coverage','attack-graph','autopilot','bounty','reports','settings','ai','scope','storage','system-check','help']);
+
+    function esc(v){
+      return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function sevClass(s){ return esc(String(s || 'INFO').toUpperCase()); }
+    function endpoint(path){ return API + path; }
+    async function json(path, fallback){
+      try{
+        const r = await fetch(endpoint(path));
+        if(!r.ok) return fallback;
+        return await r.json();
+      }catch(e){ return fallback; }
+    }
+    async function text(path){
+      const r = await fetch(endpoint(path));
+      if(!r.ok) throw new Error(await r.text());
+      return await r.text();
+    }
+    function selectedScan(){
+      return state.scans.find(s => s.id === state.selectedScanId) || state.scans[0] || null;
+    }
+    function progressOf(scan){
+      const p = scan && scan.progress ? scan.progress : {};
+      const total = Number(p.total || 0);
+      const current = Number(p.current || 0);
+      return total > 0 ? Math.min(100, Math.round(current / total * 100)) : (scan && scan.status === 'complete' ? 100 : 0);
+    }
+    function countsBySeverity(){
+      const out = {CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,INFO:0};
+      state.findings.forEach(f => { const s = String(f.severity || 'INFO').toUpperCase(); out[s] = (out[s] || 0) + 1; });
+      return out;
+    }
+    function readyFindings(){
+      const bountyReady = state.bounty.ready_findings || state.autopilot.ready_to_submit || [];
+      if(bountyReady.length) return bountyReady.filter(f => Number(f.quality_score || 0) >= 85 && String(f.grade || f.quality_grade || '').toUpperCase() === 'A');
+      return state.findings.filter(f => Number(f.quality_score || 0) >= 85 && String(f.grade || f.quality_grade || '').toUpperCase() === 'A');
+    }
+    function findingBucket(f){
+      const qualityScore = Number(f.quality_score || 0);
+      const qualityGrade = String(f.grade || f.quality_grade || '').toUpperCase();
+      if(qualityScore >= 85 && qualityGrade === 'A') return 'ready';
+      if(qualityScore >= 70) return 'valid';
+      const label = String(f.quality_label || '').toUpperCase();
+      if(label === 'NEEDS PROOF') return 'needs-proof';
+      if(label === 'INFO') return 'info';
+      const status = String(f.exploitability_status || f.verdict || '').toLowerCase();
+      if(status.includes('false') || status.includes('ignored')) return 'info';
+      if(readyFindings().some(r => r.id === f.id)) return 'ready';
+      if((f.missing_proof || []).length || f.evidence_strength !== 'strong' || status.includes('manual')) return 'needs-proof';
+      return 'candidate';
+    }
+    function bucketBadge(bucket){
+      const labels = {'ready':'READY','valid':'VALID','needs-proof':'NEEDS PROOF','candidate':'CANDIDATE','info':'INFO'};
+      return `<span class="tag">${labels[bucket] || 'CANDIDATE'}</span>`;
+    }
+    function workflowStage(){
+      const r = state.route;
+      const s = selectedScan();
+      if(r === 'reports') return 'Report';
+      if(r === 'findings' || r === 'review') return 'Review';
+      if(s && ['running','queued','paused'].includes(String(s.status))) return 'Scan';
+      if(s && ['complete','completed'].includes(String(s.status))) return 'Validate';
+      if(r === 'autopilot') return 'Setup';
+      return 'Setup';
+    }
+    function renderWorkflow(){
+      const steps = ['Setup','Scan','Validate','Review','Report'];
+      const active = workflowStage();
+      const activeIdx = steps.indexOf(active);
+      document.getElementById('workflow-bar').innerHTML = steps.map((s,i) => `<div class="workflow-step ${s===active?'active':(i<activeIdx?'done':'')}">${s}</div>`).join('');
+    }
+    function toggleAdvancedMode(on){
+      state.advancedMode = !!on;
+      localStorage.setItem('burpollama.advancedMode', state.advancedMode ? 'true' : 'false');
+      render();
+    }
+
+    function connectWs(){
+      const label = document.getElementById('ws-state');
+      let ws;
+      try{ ws = new WebSocket(WS_URL); }catch(e){ label.textContent = 'WebSocket unavailable'; return; }
+      ws.onopen = () => { label.textContent = 'WebSocket connected'; };
+      ws.onclose = () => { label.textContent = 'WebSocket reconnecting'; setTimeout(connectWs, 2500); };
+      ws.onerror = () => { label.textContent = 'WebSocket error'; };
+      ws.onmessage = ev => {
+        const m = JSON.parse(ev.data || '{}');
+        if(m.type === 'init'){
+          state.findings = m.findings || state.findings;
+          if(m.scans) state.scans = mergeScans(m.scans);
+        }
+        if(m.type === 'finding' && m.data) state.findings.unshift(m.data);
+        if(m.type === 'stats' && m.data) state.stats = m.data;
+        if(m.type === 'progress') patchScan(m.scan_id, {status:'running', phase:m.phase, progress:{current:m.current,total:m.total,label:m.label}});
+        if(m.type === 'phase_change') patchScan(m.scan_id, {status:'running', phase:m.phase});
+        if(m.type === 'scan_complete') patchScan(m.scan_id, {status:'complete', phase:'complete'});
+        if(m.type === 'scan_error') patchScan(m.scan_id, {status:'error', error:m.error});
+        if(m.type === 'scan_paused') patchScan(m.scan_id, {status:'paused'});
+        if(m.type === 'scan_resumed') patchScan(m.scan_id, {status:'running'});
+        if(m.type === 'scan_stopped') patchScan(m.scan_id, {status:'stopped', phase:'stopped'});
+        if(m.type === 'attack_graph' && m.scan_id === state.selectedScanId) state.graph = m.data || {};
+        if(m.type === 'coverage' && m.scan_id === state.selectedScanId) state.coverage = m.data || {};
+        if(m.type === 'throttle_warning' && m.scan_id === state.selectedScanId){
+          state.autopilot.smart_throttle = m.status_snapshot || state.autopilot.smart_throttle || {};
+          state.autopilot.smart_throttle.last_block_reason = m.reason || state.autopilot.smart_throttle.last_block_reason;
+        }
+        render();
+      };
+    }
+    function mergeScans(scans){
+      const map = new Map(state.scans.map(s => [s.id, s]));
+      scans.forEach(s => map.set(s.id, {...(map.get(s.id)||{}), ...s}));
+      return Array.from(map.values()).sort((a,b) => String(b.started||'').localeCompare(String(a.started||'')));
+    }
+    function patchScan(id, patch){
+      if(!id) return;
+      const idx = state.scans.findIndex(s => s.id === id);
+      if(idx >= 0) state.scans[idx] = {...state.scans[idx], ...patch};
+    }
+
+    async function refreshAll(){
+      const [health, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage] = await Promise.all([
+        json('/health', {}),
+        json('/scans', []),
+        json('/findings?limit=500', {findings:[]}),
+        json('/review', {pending:[],all:[],count:0}),
+        json('/ai/providers', {}),
+        json('/stats', {}),
+        json('/scope', {}),
+        json('/ai/privacy', {}),
+        json('/ai/audit', {events:[]}),
+        json('/throttle/status', {}),
+        json('/storage', {})
+      ]);
+      state.health = health || {};
+      state.scans = mergeScans(scans || []);
+      state.findings = findings.findings || [];
+      state.review = review || state.review;
+      state.ai = ai || {};
+      state.stats = stats || {};
+      state.scope = scope || {};
+      state.aiPrivacy = aiPrivacy || {};
+      state.aiAudit = aiAudit.events || [];
+      state.throttleStatus = throttleStatus || {};
+      state.storage = storage || {};
+      const latestCompleted = state.scans.find(scan => ['complete','completed'].includes(String(scan.status || '').toLowerCase()));
+      state.advancedCoverage = latestCompleted
+        ? await json(`/scan/${latestCompleted.id}/coverage`, {})
+        : {};
+      if(!state.selectedScanId && state.scans[0]) selectScan(state.scans[0].id, false);
+      await refreshSelectedArtifacts();
+      render();
+    }
+    async function refreshSelectedArtifacts(){
+      if(!state.selectedScanId) return;
+      const [coverage, coverageV2, graph, bounty, autopilot, findingBuckets, throttleStatus] = await Promise.all([
+        json(`/scan/${state.selectedScanId}/coverage`, {}),
+        json(`/scan/${state.selectedScanId}/coverage/v2`, {}),
+        json(`/scan/${state.selectedScanId}/attack-graph`, {}),
+        json(`/scan/${state.selectedScanId}/bounty`, {}),
+        json(`/scan/${state.selectedScanId}/autopilot`, {}),
+        json(`/findings/${state.selectedScanId}/buckets`, {}),
+        json('/throttle/status', {})
+      ]);
+      state.coverage = coverage || {};
+      state.coverageV2 = coverageV2 || {};
+      state.graph = graph || {};
+      state.bounty = bounty || {};
+      state.autopilot = autopilot || {};
+      state.findingBuckets = findingBuckets || {};
+      state.throttleStatus = throttleStatus || {};
+    }
+    function selectScan(id, navigate=true){
+      state.selectedScanId = id || '';
+      localStorage.setItem('burpollama.selectedScanId', state.selectedScanId);
+      if(navigate && id) go(`/ui/scans/${id}`);
+    }
+    async function startScan(){
+      const target = document.getElementById('target-input')?.value.trim();
+      const key = document.getElementById('quick-api-key')?.value.trim() || '';
+      if(!target){ alert('Enter a target URL or domain first.'); return; }
+      const r = await fetch(endpoint('/scan'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({target, api_key:key})
+      });
+      if(!r.ok){ alert(await r.text()); return; }
+      const d = await r.json();
+      state.scans.unshift({id:d.scan_id,target:d.target,status:'running',phase:'queued',started:new Date().toISOString()});
+      selectScan(d.scan_id);
+      render();
+    }
+    async function saveGeminiKey(){
+      const key = document.getElementById('settings-gemini-key')?.value.trim();
+      if(!key){ alert('Paste a Gemini API key first.'); return; }
+      const r = await fetch(endpoint('/config'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({gemini_api_key:key})
+      });
+      alert(r.ok ? 'Saved.' : await r.text());
+      refreshAll();
+    }
+    async function saveSessions(){
+      const body = {
+        session_a_cookie: document.getElementById('session-a-cookie')?.value || '',
+        session_a_token: document.getElementById('session-a-token')?.value || '',
+        session_b_cookie: document.getElementById('session-b-cookie')?.value || '',
+        session_b_token: document.getElementById('session-b-token')?.value || ''
+      };
+      const r = await fetch(endpoint('/config/sessions'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      alert(r.ok ? 'Sessions saved.' : await r.text());
+      refreshAll();
+    }
+    async function resolveReview(id, verdict){
+      const note = prompt('Reviewer note', verdict === 'PASS' ? 'Valid finding' : 'False positive / not reportable') || '';
+      const r = await fetch(endpoint(`/review/${encodeURIComponent(id)}/resolve?verdict=${encodeURIComponent(verdict)}&note=${encodeURIComponent(note)}`), {method:'POST'});
+      if(!r.ok) alert(await r.text());
+      refreshAll();
+    }
+    async function addReviewNote(id){
+      const note = prompt('Analyst note', '') || '';
+      const r = await fetch(endpoint(`/review/${encodeURIComponent(id)}/note`), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({note})
+      });
+      if(!r.ok) alert(await r.text());
+      refreshAll();
+    }
+    async function escalateReview(id){
+      const r = await fetch(endpoint(`/review/${encodeURIComponent(id)}/escalate`), {method:'POST'});
+      if(!r.ok) alert(await r.text());
+      refreshAll();
+    }
+    async function openReport(id){
+      try{ openModal(`Report ${id}`, await text(`/scan/${id}/report`)); }catch(e){ alert('Report is not ready yet.'); }
+    }
+    async function controlScan(id, action){
+      const r = await fetch(endpoint(`/scan/${id}/${action}`), {method:'POST'});
+      if(!r.ok) alert(await r.text());
+      await refreshAll();
+    }
+    async function startAutopilot(){
+      const target = document.getElementById('autopilot-target-input')?.value.trim() || document.getElementById('target-input')?.value.trim();
+      const key = document.getElementById('autopilot-api-key')?.value.trim() || '';
+      if(!target){ alert('Enter an authorized target first.'); return; }
+      const r = await fetch(endpoint('/autopilot/start'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({target, api_key:key})
+      });
+      if(!r.ok){ alert(await r.text()); return; }
+      const d = await r.json();
+      state.scans.unshift({id:d.scan_id,target:d.target,status:'queued',phase:'queued',started:new Date().toISOString()});
+      selectScan(d.scan_id, false);
+      await refreshSelectedArtifacts();
+      go('/ui/autopilot');
+    }
+    async function retryFailedTask(){
+      const s = selectedScan();
+      if(!s){ alert('Select a scan first.'); return; }
+      const r = await fetch(endpoint(`/scan/${s.id}/retry-failed-task`), {method:'POST'});
+      const body = await r.text();
+      if(!r.ok){ alert(body); return; }
+      try{
+        const d = JSON.parse(body);
+        if(d.retried === false) alert(d.reason || 'No failed task to retry.');
+      }catch(e){}
+      await refreshAll();
+    }
+    async function openSubmission(id){
+      try{ openModal(`Submission ${id}`, await text(`/findings/${id}/submission`)); }catch(e){ alert('Submission not available.'); }
+    }
+    async function copyBountyReport(platform){
+      const s = selectedScan();
+      if(!s){ alert('Select a scan first.'); return; }
+      const body = await text(`/scan/${s.id}/bounty/report?platform=${encodeURIComponent(platform)}`);
+      await navigator.clipboard.writeText(body);
+      alert(`${platform === 'bugcrowd' ? 'Bugcrowd' : 'HackerOne'} report copied.`);
+    }
+    async function openBountyFinding(scanId, findingId, platform='hackerone'){
+      try{ openModal(`Bounty report ${findingId}`, await text(`/scan/${scanId}/bounty/finding/${findingId}/markdown?platform=${platform}`)); }catch(e){ alert('Bounty report is not available.'); }
+    }
+    function openModal(title, body){
+      const existing = document.getElementById('modal');
+      if(existing) existing.remove();
+      const modal = document.createElement('div');
+      modal.id = 'modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:20;display:grid;place-items:center;padding:24px';
+      modal.innerHTML = `
+        <div class="card" style="width:min(980px,96vw);max-height:90vh;display:flex;flex-direction:column">
+          <div class="card-head" style="padding:14px 16px;border-bottom:1px solid var(--line);margin:0">
+            <div class="card-title">${esc(title)}</div>
+            <button class="btn" onclick="document.getElementById('modal').remove()">Close</button>
+          </div>
+          <pre class="pre" style="margin:16px;max-height:72vh">${esc(body)}</pre>
+        </div>`;
+      document.body.appendChild(modal);
+    }
+    function lines(id){
+      return (document.getElementById(id)?.value || '').split('\n').map(x => x.trim()).filter(Boolean);
+    }
+    async function saveScope(){
+      state.scope = {
+        allowed_domains: lines('scope-allowed-domains'),
+        blocked_domains: lines('scope-blocked-domains'),
+        allowed_url_patterns: lines('scope-allowed-patterns'),
+        blocked_url_patterns: lines('scope-blocked-patterns'),
+        allowed_vulnerability_classes: lines('scope-allowed-classes'),
+        forbidden_vulnerability_classes: lines('scope-forbidden-classes'),
+        max_depth: Number(document.getElementById('scope-max-depth').value || 2),
+        max_requests_per_minute: Number(document.getElementById('scope-rpm').value || 120),
+        max_total_requests: Number(document.getElementById('scope-total').value || 5000),
+        scan_mode: document.getElementById('scope-mode').value,
+        passive_only_mode: document.getElementById('scope-passive').checked,
+        active_testing_enabled: document.getElementById('scope-active').checked,
+        authenticated_testing_enabled: document.getElementById('scope-auth').checked,
+        oob_testing_enabled: document.getElementById('scope-oob').checked,
+        cloud_ai_enabled: document.getElementById('scope-cloud').checked,
+        emergency_stop: document.getElementById('scope-emergency').checked
+      };
+      const r = await fetch(endpoint('/scope'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(state.scope)});
+      if(!r.ok){ alert(await r.text()); return; }
+      state.scope = await r.json();
+      alert('Scope policy saved.');
+      refreshAll();
+    }
+    async function validateScopeTarget(){
+      const target = document.getElementById('scope-validate-target').value.trim();
+      if(!target) return;
+      const r = await fetch(endpoint('/scope/validate-target'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target, action:'scan'})});
+      const d = await r.json();
+      document.getElementById('scope-validation-result').textContent = `${d.allowed ? 'Allowed' : 'Blocked'}: ${d.reason}`;
+    }
+    async function saveAIPrivacy(){
+      const body = {
+        local_ollama_preferred: document.getElementById('privacy-local').checked,
+        cloud_ai_enabled: document.getElementById('privacy-cloud').checked,
+        allow_raw_http_to_cloud: document.getElementById('privacy-raw-cloud').checked,
+        max_cloud_prompt_chars: Number(document.getElementById('privacy-max-chars').value || 6000),
+        audit_enabled: document.getElementById('privacy-audit').checked
+      };
+      const r = await fetch(endpoint('/ai/privacy'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok){ alert(await r.text()); return; }
+      state.aiPrivacy = await r.json();
+      alert('AI privacy settings saved.');
+      refreshAll();
+    }
+    async function runSystemCheck(){
+      state.systemCheck = await json('/system-check/run', {});
+      render();
+    }
+    async function testAutopilotDryRun(){
+      const r = await fetch(endpoint('/autopilot/dry-run'));
+      if(!r.ok){ alert(await r.text()); return; }
+      const d = await r.json();
+      state.dryRunResult = d;
+      if(d.scan_id){
+        state.scans.unshift({id:d.scan_id,target:d.target,status:'complete',phase:'complete',started:new Date().toISOString()});
+        selectScan(d.scan_id, false);
+        await refreshSelectedArtifacts();
+      }
+      state.systemCheck = await json('/system-check/run', {});
+      render();
+    }
+
+    function selectFindingTab(tab){
+      state.findingTab = tab;
+      renderFindings();
+    }
+
+    function render(){
+      const route = state.route;
+      document.querySelectorAll('.route').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === route));
+      document.body.classList.toggle('advanced-on', state.advancedMode);
+      const key = route === 'scan-detail' ? 'scan-detail' : route;
+      const [title, subtitle] = titles[key] || titles.dashboard;
+      document.getElementById('page-title').textContent = title;
+      document.getElementById('page-subtitle').textContent = subtitle;
+      renderTopbar();
+      renderWorkflow();
+      renderDashboard();
+      renderScans();
+      renderScanDetail();
+      renderFindings();
+      renderReview();
+      renderCoverage();
+      renderGraph();
+      renderAutopilot();
+      renderBounty();
+      renderReports();
+      renderSettings();
+      renderAI();
+      renderScope();
+      renderStorage();
+      renderSystemCheck();
+      renderHelp();
+      if(knownRoutes.has(key)){
+        document.getElementById(`route-${key}`)?.classList.add('active');
+      }else{
+        renderPlaceholder(key);
+        document.getElementById('route-placeholder')?.classList.add('active');
+      }
+    }
+    function renderTopbar(){
+      const dot = document.getElementById('health-dot');
+      const label = document.getElementById('health-label');
+      const ok = state.health.status === 'ok';
+      dot.className = 'dot ' + (ok ? 'ok' : 'warn');
+      label.textContent = ok ? 'Backend online' : 'Health unknown';
+      document.getElementById('queue-size').textContent = state.health.burp_queue ?? 0;
+      document.getElementById('top-findings').textContent = state.findings.length || state.health.findings_stored || 0;
+      const toggle = document.getElementById('advanced-toggle');
+      if(toggle) toggle.checked = state.advancedMode;
+    }
+    function renderDashboard(){
+      const el = document.getElementById('route-dashboard');
+      el.innerHTML = `
+        <div class="notice">Normal workflow: Website to scan → In-scope websites → Out-of-scope websites → Start Scan → Valid bugs → Export report.</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-4">
+          ${metric('Total findings', state.stats.total ?? 0, 'Stored findings')}
+          ${metric('Critical', state.stats.CRITICAL ?? 0, 'Critical severity')}
+          ${metric('High', state.stats.HIGH ?? 0, 'High severity')}
+          ${metric('Active scans', state.stats.active_scans ?? 0, 'Queued, running, or paused')}
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-3">
+          <div class="card pad"><div class="card-title">1. Start</div><div class="card-sub">Begin with Autopilot. It will guide you through target, scope, mode, and launch.</div><div style="height:12px"></div><button class="btn primary" onclick="go('/ui/autopilot')">Start New Scan</button></div>
+          <div class="card pad"><div class="card-title">2. Review</div><div class="card-sub">Check Valid Bugs first. Anything uncertain is kept out of bounty reports.</div><div style="height:12px"></div><button class="btn" onclick="go('/ui/findings')">Open Findings</button></div>
+          <div class="card pad"><div class="card-title">3. Export</div><div class="card-sub">Download or copy a clean HackerOne or Bugcrowd report.</div><div style="height:12px"></div><button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
+        </div>`;
+    }
+    function metric(label, value, sub){ return `<div class="card pad"><div class="metric">${esc(value)}</div><div class="metric-label">${esc(label)}</div><div class="card-sub">${esc(sub)}</div></div>`; }
+    function miniSeverity(sev, count){ return `<div><div class="metric sev ${sev}">${count || 0}</div><div class="metric-label">${sev}</div></div>`; }
+    function scanProgress(scan){
+      const pct = progressOf(scan);
+      const p = scan.progress || {};
+      return `<div class="kv"><div>ID</div><div class="mono">${esc(scan.id)}</div><div>Phase</div><div>${esc(scan.phase || '-')}</div><div>Label</div><div>${esc(p.label || '-')}</div><div>Started</div><div>${esc(scan.started || '-')}</div></div><div style="height:14px"></div><div class="progress"><div class="bar" style="width:${pct}%"></div></div><div class="card-sub" style="margin-top:7px">${pct}% complete</div>`;
+    }
+    function scanList(scans){
+      if(!scans.length) return '<div class="empty">No scans yet.</div>';
+      return `<div class="list">${scans.map(s => `<button class="row-card" onclick="selectScan('${esc(s.id)}')"><div><div><strong>${esc(s.target)}</strong></div><div class="small muted mono">${esc(s.id)} - ${esc(s.phase || '')}</div></div><span class="status ${esc(s.status)}">${esc(s.status)}</span></button>`).join('')}</div>`;
+    }
+    function providerList(providers){
+      if(!providers.length) return '<div class="empty">No provider status yet.</div>';
+      return `<div class="list">${providers.map(p => `<div class="row-card"><div><strong>${esc(p.name)}</strong><div class="small muted">${esc(p.model)} - failures ${esc(p.failures)}</div></div><span class="pill"><span class="dot ${p.available ? 'ok' : 'warn'}"></span>${p.available ? 'available' : 'not configured'}</span></div>`).join('')}</div>`;
+    }
+    function renderScans(){
+      document.getElementById('route-scans').innerHTML = `
+        <div class="toolbar"><button class="btn primary" onclick="go('/ui/dashboard')">New scan</button><button class="btn" onclick="refreshAll()">Refresh</button></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>Target</th><th>Status</th><th>Phase</th><th>Started</th><th>Progress</th><th>Actions</th></tr></thead><tbody>
+          ${state.scans.map(s => `<tr><td class="mono">${esc(s.id)}</td><td>${esc(s.target)}</td><td><span class="status ${esc(s.status)}">${esc(s.status)}</span></td><td>${esc(s.phase)}</td><td>${esc(s.started)}</td><td style="min-width:160px">${scanProgressCompact(s)}</td><td><button class="btn" onclick="selectScan('${esc(s.id)}')">Open</button></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No scans yet.</div></td></tr>'}
+        </tbody></table></div>`;
+    }
+    function scanProgressCompact(s){ const pct = progressOf(s); return `<div class="progress"><div class="bar" style="width:${pct}%"></div></div><div class="small muted">${pct}%</div>`; }
+    function renderScanDetail(){
+      const s = selectedScan();
+      const el = document.getElementById('route-scan-detail');
+      if(!s){ el.innerHTML = '<div class="empty">No scan selected.</div>'; return; }
+      el.innerHTML = `
+        <div class="toolbar"><button class="btn" onclick="go('/ui/scans')">Back</button><button class="btn" onclick="refreshSelectedArtifacts().then(render)">Refresh artifacts</button><button class="btn" onclick="controlScan('${esc(s.id)}','pause')">Pause</button><button class="btn" onclick="controlScan('${esc(s.id)}','resume')">Resume</button><button class="btn danger" onclick="controlScan('${esc(s.id)}','stop')">Stop</button><button class="btn blue" onclick="openReport('${esc(s.id)}')">Open report</button><a class="btn primary" href="/scan/${esc(s.id)}/report/download" target="_blank">Download report</a></div>
+        <div class="grid cols-3">${metric('Status', s.status || '-', s.phase || '-')}${metric('Coverage', `${state.coverage.coverage_percent ?? 0}%`, 'Endpoint templates')}${metric('Attack paths', state.graph.path_count ?? 0, 'Correlated chains')}</div>
+        <div style="height:14px"></div>
+        <div class="split"><div class="card pad"><div class="card-title">Pipeline</div><div style="height:12px"></div>${scanProgress(s)}</div><div class="card pad"><div class="card-title">Scan Metadata</div><div style="height:12px"></div><div class="kv"><div>ID</div><div class="mono">${esc(s.id)}</div><div>Target</div><div>${esc(s.target)}</div><div>Started</div><div>${esc(s.started)}</div><div>Error</div><div>${esc(s.error || '-')}</div></div></div></div>`;
+    }
+    function renderFindings(){
+      const buckets = state.findingBuckets || {};
+      const tabs = [
+        ['valid_bugs', 'VALID BUGS'],
+        ['needs_more_proof', 'NEEDS PROOF'],
+        ['candidates', 'CANDIDATE'],
+        ['informational', 'INFO'],
+        ['false_positives_removed', 'FP'],
+        ['skipped_out_of_scope', 'SKIPPED']
+      ];
+      const activeKey = tabs.some(([key]) => key === state.findingTab) ? state.findingTab : 'valid_bugs';
+      const activeRows = buckets[activeKey] || [];
+      document.getElementById('route-findings').innerHTML = `
+        <div class="toolbar"><button class="btn" onclick="refreshAll()">Refresh</button><button class="btn blue" onclick="go('/ui/reports')">Export Reports</button>${state.advancedMode ? '<a class="btn" href="/findings/export" target="_blank">Raw JSON</a>' : ''}</div>
+        <div class="notice">Zero False Positive Mode is ON. Findings need a quality score of 70+ to become Valid Bugs; only grade A findings scoring 85+ show as READY.</div>
+        <div style="height:10px"></div>
+        <div class="toolbar">${newCoverageClassBadges()}</div>
+        <div style="height:14px"></div>
+        <div class="toolbar">${tabs.map(([key, label]) => `<button class="btn ${activeKey === key ? 'primary' : ''}" onclick="selectFindingTab('${key}')">${label} <span class="tag">${esc((buckets[key] || []).length)}</span></button>`).join('')}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-4">${metric('Valid Bugs', (buckets.valid_bugs || []).length, 'Score 70+')}${metric('Needs More Proof', (buckets.needs_more_proof || []).length, 'Manual validation needed')}${metric('Candidates', (buckets.candidates || []).length, 'Kept out of reports')}${metric('Skipped Websites', (buckets.skipped_out_of_scope || []).length, 'Out of scope or blocked')}</div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-head"><div><div class="card-title">${esc(tabs.find(([key]) => key === activeKey)?.[1] || 'READY')}</div><div class="card-sub">${esc(activeRows.length)} finding(s) in this bucket</div></div></div><div class="list">${activeRows.slice(0,50).map(findingSimpleCard).join('') || '<div class="empty">Nothing in this bucket.</div>'}</div></div>`;
+    }
+    function findingBucketPanel(title, rows, bucket){
+      return `<div class="card pad"><div class="card-head"><div><div class="card-title">${esc(title)}</div><div class="card-sub">${esc(rows.length)} finding(s)</div></div>${bucketBadge(bucket)}</div><div class="list">${rows.slice(0,12).map(findingSimpleCard).join('') || '<div class="empty">Nothing here yet.</div>'}</div></div>`;
+    }
+    function findingSimpleCard(f){
+      const bucket = findingBucket(f);
+      return `<div class="row-card"><div style="min-width:0"><strong>${esc(f.title || f.vuln_type)}</strong><div class="small muted mono">${esc(f.affected_url || f.url || '-')}</div><div style="margin-top:8px"><span class="sev ${sevClass(f.severity)}">${esc(f.severity || 'INFO')}</span> ${vulnerabilityClassBadge(f)} ${bucketBadge(bucket)} <span class="tag">${esc(f.confidence || 0)}%</span> <span class="tag">Quality ${esc(f.quality_score ?? 0)} / ${esc(f.grade || f.quality_grade || 'F')}</span></div>${state.advancedMode ? `<div class="small muted" style="margin-top:6px">${esc(f.evidence_strength || '-')} evidence / ${esc(f.exploitability_status || f.verdict || '-')}</div>` : ''}</div><button class="btn" onclick="openSubmission('${esc(f.id)}')">Open</button></div>`;
+    }
+    function newCoverageClassBadges(){
+      return ['Stored XSS','DOM XSS','Blind XSS','CSRF','Path Traversal','NoSQL Injection','Command Injection','Host Header','CRLF','Default Creds']
+        .map(label => `<span class="tag">${esc(label)}</span>`).join('');
+    }
+    function vulnerabilityClassBadge(f){
+      const value = `${f.vulnerability_class || ''} ${f.vuln_type || ''} ${f.title || ''}`.toLowerCase();
+      const classes = [
+        ['stored xss','Stored XSS'],
+        ['dom xss','DOM XSS'],
+        ['dom_xss','DOM XSS'],
+        ['blind xss','Blind XSS'],
+        ['csrf','CSRF'],
+        ['path traversal','Path Traversal'],
+        ['directory_listing','Path Traversal'],
+        ['nosql','NoSQL Injection'],
+        ['os command','Command Injection'],
+        ['command injection','Command Injection'],
+        ['host header','Host Header'],
+        ['crlf','CRLF'],
+        ['default credential','Default Creds']
+      ];
+      const match = classes.find(([needle]) => value.includes(needle));
+      return match ? `<span class="tag">${esc(match[1])}</span>` : '';
+    }
+    function findingRows(rows){
+      const filter = document.getElementById('finding-filter')?.value || '';
+      const filtered = filter ? rows.filter(f => String(f.severity).toUpperCase() === filter) : rows;
+      return filtered.map(f => `<tr><td class="sev ${sevClass(f.severity)}">${esc(f.severity)}</td><td>${esc(f.title || f.vuln_type)}</td><td class="mono small">${esc(f.affected_url || f.url)}</td><td>${esc(f.confidence)}%</td><td>${esc(f.exploitability_status || f.verdict || '-')}</td><td>${esc(f.evidence_strength || '-')} / FP ${esc(f.false_positive_risk || '-')}</td><td><button class="btn" onclick="openSubmission('${esc(f.id)}')">Submission</button></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No findings loaded.</div></td></tr>';
+    }
+    function renderReview(){
+      const pending = state.review.pending || [];
+      document.getElementById('route-review').innerHTML = `
+        <div class="grid cols-3">${metric('Pending', pending.length, 'Needs analyst')}${metric('Total queued', state.review.all?.length || 0, 'All statuses')}${metric('Review count', state.review.count || 0, 'Backend count')}</div>
+        <div style="height:14px"></div>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>Severity</th><th>Type</th><th>URL</th><th>Reason</th><th>Actions</th></tr></thead><tbody>
+          ${pending.map(f => `<tr><td class="mono">${esc(f.id)}</td><td class="sev ${sevClass(f.severity)}">${esc(f.severity)}</td><td>${esc(f.vuln_type)}</td><td class="mono small">${esc(f.url)}</td><td>${esc(f.fail_reason)}</td><td><button class="btn primary" onclick="resolveReview('${esc(f.id)}','CONFIRMED')">Confirm</button> <button class="btn" onclick="resolveReview('${esc(f.id)}','DOWNGRADE')">Downgrade</button> <button class="btn danger" onclick="resolveReview('${esc(f.id)}','FALSE_POSITIVE')">Mark False Positive</button> <button class="btn blue" onclick="resolveReview('${esc(f.id)}','NEEDS_MANUAL_TESTING')">Needs Manual Testing</button> <button class="btn" onclick="addReviewNote('${esc(f.id)}')">Add Note</button></td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No pending review items.</div></td></tr>'}
+        </tbody></table></div>`;
+    }
+    function renderCoverage(){
+      const c = state.advancedCoverage || {};
+      const completed = state.scans.find(scan => ['complete','completed'].includes(String(scan.status || '').toLowerCase()));
+      document.getElementById('route-coverage').innerHTML = `
+        <div class="notice">${completed ? `Coverage for the most recent completed scan: ${esc(completed.target || completed.id)}` : 'Complete a scan to load coverage.'}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-4">${metric('Coverage', `${c.coverage_percent ?? 0}%`, 'Tested templates')}${metric('Discovered', c.discovered_endpoints ?? c.surface_templates ?? 0, 'Endpoints')}${metric('Untested', c.untested_endpoints ?? c.untested_templates ?? 0, 'Remaining endpoints')}${metric('Safety skips', (c.skipped_due_to_safety_mode ?? 0), 'Safety mode')}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-3">${metric('Skipped: scope', (c.skipped_due_to_scope || []).length || 0, 'URLs')}${metric('Skipped: rate', c.skipped_due_to_rate_limit ?? 0, 'Events')}${metric('Skipped: missing auth', c.skipped_due_to_missing_auth ?? 0, 'Events')}</div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-head"><div><div class="card-title">Top Untested Surface</div><div class="card-sub">Prioritized by auth/admin/sensitive/API hints</div></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Score</th><th>URL</th><th>Reasons</th></tr></thead><tbody>${(c.high_risk_untested_urls || c.top_untested || []).map(x => `<tr><td>${esc(x.score)}</td><td class="mono small">${esc(x.url)}</td><td>${(x.reasons||[]).map(r=>`<span class="tag">${esc(r)}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="3"><div class="empty">Coverage data appears after scan analysis.</div></td></tr>'}</tbody></table></div></div>`;
+    }
+    function renderGraph(){
+      const g = state.graph || {};
+      document.getElementById('route-attack-graph').innerHTML = `
+        <div class="grid cols-4">${metric('Nodes', g.node_count ?? 0, 'Findings')}${metric('Edges', g.edge_count ?? 0, 'Chain rules')}${metric('Paths', g.path_count ?? 0, 'Attack paths')}${metric('Top score', g.highest_path_score ?? 0, 'Exploitability')}</div>
+        <div style="height:14px"></div>
+        <div class="list">${(g.attack_paths || []).map(p => `<div class="card pad"><div class="card-head"><div><div class="card-title">${esc(p.summary)}</div><div class="card-sub">${esc(p.chain_label || 'hypothesis_chain')} - ${esc(p.impact)} - score ${esc(p.score)} - ${esc(p.steps)} steps</div></div></div><div class="list">${(p.step_detail||[]).map(s => `<div class="row-card"><div><strong>${esc(s.vuln_type)}</strong><div class="small muted mono">${esc(s.url)}</div><div class="small muted">${esc(s.exploitability_status || '')} / ${esc(s.evidence_strength || '')}</div></div><span class="sev ${sevClass(s.severity)}">${esc(s.severity)} ${esc(s.confidence)}%</span></div>`).join('')}</div></div>`).join('') || '<div class="empty">Attack graph appears after scan analysis.</div>'}</div>`;
+    }
+    function renderAutopilot(){
+      const scan = selectedScan();
+      const a = state.autopilot || {};
+      const scope = a.scope_summary || state.scope || {};
+      const mode = a.automation_mode || {};
+      const c = a.coverage_gaps || {};
+      const confirmed = a.confirmed_findings || [];
+      const candidates = a.candidate_findings || [];
+      const needsProof = a.needs_more_proof || state.bounty.needs_more_proof || [];
+      const falseRemoved = a.false_positives_removed || state.bounty.false_positives_removed || [];
+      const skippedSites = a.skipped_websites || state.bounty.skipped_websites || [];
+      const ready = a.ready_to_submit || [];
+      const endpoints = a.high_value_endpoints || [];
+      const logs = a.live_logs || [];
+      const intelligence = a.intelligence || {};
+      const throttle = state.throttleStatus || {};
+      const progressState = a.progress_state || (scan ? String(scan.status || 'queued') : 'queued');
+      const el = document.getElementById('route-autopilot');
+      el.innerHTML = `
+        <div class="simple-section">
+        <div class="card pad step-card">
+          <div class="card-head"><div><div class="card-title">Step 1: Choose target</div><div class="card-sub">Enter only a system you own or are authorized to test.</div></div><span class="status ${esc(progressState)}">${esc(progressState)}</span></div>
+          <div class="toolbar">
+            <input class="input" id="autopilot-target-input" placeholder="https://authorized-target.example" value="${esc(scan?.target || '')}">
+            <input class="input" id="autopilot-api-key" placeholder="Optional AI key for this scan" type="password">
+          </div>
+        </div>
+        <div class="grid cols-2">
+          <div class="card pad step-card">
+            <div class="card-title">Step 2: Confirm scope</div><div class="card-sub">ScopePolicy will block targets outside your allowed rules.</div><div style="height:12px"></div>
+            <div class="kv"><div>Mode</div><div>${esc(scope.scan_mode || '-')}</div><div>Allowed domains</div><div>${esc((scope.allowed_domains||[]).join(', ') || 'Not restricted')}</div><div>Request limit</div><div>${esc(scope.max_requests_per_minute ?? '-')} rpm</div></div>
+            <div style="height:12px"></div><button class="btn" onclick="go('/ui/scope')">Edit Scope</button>
+          </div>
+          <div class="card pad step-card">
+            <div class="card-title">Step 3: Choose mode</div><div class="card-sub">Pick a safe label. Advanced settings remain in Scope.</div><div style="height:12px"></div>
+            <div class="toolbar">
+              <button class="btn" onclick="document.getElementById('autopilot-mode-label').textContent='Safe Passive Scan'">Safe Passive Scan</button>
+              <button class="btn blue" onclick="document.getElementById('autopilot-mode-label').textContent='Bounty Scan'">Bounty Scan</button>
+              <button class="btn danger" onclick="document.getElementById('autopilot-mode-label').textContent='Deep Authorized Scan'">Deep Authorized Scan</button>
+            </div>
+            <div class="pill" id="autopilot-mode-label">Safe Passive Scan</div>
+          </div>
+        </div>
+        <div class="card pad step-card">
+          <div class="card-head"><div><div class="card-title">Step 4: Start Autopilot</div><div class="card-sub">Start, pause, resume, or stop the selected scan.</div></div><span class="tag">34 total classes</span></div><div style="height:12px"></div>
+          <div class="toolbar"><button class="btn primary" onclick="startAutopilot()">Start</button>${scan ? `<button class="btn" onclick="controlScan('${esc(scan.id)}','pause')">Pause</button><button class="btn" onclick="controlScan('${esc(scan.id)}','resume')">Resume</button><button class="btn danger" onclick="controlScan('${esc(scan.id)}','stop')">Stop</button><button class="btn blue" onclick="retryFailedTask()">Retry Failed Task</button>` : ''}</div>
+        </div>
+        <div class="card pad step-card">
+          <div class="card-title">Step 5: Watch progress</div><div style="height:12px"></div>
+          <div class="state-strip">${autopilotStateStrip(progressState)}</div>
+          ${Number(throttle.consecutive_blocks || 0) > 0 || throttle.host_dead ? `<div style="height:14px"></div><div class="notice" style="border-left-color:var(--amber)"><strong>Target is blocking requests.</strong><br>${esc(throttle.last_block_reason || 'Requests are being slowed to protect the target.')}</div>` : ''}
+          <div style="height:14px"></div>
+          <div class="grid cols-4">${metric('Current RPM limit', throttle.requests_per_minute_limit ?? 0, 'Per-host safety cap')}${metric('Consecutive blocks', throttle.consecutive_blocks ?? 0, throttle.last_block_reason || 'No recent blocks')}${metric('Backoff multiplier', `${throttle.backoff_multiplier ?? 1}x`, 'Automatic slowdown')}${metric('Host dead', throttle.host_dead ? 'Yes' : 'No', 'Blocking state')}</div>
+          <div style="height:14px"></div>${throttleRecommendation(throttle.recommendation)}
+          <div style="height:14px"></div>${autopilotTimeline(a.agent_timeline || [])}
+          <details class="${state.advancedMode ? '' : 'hidden'}"><summary class="btn" style="display:inline-block;margin-top:14px">Show advanced logs</summary><div style="height:12px"></div>${autopilotLogs(logs)}</details>
+        </div>
+        <div class="card pad step-card">
+          <div class="card-title">Step 6: Review results</div><div class="card-sub">Focus on ready findings first, then proof gaps.</div><div style="height:12px"></div>
+          <div class="grid cols-4">${metric('Valid Bugs', confirmed.length, 'READY only')}${metric('Ready to Submit', ready.length, 'Included in reports')}${metric('Needs More Proof', needsProof.length, 'Not reportable yet')}${metric('Candidate Findings', candidates.length, 'Kept out of reports')}</div>
+          <div style="height:12px"></div>
+          <div class="grid cols-2">${metric('False Positives Removed', falseRemoved.length, 'Filtered out')}${metric('Skipped Websites', skippedSites.length, 'Out of scope or blocked')}</div>
+          <div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="go('/ui/findings')">Open Findings</button><button class="btn" onclick="go('/ui/bounty')">Open Bounty Mode</button></div>
+        </div>
+        <div class="card pad step-card">
+          <div class="card-title">Step 7: Export report</div><div class="card-sub">Export once proof is ready.</div><div style="height:12px"></div>
+          <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
+          <div class="toolbar">${scan ? `<a class="btn primary" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a>` : ''}<button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
+        </div>
+        ${['complete','completed'].includes(String(scan?.status || '').toLowerCase()) ? analystIntelligencePanel(intelligence) : ''}
+        <div class="${state.advancedMode ? '' : 'hidden'}">
+          <div class="grid cols-2"><div class="card pad"><div class="card-title">High-Value Endpoints</div><div style="height:12px"></div>${autopilotEndpointTable(endpoints)}</div><div class="card pad"><div class="card-title">Coverage Gaps</div><div style="height:12px"></div>${coverageGapList(c)}</div></div>
+        </div>
+        </div>`;
+    }
+    function analystIntelligencePanel(intelligence){
+      if(!intelligence || !intelligence.executive_summary){
+        return '<div class="card pad"><div class="empty">Analyst Intelligence Briefing is generated after Phase 5 completes.</div></div>';
+      }
+      const targets = intelligence.top_manual_targets || [];
+      return `<details class="card pad step-card">
+        <summary class="card-title" style="cursor:pointer">Analyst Intelligence Briefing</summary>
+        <div style="height:12px"></div>
+        <div class="notice">${esc(intelligence.executive_summary)}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div><div class="card-title">Technology-specific advice</div><div class="small" style="margin-top:7px">${esc(intelligence.technology_specific_advice || '-')}</div></div>
+          <div><div class="card-title">Coverage-gap advice</div><div class="small" style="margin-top:7px">${esc(intelligence.coverage_gap_advice || '-')}</div></div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div><div class="card-title">Chain opportunities</div><div class="small" style="margin-top:7px">${esc(intelligence.chain_opportunities || '-')}</div></div>
+          <div><div class="card-title">Manual testing estimate</div><div class="small" style="margin-top:7px">${esc(intelligence.time_estimate || '-')}</div></div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card-title">Top manual targets</div>
+        <div class="list" style="margin-top:10px">${targets.map(target => `<div class="row-card" style="align-items:flex-start"><div style="min-width:0"><strong class="mono small">${esc(target.url)}</strong><div class="small" style="margin-top:6px">${esc(target.reason)}</div><div class="small muted" style="margin-top:6px"><strong>Test:</strong> ${esc(target.what_to_test)}</div></div><span class="tag">${esc(target.estimated_bounty_value || 'Medium')} value</span></div>`).join('') || '<div class="empty">No manual targets were identified.</div>'}</div>
+      </details>`;
+    }
+    function autopilotStateStrip(active){
+      const states = ['queued','running','waiting_for_burp_traffic','validating','reporting','completed','paused','stopped','failed'];
+      const doneOrder = states.indexOf(active);
+      return states.map((s,i) => `<div class="state-chip ${s===active?'active':(doneOrder > i && !['paused','stopped','failed'].includes(active)?'done':'')}">${esc(s)}</div>`).join('');
+    }
+    function throttleRecommendation(value){
+      const recommendation = value || 'Continue';
+      const color = recommendation.startsWith('STOP') ? 'var(--red)' : (recommendation.includes('Safe Passive') ? '#f97316' : (recommendation.includes('Bounty') ? 'var(--amber)' : 'var(--green)'));
+      return `<div class="notice" style="border-left-color:${color}"><strong>Recommendation:</strong> ${esc(recommendation)}</div>`;
+    }
+    function autopilotTimeline(items){
+      if(!items.length) return '<div class="empty">Timeline starts when an Autopilot scan is selected.</div>';
+      return `<div class="timeline">${items.map(x => `<div class="timeline-item"><div><span class="timeline-dot ${esc(x.state)}"></span><span class="small muted">${esc(x.state)}</span></div><div>${esc(x.label)}</div></div>`).join('')}</div>`;
+    }
+    function autopilotLogs(logs){
+      if(!logs.length) return '<div class="empty">Live logs appear after the scan starts.</div>';
+      return `<div class="logbox">${logs.slice().reverse().map(l => `<div class="logline"><span class="mono muted">${esc(l.ts || '-')}</span><span class="tag">${esc(l.level || 'info')}</span><span>${esc(l.msg || '')}</span></div>`).join('')}</div>`;
+    }
+    function autopilotEndpointTable(endpoints){
+      return `<div class="table-wrap"><table><thead><tr><th>Score</th><th>Endpoint</th><th>Reason</th></tr></thead><tbody>${endpoints.slice(0,24).map(x => `<tr><td>${esc(x.score ?? '-')}</td><td class="mono small">${esc(x.url || x.endpoint || x)}</td><td>${(x.reasons||['high-value surface']).map(r=>`<span class="tag">${esc(r)}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="3"><div class="empty">High-value endpoints appear after coverage analysis.</div></td></tr>'}</tbody></table></div>`;
+    }
+    function autopilotFindingPanel(title, findings, subtitle){
+      return `<div class="card pad"><div class="card-head"><div><div class="card-title">${esc(title)}</div><div class="card-sub">${esc(subtitle)}</div></div><span class="pill">${findings.length}</span></div><div class="list">${findings.slice(0,8).map(f => bountyFindingCard(f, selectedScan()?.id || '')).join('') || '<div class="empty">No findings in this bucket yet.</div>'}</div></div>`;
+    }
+    function coverageGapList(c){
+      const urls = c.high_risk_untested_urls || [];
+      return `<div class="kv"><div>Untested endpoints</div><div>${esc(c.untested_endpoints ?? 0)}</div><div>Skipped by scope</div><div>${esc((c.skipped_due_to_scope||[]).length || 0)}</div><div>Rate-limit skips</div><div>${esc(c.skipped_due_to_rate_limit ?? 0)}</div><div>Missing auth skips</div><div>${esc(c.skipped_due_to_missing_auth ?? 0)}</div><div>Safety-mode skips</div><div>${esc(c.skipped_due_to_safety_mode ?? 0)}</div></div><div style="height:12px"></div><div class="list">${urls.slice(0,6).map(x => `<div class="row-card"><div class="mono small">${esc(x.url || x.endpoint || x)}</div><span class="tag">score ${esc(x.score ?? '-')}</span></div>`).join('') || '<div class="empty">No high-risk coverage gaps currently listed.</div>'}</div>`;
+    }
+    function readyFindingCard(f, scanId){
+      return `<div class="row-card" style="align-items:flex-start"><div style="min-width:0"><strong>${esc(f.title)}</strong><div class="small muted mono">${esc(f.affected_asset)}</div><div style="margin-top:8px"><span class="sev ${sevClass(f.severity)}">${esc(f.severity)}</span> <span class="tag">${esc(f.confidence)}% confidence</span> <span class="tag">${esc(f.evidence_strength)} evidence</span></div><div class="small" style="margin-top:8px"><strong>Impact:</strong> ${esc(f.impact)}</div><div class="small" style="margin-top:6px"><strong>Why bounty-worthy:</strong> ${esc(f.why_bounty_worthy)}</div><div class="small" style="margin-top:6px"><strong>Remediation:</strong> ${esc(f.remediation)}</div></div>${scanId ? `<button class="btn primary" onclick="openBountyFinding('${esc(scanId)}','${esc(f.id)}','hackerone')">Open</button>` : ''}</div>`;
+    }
+    function renderBounty(){
+      const scan = selectedScan();
+      const b = state.bounty || {};
+      const scope = b.scope_status || state.scope || {};
+      const sessions = b.sessions || {};
+      const confirmed = b.confirmed_bounty_findings || [];
+      const candidates = b.candidate_bounty_findings || [];
+      const endpoints = b.high_value_endpoints || [];
+      const el = document.getElementById('route-bounty');
+      if(!scan){ el.innerHTML = '<div class="empty">Select or start a scan to use Bounty Mode.</div>'; return; }
+      el.innerHTML = `
+        <div class="toolbar">
+          <button class="btn" onclick="refreshSelectedArtifacts().then(render)">Refresh bounty data</button>
+          <button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne report</button>
+          <button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd report</button>
+          <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a>
+          <a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a>
+        </div>
+        <div class="grid cols-4">
+          ${metric('Selected scan', scan.status || '-', scan.target || scan.id)}
+          ${metric('Scope mode', scope.scan_mode || 'conservative', scope.emergency_stop ? 'Emergency stop ON' : 'Policy active')}
+          ${metric('Sessions', sessions.configured ? 'A/B ready' : 'Not ready', `A ${sessions.session_a || '-'} / B ${sessions.session_b || '-'}`)}
+          ${metric('Bounty findings', confirmed.length + candidates.length, `${confirmed.length} confirmed / ${candidates.length} candidates`)}
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad">
+            <div class="card-head"><div><div class="card-title">Scope Status</div><div class="card-sub">Bounty Mode respects the same backend ScopePolicy.</div></div></div>
+            <div class="kv"><div>Active testing</div><div>${esc(scope.active_testing_enabled)}</div><div>Authenticated testing</div><div>${esc(scope.authenticated_testing_enabled)}</div><div>OOB testing</div><div>${esc(scope.oob_testing_enabled)}</div><div>Cloud AI</div><div>${esc(scope.cloud_ai_enabled)}</div><div>Allowed domains</div><div>${esc((scope.allowed_domains||[]).join(', ') || '-')}</div></div>
+          </div>
+          <div class="card pad">
+            <div class="card-head"><div><div class="card-title">Session A / Session B Setup</div><div class="card-sub">Required for IDOR, BOLA, GraphQL auth, and broken access control proof.</div></div><button class="btn" onclick="go('/ui/settings')">Configure</button></div>
+            <div class="kv"><div>Configured</div><div>${esc(sessions.configured ? 'yes' : 'no')}</div><div>Session A</div><div>${esc(sessions.session_a || 'unknown')}</div><div>Session B</div><div>${esc(sessions.session_b || 'unknown')}</div></div>
+          </div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">High-Value Endpoints</div><div class="card-sub">Auth, admin, sensitive data, upload, GraphQL, API, and state-changing surface first.</div></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Score</th><th>Endpoint</th><th>Why It Matters</th></tr></thead><tbody>
+            ${endpoints.slice(0,20).map(x => `<tr><td>${esc(x.score ?? '-')}</td><td class="mono small">${esc(x.url || x.endpoint || x)}</td><td>${(x.reasons||['high-value surface']).map(r => `<span class="tag">${esc(r)}</span>`).join(' ')}</td></tr>`).join('') || '<tr><td colspan="3"><div class="empty">High-value endpoints appear after coverage analysis.</div></td></tr>'}
+          </tbody></table></div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div>${bountyFindingSection('Confirmed Bounty-Worthy Findings', confirmed, scan.id, true)}</div>
+          <div>${bountyFindingSection('Candidate Bounty Findings', candidates, scan.id, false)}</div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">Missing Proof</div><div style="height:12px"></div>${missingProofList(b.missing_proof || [])}</div>
+          <div class="card pad"><div class="card-title">Manual Validation Steps</div><div style="height:12px"></div>${manualValidationList(b.manual_validation_steps || [])}</div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">HackerOne / Bugcrowd Report Builder</div><div class="card-sub">Exports include impact, evidence, proof status, missing proof, and remediation.</div></div></div>
+          <div class="toolbar">
+            <button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne report</button>
+            <button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd report</button>
+            <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">HackerOne Markdown</a>
+            <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=bugcrowd" target="_blank">Bugcrowd Markdown</a>
+            <a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">JSON</a>
+          </div>
+        </div>`;
+    }
+    function bountyFindingSection(title, findings, scanId, confirmed){
+      return `<div class="card pad"><div class="card-head"><div><div class="card-title">${esc(title)}</div><div class="card-sub">${confirmed ? 'Every item has confirmed proof and strong evidence.' : 'Needs proof before submission.'}</div></div></div><div class="list">${findings.map(f => bountyFindingCard(f, scanId)).join('') || `<div class="empty">${confirmed ? 'No confirmed bounty-worthy findings yet.' : 'No candidate bounty findings yet.'}</div>`}</div></div>`;
+    }
+    function bountyFindingCard(f, scanId){
+      const missing = f.missing_proof || [];
+      const steps = f.steps_to_reproduce || [];
+      return `<div class="row-card" style="align-items:flex-start">
+        <div style="min-width:0">
+          <div><strong>${esc(f.title)}</strong></div>
+          <div class="small muted mono">${esc(f.affected_asset)}</div>
+          <div style="margin-top:8px"><span class="sev ${sevClass(f.severity)}">${esc(f.severity)}</span> <span class="tag">${esc(f.confidence)}% confidence</span> <span class="tag">${esc(f.proof_status)}</span> <span class="tag">${esc(f.evidence_strength)} evidence</span></div>
+          <div class="small" style="margin-top:8px"><strong>Impact:</strong> ${esc(f.impact || '-')}</div>
+          <div class="small" style="margin-top:6px"><strong>Why bounty-worthy:</strong> ${esc(f.why_bounty_worthy || '-')}</div>
+          <div class="small" style="margin-top:6px"><strong>Steps:</strong> ${steps.length ? steps.map((s,i)=>`${i+1}. ${esc(s)}`).join(' ') : '-'}</div>
+          <div class="small" style="margin-top:6px"><strong>Evidence:</strong> ${esc(String(f.evidence || '-')).slice(0, 420)}</div>
+          <div class="small" style="margin-top:6px"><strong>Missing proof:</strong> ${missing.length ? missing.map(x=>`<span class="tag">${esc(x)}</span>`).join(' ') : 'None'}</div>
+          <div class="small" style="margin-top:6px"><strong>Remediation:</strong> ${esc(f.remediation || '-')}</div>
+        </div>
+        <button class="btn" onclick="openBountyFinding('${esc(scanId)}','${esc(f.id)}','hackerone')">Open</button>
+      </div>`;
+    }
+    function missingProofList(items){
+      if(!items.length) return '<div class="empty">No missing proof tracked for current bounty candidates.</div>';
+      return `<div class="list">${items.map(x => `<div class="row-card"><div><strong>${esc(x.title)}</strong><div class="small muted mono">${esc(x.id)}</div><div>${(x.missing||[]).map(m=>`<span class="tag">${esc(m)}</span>`).join(' ')}</div></div></div>`).join('')}</div>`;
+    }
+    function manualValidationList(items){
+      if(!items.length) return '<div class="empty">Manual validation steps appear for candidate bounty findings.</div>';
+      return `<div class="list">${items.map(x => `<div class="row-card"><div><strong>${esc(x.title)}</strong><div class="small muted mono">${esc(x.id)}</div><ol>${(x.steps||[]).map(s=>`<li>${esc(s)}</li>`).join('') || '<li>Safely reproduce in scope with Session A and Session B, then capture redacted evidence.</li>'}</ol></div></div>`).join('')}</div>`;
+    }
+    function renderReports(){
+      const s = selectedScan();
+      document.getElementById('route-reports').innerHTML = `
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">Selected report</div><div class="card-sub">${s ? esc(s.target) : 'No scan selected yet.'}</div></div>${s ? `<span class="status ${esc(s.status)}">${esc(s.status)}</span>` : ''}</div>
+          <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
+          ${s ? `<div class="toolbar"><button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(s.id)}/report" target="_blank">Download Markdown</a><a class="btn" href="/findings/export" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(s.id)}/report/csv" target="_blank">Download CSV</a></div>` : '<div class="empty">Start or select a scan before exporting.</div>'}
+        </div>
+        <div style="height:14px"></div>
+        <details class="${state.advancedMode ? '' : 'hidden'}"><summary class="btn">Advanced exports</summary><div style="height:12px"></div><div class="table-wrap"><table><thead><tr><th>Scan</th><th>Target</th><th>Status</th><th>Full</th><th>Executive</th><th>Technical</th><th>Raw JSON</th></tr></thead><tbody>
+        ${state.scans.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(x.target)}</td><td><span class="status ${esc(x.status)}">${esc(x.status)}</span></td><td><button class="btn" onclick="openReport('${esc(x.id)}')">Open</button></td><td><a class="btn" href="/scan/${esc(x.id)}/report/executive" target="_blank">Executive</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/technical" target="_blank">Technical</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/json" target="_blank">JSON</a></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No reports yet.</div></td></tr>'}
+        </tbody></table></div></details>`;
+    }
+    function renderSettings(){
+      document.getElementById('route-settings').innerHTML = `
+        <div class="notice">Use Settings for configuration. Turn on Advanced Mode to see technical pages and raw details.</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">AI Key</div><div style="height:12px"></div><input class="input" id="settings-gemini-key" type="password" placeholder="Gemini API key"><button class="btn primary" style="margin-left:8px" onclick="saveGeminiKey()">Save</button><div class="card-sub" style="margin-top:10px">Current: ${esc(state.health.gemini_api || 'unknown')}</div></div>
+          <div class="card pad"><div class="card-title">OOB Status</div><div style="height:12px"></div><div class="kv"><div>Available</div><div>${esc(state.health.oob_available || '-')}</div><div>Domain</div><div class="mono">${esc(state.health.oob_domain || '-')}</div><div>Payloads</div><div>${esc(state.health.oob_payloads || '-')}</div></div></div>
+          <div class="card pad" style="grid-column:1/-1"><div class="card-title">Dual Session Authorization</div><div style="height:12px"></div><div class="grid cols-2"><textarea class="textarea" id="session-a-cookie" placeholder="Session A cookie"></textarea><textarea class="textarea" id="session-b-cookie" placeholder="Session B cookie"></textarea><input class="input" id="session-a-token" placeholder="Session A bearer token"><input class="input" id="session-b-token" placeholder="Session B bearer token"></div><div style="height:12px"></div><button class="btn primary" onclick="saveSessions()">Save sessions</button></div>
+          <div class="card pad" style="grid-column:1/-1"><div class="card-title">Advanced</div><div class="card-sub">These pages are still available, but hidden from the main sidebar.</div><div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div></div>
+        </div>`;
+    }
+    function renderAI(){
+      document.getElementById('route-ai').innerHTML = `
+        <div class="grid cols-3">${metric('Total calls', state.ai.total_calls ?? 0, 'Router calls')}${metric('Estimated cost', `$${state.ai.estimated_cost_usd ?? 0}`, 'USD')}${metric('Providers', (state.ai.providers || []).length, 'Configured checks')}</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">Providers</div><div style="height:12px"></div>${providerList(state.ai.providers || [])}</div>
+          <div class="card pad"><div class="card-title">AI Privacy Guard</div><div style="height:12px"></div>
+            <label><input type="checkbox" id="privacy-local" ${state.aiPrivacy.local_ollama_preferred !== false ? 'checked' : ''}> Prefer local Ollama</label><br>
+            <label><input type="checkbox" id="privacy-cloud" ${state.aiPrivacy.cloud_ai_enabled ? 'checked' : ''}> Enable cloud AI</label><br>
+            <label><input type="checkbox" id="privacy-raw-cloud" ${state.aiPrivacy.allow_raw_http_to_cloud ? 'checked' : ''}> Allow raw HTTP bodies to cloud AI</label><br>
+            <label><input type="checkbox" id="privacy-audit" ${state.aiPrivacy.audit_enabled !== false ? 'checked' : ''}> Audit AI routing</label><br>
+            <div style="height:10px"></div><input class="input" id="privacy-max-chars" type="number" value="${esc(state.aiPrivacy.max_cloud_prompt_chars ?? 6000)}" placeholder="Max cloud prompt chars">
+            <div style="height:12px"></div><button class="btn primary" onclick="saveAIPrivacy()">Save AI privacy</button>
+            <div class="card-sub" style="margin-top:10px">Cloud AI is effective only when both AI privacy and ScopePolicy allow it.</div>
+          </div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad ${state.advancedMode ? '' : 'hidden'}"><div class="card-title">AI Audit</div><div style="height:12px"></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Provider</th><th>Cloud</th><th>Allowed</th><th>Reason</th><th>Chars</th></tr></thead><tbody>
+            ${state.aiAudit.slice().reverse().map(e => `<tr><td>${esc(e.timestamp)}</td><td>${esc(e.provider)} / ${esc(e.model)}</td><td>${esc(e.cloud)}</td><td>${esc(e.allowed)}</td><td>${esc(e.reason)}</td><td>${esc(e.prompt_chars)}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No AI audit events yet.</div></td></tr>'}
+          </tbody></table></div>
+        </div>`;
+    }
+    function renderScope(){
+      const s = state.scope || {};
+      document.getElementById('route-scope').innerHTML = `
+        <div class="notice">ScopePolicy is enforced by the backend before scans, recon, passive analysis, active tests, OOB payloads, and cloud AI routing.</div>
+        <div style="height:14px"></div>
+        <div class="grid cols-4">
+          ${metric('Mode', s.scan_mode || 'conservative', 'Allowed scan mode')}
+          ${metric('RPM', s.max_requests_per_minute ?? 120, 'Request limit')}
+          ${metric('Total cap', s.max_total_requests ?? 5000, 'All requests')}
+          ${metric('Emergency', s.emergency_stop ? 'ON' : 'OFF', 'Stops scans')}
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">Allowed Domains</div><textarea class="textarea" id="scope-allowed-domains">${esc((s.allowed_domains||[]).join('\n'))}</textarea></div>
+          <div class="card pad"><div class="card-title">Blocked Domains</div><textarea class="textarea" id="scope-blocked-domains">${esc((s.blocked_domains||[]).join('\n'))}</textarea></div>
+          <div class="card pad"><div class="card-title">Allowed URL Patterns</div><textarea class="textarea" id="scope-allowed-patterns">${esc((s.allowed_url_patterns||[]).join('\n'))}</textarea></div>
+          <div class="card pad"><div class="card-title">Blocked URL Patterns</div><textarea class="textarea" id="scope-blocked-patterns">${esc((s.blocked_url_patterns||[]).join('\n'))}</textarea></div>
+          <div class="card pad"><div class="card-title">Allowed Vulnerability Classes</div><textarea class="textarea" id="scope-allowed-classes">${esc((s.allowed_vulnerability_classes||[]).join('\n'))}</textarea></div>
+          <div class="card pad"><div class="card-title">Forbidden Vulnerability Classes</div><textarea class="textarea" id="scope-forbidden-classes">${esc((s.forbidden_vulnerability_classes||[]).join('\n'))}</textarea></div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-title">Controls</div><div style="height:12px"></div>
+          <div class="grid cols-3">
+            <select class="select" id="scope-mode">${(s.scan_modes||['passive_only','conservative','normal','intensive_authorized']).map(m => `<option ${s.scan_mode===m?'selected':''}>${m}</option>`).join('')}</select>
+            <input class="input" id="scope-max-depth" type="number" value="${esc(s.max_depth ?? 2)}" placeholder="Max depth">
+            <input class="input" id="scope-rpm" type="number" value="${esc(s.max_requests_per_minute ?? 120)}" placeholder="Max requests per minute">
+            <input class="input" id="scope-total" type="number" value="${esc(s.max_total_requests ?? 5000)}" placeholder="Max total requests">
+            <label><input type="checkbox" id="scope-passive" ${s.passive_only_mode?'checked':''}> Passive-only mode</label>
+            <label><input type="checkbox" id="scope-active" ${s.active_testing_enabled!==false?'checked':''}> Active testing enabled</label>
+            <label><input type="checkbox" id="scope-auth" ${s.authenticated_testing_enabled?'checked':''}> Authenticated testing enabled</label>
+            <label><input type="checkbox" id="scope-oob" ${s.oob_testing_enabled?'checked':''}> OOB testing enabled</label>
+            <label><input type="checkbox" id="scope-cloud" ${s.cloud_ai_enabled?'checked':''}> Cloud AI enabled</label>
+            <label><input type="checkbox" id="scope-emergency" ${s.emergency_stop?'checked':''}> Emergency stop</label>
+          </div>
+          <div style="height:12px"></div><button class="btn primary" onclick="saveScope()">Save ScopePolicy</button>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad"><div class="card-title">Validate Target</div><div style="height:12px"></div><input class="input" id="scope-validate-target" placeholder="https://target.example"><button class="btn blue" style="margin-left:8px" onclick="validateScopeTarget()">Validate</button><div id="scope-validation-result" class="card-sub" style="margin-top:10px"></div></div>`;
+    }
+    function renderStorage(){
+      const s = state.storage || {};
+      document.getElementById('route-storage').innerHTML = `
+        <div class="card pad">
+          <div class="card-title">Storage</div>
+          <div class="card-sub">Current event-store status loaded from the local backend.</div>
+          <div style="height:12px"></div>
+          <div class="grid cols-4">${metric('Backend', s.database_url || 'unknown', 'Storage engine')}${metric('Events', s.events ?? 0, 'Stored events')}${metric('Audit events', s.audit_events ?? 0, 'Audit trail')}${metric('Retention', s.retention_policy || '-', 'Current policy')}</div>
+          ${state.advancedMode ? `<div style="height:14px"></div><pre class="pre">${esc(JSON.stringify(s, null, 2))}</pre>` : ''}
+        </div>`;
+    }
+    function renderPlaceholder(key){
+      const name = String(key || 'Page').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      document.getElementById('route-placeholder').innerHTML = `
+        <div class="card pad">
+          <div class="card-title">${esc(name)}</div>
+          <div class="card-sub">Coming soon.</div>
+        </div>`;
+    }
+    function renderSystemCheck(){
+      const s = state.systemCheck || {};
+      const dry = state.dryRunResult;
+      const checks = normalizeSystemChecks(s.checks);
+      const summary = checks.reduce((acc, c) => {
+        acc[c.uiStatus] = (acc[c.uiStatus] || 0) + 1;
+        return acc;
+      }, {green:0, yellow:0, red:0});
+      document.getElementById('route-system-check').innerHTML = `
+        <div class="toolbar">
+          <button class="btn primary" onclick="runSystemCheck()">Run System Check</button>
+          <button class="btn blue" onclick="testAutopilotDryRun()">Test Autopilot Dry Run</button>
+          <button class="btn" onclick="go('/ui/autopilot')">Open Autopilot</button>
+          <button class="btn" onclick="go('/ui/bounty')">Open Bounty Mode</button>
+        </div>
+        <div class="grid cols-4">
+          ${metric('Overall', s.overall || 'not run', 'healthy / degraded / error')}
+          ${metric('Green', summary.green, 'Healthy checks')}
+          ${metric('Yellow', summary.yellow, 'Available with warning')}
+          ${metric('Red', summary.red, 'Needs attention')}
+        </div>
+        <div style="height:14px"></div>
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Server</div><div class="mono">${esc(s.api_url || s.server_url || 'http://127.0.0.1:8888')}</div><div>Dashboard</div><div class="mono">${esc(s.dashboard_url || 'http://127.0.0.1:8888/ui')}</div></div></div>
+          <div class="card pad"><div class="card-title">Dry Run</div><div style="height:12px"></div><div class="notice">The dry run creates mock local scan data in memory and durable Autopilot state. It does not scan the internet.</div></div>
+        </div>
+        ${dry ? `<div style="height:14px"></div><div class="card pad"><div class="card-head"><div><div class="card-title">Autopilot Dry Run Result</div><div class="card-sub">${esc(dry.target)}</div></div><span class="tag">DRY RUN</span></div><div class="kv"><div>Scan mode</div><div>${esc(dry.scan_mode)}</div></div><div style="height:14px"></div><div class="grid cols-4"><div class="card pad" style="border-color:var(--green)"><div class="metric" style="color:var(--green)">${esc(dry.valid_bugs_count ?? 0)}</div><div class="metric-label">Valid bugs</div></div><div class="card pad" style="border-color:var(--amber)"><div class="metric" style="color:var(--amber)">${esc(dry.needs_more_proof_count ?? 0)}</div><div class="metric-label">Needs more proof</div></div><div class="card pad"><div class="metric">${esc(dry.candidates_count ?? 0)}</div><div class="metric-label">Candidates</div></div><div class="card pad" style="border-color:var(--blue)"><div class="metric" style="color:var(--blue)">${esc(dry.informational_count ?? 0)}</div><div class="metric-label">Informational</div></div></div></div>` : ''}
+        <div style="height:14px"></div>
+        <div class="grid cols-3">${checks.map(systemCheckCard).join('') || '<div class="empty" style="grid-column:1/-1">Click Run System Check to verify the local platform.</div>'}</div>`;
+    }
+    function normalizeSystemChecks(checks){
+      if (Array.isArray(checks)) {
+        return checks.map(c => ({...c, uiStatus: c.status === 'green' || c.status === 'ok' || c.status === 'available' ? 'green' : (c.status === 'yellow' || c.status === 'missing' || c.status === 'unavailable' ? 'yellow' : 'red')}));
+      }
+      return Object.entries(checks || {}).map(([key, value]) => {
+        const status = value.status || 'error';
+        const uiStatus = status === 'ok' || status === 'available' ? 'green' : (status === 'missing' || status === 'unavailable' ? 'yellow' : 'red');
+        return {name: key.replace(/_/g, ' '), status, uiStatus, detail: value.detail || '', data: value.data || {}};
+      });
+    }
+    function systemCheckCard(c){
+      const uiStatus = c.uiStatus || c.status;
+      const color = uiStatus === 'green' ? 'var(--green)' : (uiStatus === 'yellow' ? 'var(--amber)' : 'var(--red)');
+      return `<div class="card pad" style="border-color:${color}">
+        <div class="card-head"><div><div class="card-title">${esc(c.name)}</div><div class="card-sub">${esc(c.detail)}</div></div><span class="pill"><span class="dot ${uiStatus === 'green' ? 'ok' : (uiStatus === 'yellow' ? 'warn' : 'bad')}"></span>${esc(c.status)}</span></div>
+        ${state.advancedMode && c.data && Object.keys(c.data).length ? `<pre class="pre" style="max-height:170px">${esc(JSON.stringify(c.data, null, 2))}</pre>` : ''}
+      </div>`;
+    }
+    function renderHelp(){
+      document.getElementById('route-help').innerHTML = `
+        <div class="grid cols-2">
+          <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Backend</div><div class="mono">http://127.0.0.1:8888</div><div>Dashboard</div><div class="mono">http://127.0.0.1:8888/ui</div><div>Local domain</div><div class="mono">http://burpollama.localhost:8888/ui</div></div></div>
+          <div class="card pad"><div class="card-title">Workflow</div><div style="height:12px"></div><div class="list"><div class="row-card">Configure AI and sessions</div><div class="row-card">Start an authorized scan</div><div class="row-card">Review findings and ambiguous queue</div><div class="row-card">Open coverage, attack graph, and reports</div></div></div>
+          <div class="card pad" style="grid-column:1/-1"><div class="card-title">API Reference</div><div style="height:12px"></div><pre class="pre">POST /scan
+POST /autopilot/start
+POST /autopilot/resume
+GET /autopilot/dry-run
+GET /autopilot/state
+GET /system-check
+POST /system-check/run
+GET /scans
+GET /scan/{scan_id}
+GET /scan/{scan_id}/coverage
+GET /scan/{scan_id}/attack-graph
+GET /scan/{scan_id}/autopilot
+GET /scan/{scan_id}/autopilot/report
+GET /scan/{scan_id}/bounty
+GET /scan/{scan_id}/bounty/markdown
+GET /scan/{scan_id}/bounty/json
+POST /scan/{scan_id}/retry-failed-task
+GET /scan/{scan_id}/report
+GET /findings
+GET /review
+GET /ai/providers
+GET /ai/privacy
+POST /ai/privacy
+GET /ai/audit
+GET /scope
+POST /scope
+POST /scope/validate-target
+GET /metrics
+POST /analyze</pre></div>
+        </div>`;
+    }
+
+    function go(path){
+      history.pushState({}, '', path);
+      routeFromPath();
+      render();
+    }
+    function routeFromPath(){
+      const parts = location.pathname.replace(/^\/ui\/?/, '').split('/').filter(Boolean);
+      let first = parts[0] || 'dashboard';
+      if(first === 'home') first = 'dashboard';
+      if(first === 'scans' && parts[1]){
+        state.route = 'scan-detail';
+        selectScan(parts[1], false);
+      }else{
+        state.route = first;
+      }
+    }
+    document.getElementById('nav').addEventListener('click', ev => {
+      const a = ev.target.closest('a');
+      if(!a) return;
+      ev.preventDefault();
+      go(a.getAttribute('href'));
+    });
+    window.addEventListener('popstate', () => { routeFromPath(); render(); });
+
+    routeFromPath();
+    connectWs();
+    refreshAll();
+    setInterval(refreshAll, 15000);
+  </script>
+</body>
+</html>

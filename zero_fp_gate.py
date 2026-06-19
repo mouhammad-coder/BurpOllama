@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+from typing import Any
+
+from finding_model import normalize_finding
+from deduplication import deduplicate_findings
+from report_quality_scorer import score_finding
+from scope_policy import ScopePolicy, scope_policy
+
+
+READY_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
+READY_EXPLOITABILITY = {"confirmed", "probable"}
+READY_EVIDENCE = {"strong", "moderate"}
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _lower(value: Any) -> str:
+    return _text(value).lower()
+
+
+def _steps_present(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_text(step) for step in value)
+    return bool(_text(value))
+
+
+def _with_gate(finding: dict, label: str, failed_checks: list[str]) -> dict:
+    out = dict(finding)
+    out["zero_fp_label"] = label
+    out["zero_fp_failed_checks"] = failed_checks
+    return out
+
+
+def _active_scope_allowed(url: str, policy: ScopePolicy = scope_policy) -> tuple[bool, str]:
+    if not _text(url):
+        return False, "missing_affected_url"
+    allowed, reason = policy.validate_target(url, action="active")
+    if allowed:
+        return True, ""
+    return False, reason or "out_of_scope"
+
+
+def _failed_ready_checks(finding: dict, policy: ScopePolicy = scope_policy) -> list[str]:
+    failed: list[str] = []
+    affected_url = _text(finding.get("affected_url") or finding.get("url"))
+    severity = _text(finding.get("severity")).upper()
+    exploitability = _lower(finding.get("exploitability_status"))
+    evidence_strength = _lower(finding.get("evidence_strength"))
+    false_positive_risk = _lower(finding.get("false_positive_risk"))
+
+    scope_ok, scope_reason = _active_scope_allowed(affected_url, policy)
+    if not scope_ok:
+        failed.append(f"scope:{scope_reason}")
+    if severity not in READY_SEVERITIES:
+        failed.append("severity_not_medium_or_higher")
+    if exploitability not in READY_EXPLOITABILITY:
+        failed.append("exploitability_not_confirmed_or_probable")
+    if evidence_strength not in READY_EVIDENCE:
+        failed.append("evidence_not_strong_or_moderate")
+    if int(float(finding.get("confidence", 0) or 0)) < 70:
+        failed.append("confidence_below_70")
+    if not _text(finding.get("business_impact")):
+        failed.append("missing_business_impact")
+    if not _steps_present(finding.get("reproduction_steps")):
+        failed.append("missing_reproduction_steps")
+    if not _text(finding.get("remediation")):
+        failed.append("missing_remediation")
+    if _lower(finding.get("redaction_status")) != "redacted":
+        failed.append("unredacted_evidence")
+    if false_positive_risk == "high":
+        failed.append("high_false_positive_risk")
+    if exploitability == "false_positive":
+        failed.append("marked_false_positive")
+    if exploitability == "candidate" and severity in {"MEDIUM", "LOW", "INFO", "INFORMATIONAL"}:
+        failed.append("medium_or_lower_candidate")
+    return failed
+
+
+def apply_zero_fp_gate(findings: list[dict], scope: dict) -> dict:
+    policy = scope_policy
+    if scope:
+        policy = ScopePolicy()
+        policy.update(scope, persist=False)
+    result = {
+        "valid_bugs": [],
+        "needs_more_proof": [],
+        "candidates": [],
+        "informational": [],
+        "false_positives_removed": [],
+        "skipped_out_of_scope": [],
+    }
+
+    for raw in deduplicate_findings(findings or []):
+        finding = normalize_finding(raw)
+        affected_url = _text(finding.get("affected_url") or finding.get("url"))
+        scoring_input = dict(finding)
+        scoring_input["_scope_match"] = policy.validate_target(
+            affected_url, action="report"
+        )[0] if affected_url else False
+        quality = score_finding(scoring_input)
+        finding["quality_score"] = quality["score"]
+        finding["grade"] = quality["grade"]
+        finding["quality_grade"] = quality["grade"]
+        finding["ready_to_submit"] = quality["ready_to_submit"]
+        finding["quality_improvements"] = quality["improvements"]
+        finding["quality_blocking_issues"] = quality["blocking_issues"]
+        failed = _failed_ready_checks(finding, policy)
+        if quality["score"] < 70:
+            failed.append("quality_score_below_70")
+        scope_ok, _scope_reason = _active_scope_allowed(affected_url, policy)
+        severity = _text(finding.get("severity")).upper()
+        exploitability = _lower(finding.get("exploitability_status"))
+        evidence_strength = _lower(finding.get("evidence_strength"))
+        false_positive_risk = _lower(finding.get("false_positive_risk"))
+        confidence = int(float(finding.get("confidence", 0) or 0))
+
+        if not scope_ok:
+            result["skipped_out_of_scope"].append(_with_gate(finding, "SKIPPED", failed))
+        elif exploitability == "false_positive" or false_positive_risk == "high":
+            result["false_positives_removed"].append(_with_gate(finding, "REMOVED", failed))
+        elif not failed:
+            label = "READY" if quality["score"] >= 85 else "VALID"
+            result["valid_bugs"].append(_with_gate(finding, label, []))
+        elif severity in {"INFO", "INFORMATIONAL"} or not _text(finding.get("business_impact")):
+            result["informational"].append(_with_gate(finding, "INFO", failed))
+        elif exploitability == "candidate" or confidence < 70:
+            result["candidates"].append(_with_gate(finding, "CANDIDATE", failed))
+        elif (
+            "exploitability_not_confirmed_or_probable" in failed
+            or "evidence_not_strong_or_moderate" in failed
+            or evidence_strength not in READY_EVIDENCE
+        ):
+            result["needs_more_proof"].append(_with_gate(finding, "NEEDS PROOF", failed))
+        else:
+            result["candidates"].append(_with_gate(finding, "CANDIDATE", failed))
+
+    return result
