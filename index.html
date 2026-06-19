@@ -1099,7 +1099,7 @@
         {label:'Discovering URLs', keys:['recon']},
         {label:'Finding interesting endpoints', keys:['schema','content']},
         {label:'Testing vulnerabilities', keys:['hunt','oob']},
-        {label:'Reviewing findings with AI', keys:['triage','analysis']},
+        {label:'Running AI triage', keys:['triage','analysis']},
         {label:'Building report', keys:['report','intelligence','complete']}
       ];
       let active = phases.findIndex(item => item.keys.some(key => phase.includes(key)));

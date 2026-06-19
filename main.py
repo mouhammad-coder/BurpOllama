@@ -1553,11 +1553,15 @@ async def _ollama_model_status() -> dict:
             str(model.get("name") or model.get("model") or "")
             for model in payload.get("models", [])
         ]
-        installed_bases = {name.split(":")[0] for name in installed}
-        missing = [
-            model for model in required
-            if model not in installed and model.split(":")[0] not in installed_bases
-        ]
+        installed_set = set(installed)
+        installed_bases = {name.split(":", 1)[0] for name in installed}
+
+        def model_is_installed(model: str) -> bool:
+            if ":" in model:
+                return model in installed_set
+            return model in installed_set or model in installed_bases
+
+        missing = [model for model in required if not model_is_installed(model)]
         return {
             "available": True,
             "installed": installed,

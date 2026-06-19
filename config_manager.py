@@ -67,9 +67,23 @@ def _parse_env_file() -> dict[str, str]:
         key = key.strip()
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            quote = value[0]
             value = value[1:-1]
+            if quote == '"':
+                value = re.sub(r'\\(["\\$`])', r"\1", value)
         values[key] = value
     return values
+
+
+def _serialize_env_value(value: str) -> str:
+    """Quote values so sourcing .env in Bash cannot execute their contents."""
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
 
 
 def load_project_env() -> dict[str, str]:
@@ -160,7 +174,11 @@ def save_settings(updates: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(" ".join(errors))
 
     ENV_PATH.write_text(
-        "\n".join(f"{key}={existing.get(key, '')}" for key in SETTING_DEFAULTS) + "\n",
+        "\n".join(
+            f"{key}={_serialize_env_value(existing.get(key, ''))}"
+            for key in SETTING_DEFAULTS
+        )
+        + "\n",
         encoding="utf-8",
     )
     for key in SETTING_DEFAULTS:
