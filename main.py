@@ -802,7 +802,15 @@ def _restore_checkpoint_findings(scan_id: str, scan: dict):
 
 
 async def run_pipeline(scan_id: str, target: str, api_key: str):
+    recon_data = {}
+    raw_findings = []
+    triaged_findings = []
+    scan_logs = []
+    coverage_data = {}
+    attack_graph_data = {}
+
     scan = scans[scan_id]
+    scan_logs = scan.setdefault("logs", scan_logs)
     scan["status"] = "running"
     task_id = scan.get("scheduler_task_id", "")
     autopilot_state.update_run(scan_id, status="running", phase=scan.get("phase", "queued"))
@@ -837,6 +845,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
     try:
         event_store.append(scan_id, "scan.started", {"target": target})
+        if scan.get("authorization_warning"):
+            await log(scan["authorization_warning"], "warning")
         await enforce_scan_control(scan_id)
         await progress("profiling", 1, 1, "Analyzing target behavior")
         cached_profile = target_profile_cache.get(target)
@@ -844,7 +854,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             target_profile = TargetProfile(**cached_profile[1])
             await log("Using recent authorized target profile.", "adaptive")
         else:
-            target_profile = await profile_target(target, scope_policy, log)
+            try:
+                target_profile = await profile_target(target, scope_policy, log)
+            except Exception as e:
+                await log("Profiling error: {}".format(e), "error")
+                target_profile = TargetProfile(
+                    target=target,
+                    reasons=["Profiling failed; using safe default scan plan."],
+                )
         adaptive_plan = build_adaptive_plan(
             target_profile,
             scan.get("requested_scan_mode", ""),
@@ -888,12 +905,34 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await log("P1: RECON", "phase")
         def recon_log(msg, level="info"):
             asyncio.create_task(log(msg, level))
-        with metrics.span("phase.recon", scan_id=scan_id):
-            recon_data = await run_full_recon(
-                target,
-                recon_log,
-                adaptive_plan=adaptive_plan.to_dict(),
-            )
+        try:
+            with metrics.span("phase.recon", scan_id=scan_id):
+                recon_data = await run_full_recon(
+                    target,
+                    recon_log,
+                    adaptive_plan=adaptive_plan.to_dict(),
+                )
+        except Exception as e:
+            await log("Recon error: {}".format(e), "error")
+            recon_data = {
+                "domain": target,
+                "urls": [],
+                "live_hosts": [],
+                "js_findings": [],
+                "js_urls": [],
+                "websocket_urls": [],
+                "content_discovery": [],
+                "technologies": [],
+                "tech_stack": [],
+                "stats": {
+                    "subdomains": 0,
+                    "live_hosts": 0,
+                    "urls": 0,
+                    "urls_raw": 0,
+                    "urls_clustered": 0,
+                    "js_findings": 0,
+                },
+            }
         previous_level = adaptive_plan.level
         target_profile = refine_profile(target_profile, recon_data)
         adaptive_plan = build_adaptive_plan(
@@ -924,8 +963,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         })
         await enforce_scan_control(scan_id)
         await broadcast({"type": "recon_complete", "scan_id": scan_id,
-                         "data": {"stats": recon_data["stats"],
-                                  "live_hosts": recon_data["live_hosts"][:20]}})
+                         "data": {"stats": recon_data.get("stats", {}),
+                                  "live_hosts": recon_data.get("live_hosts", [])[:20]}})
         for jf in recon_data.get("js_findings", []):
             sev = jf.get("severity", "HIGH" if any(
                 k in jf.get("type","") for k in ["Key","Secret","JWT","Token","AWS","Firebase"]
@@ -949,10 +988,11 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             stats[f["severity"]] += 1; stats["total"] += 1
             await broadcast({"type": "finding", "data": f})
         delta_tracker.register_mode1_surface(recon_data.get("urls", []))
+        recon_stats = recon_data.get("stats", {})
         await log("Recon: {} hosts | {} URLs | {} JS findings".format(
-            recon_data["stats"]["live_hosts"],
-            recon_data["stats"].get("urls_clustered", recon_data["stats"].get("urls",0)),
-            recon_data["stats"]["js_findings"]), "success")
+            recon_stats.get("live_hosts", 0),
+            recon_stats.get("urls_clustered", recon_stats.get("urls", 0)),
+            recon_stats.get("js_findings", 0)), "success")
 
         # PHASE 1.5a: OOB REGISTRATION
         await enforce_scan_control(scan_id)
@@ -966,7 +1006,11 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             and scope_policy.config.oob_testing_enabled
             and not scope_policy.config.passive_only_mode
         ):
-            oob_started = await oob.start(log)
+            try:
+                oob_started = await oob.start(log)
+            except Exception as e:
+                await log("OOB startup error: {}".format(e), "error")
+                oob_started = False
         else:
             await log("OOB disabled by ScopePolicy", "warning")
         if oob_started:
@@ -984,7 +1028,11 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             scan["phase"] = "waf_check"
             await broadcast({"type": "phase_change", "scan_id": scan_id, "phase": "waf_check"})
             await log("P1.5b: WAF FINGERPRINTING", "phase")
-            waf_info = await fingerprint_waf_v2(allowed_live_hosts[0]["url"], log)
+            try:
+                waf_info = await fingerprint_waf_v2(allowed_live_hosts[0]["url"], log)
+            except Exception as e:
+                await log("WAF fingerprint error: {}".format(e), "error")
+                waf_info = {}
             scan["waf"] = waf_info
             if waf_info.get("detected"):
                 await log("WAF: {} ({}%) — strategy: {}".format(
@@ -1001,19 +1049,31 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                          if any(k in jf.get("file","").lower()
                                 for k in ["swagger","openapi","api-docs"])
                          and scope_policy.validate_target(jf.get("file", ""), action="scan")[0]]
-        schema_data = (
-            await ingest_schemas(allowed_live_hosts, known_swagger, [], log)
-            if adaptive_plan.level != "LIGHT"
-            or target_profile.api_heavy
-            or target_profile.graphql_detected
-            else {
+        empty_schema_data = {
                 "openapi_endpoints": [],
                 "graphql_endpoints": [],
                 "graphql_schemas": [],
                 "all_urls": [],
                 "schemas_found": 0,
             }
-        )
+        def schema_log(msg, level="info"):
+            asyncio.create_task(log(msg, level))
+        try:
+            schema_data = (
+                await ingest_schemas(
+                    allowed_live_hosts,
+                    known_swagger,
+                    [],
+                    schema_log,
+                )
+                if adaptive_plan.level != "LIGHT"
+                or target_profile.api_heavy
+                or target_profile.graphql_detected
+                else empty_schema_data
+            )
+        except Exception as e:
+            await log("Schema ingestion error: {}".format(e), "error")
+            schema_data = empty_schema_data
         target_profile = refine_profile(target_profile, recon_data, schema_data)
         adaptive_plan = build_adaptive_plan(
             target_profile,
@@ -1051,22 +1111,26 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             await log("Active hunt skipped by ScopePolicy", "warning")
             raw_findings = []
         else:
-            raw_findings = await run_hunt(
-                prioritized_urls,
-                recon_data.get("live_hosts", []),
-                log, hunt_progress,
-                waf_info=waf_info, schema_urls=schema_urls,
-                graphql_schemas=schema_data.get("graphql_schemas", []),
-                schema_endpoints=schema_data.get("openapi_endpoints", []),
-                websocket_urls=recon_data.get("websocket_urls", []),
-                js_urls=recon_data.get("js_urls", []),
-                enabled_classes=adaptive_plan.enabled_modules,
-                max_urls=adaptive_plan.max_urls,
-                concurrency_override=adaptive_plan.concurrency,
-                request_timeout=adaptive_plan.request_timeout,
-                batch_size=adaptive_plan.request_batch_size,
-                resource_controller=resources,
-            )
+            try:
+                raw_findings = await run_hunt(
+                    prioritized_urls,
+                    recon_data.get("live_hosts", []),
+                    log, hunt_progress,
+                    waf_info=waf_info, schema_urls=schema_urls,
+                    graphql_schemas=schema_data.get("graphql_schemas", []),
+                    schema_endpoints=schema_data.get("openapi_endpoints", []),
+                    websocket_urls=recon_data.get("websocket_urls", []),
+                    js_urls=recon_data.get("js_urls", []),
+                    enabled_classes=adaptive_plan.enabled_modules,
+                    max_urls=adaptive_plan.max_urls,
+                    concurrency_override=adaptive_plan.concurrency,
+                    request_timeout=adaptive_plan.request_timeout,
+                    batch_size=adaptive_plan.request_batch_size,
+                    resource_controller=resources,
+                )
+            except Exception as e:
+                await log("Hunt error: {}".format(e), "error")
+                raw_findings = []
         raw_findings = normalize_findings(raw_findings, scan_id=scan_id)
 
         # POST-HUNT: offline business-logic candidate classification.
@@ -1079,10 +1143,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         classification_recon["graphql_endpoints"] = schema_data.get(
             "graphql_endpoints", []
         )
-        business_logic_candidates = normalize_findings(
-            classify_business_logic_candidates(raw_findings, classification_recon),
-            scan_id=scan_id,
-        ) if adaptive_plan.run_business_logic else []
+        try:
+            business_logic_candidates = normalize_findings(
+                classify_business_logic_candidates(raw_findings, classification_recon),
+                scan_id=scan_id,
+            ) if adaptive_plan.run_business_logic else []
+        except Exception as e:
+            await log("Business logic classification error: {}".format(e), "error")
+            business_logic_candidates = []
         raw_findings.extend(business_logic_candidates)
         scan["business_logic_candidates"] = business_logic_candidates
         await log(
@@ -1094,14 +1162,18 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
         # Phase 2 supplement: bounded nuclei CVE/exposure/misconfiguration scan.
         await resources.gate()
-        nuclei_findings = (
-            await run_nuclei_scan(
-                recon_data.get("live_hosts", []),
-                scope_policy,
-                log,
+        try:
+            nuclei_findings = (
+                await run_nuclei_scan(
+                    recon_data.get("live_hosts", []),
+                    scope_policy,
+                    log,
+                )
+                if adaptive_plan.run_nuclei else []
             )
-            if adaptive_plan.run_nuclei else []
-        )
+        except Exception as e:
+            await log("Nuclei error: {}".format(e), "error")
+            nuclei_findings = []
         nuclei_findings = normalize_findings(nuclei_findings, scan_id=scan_id)
         raw_findings.extend(nuclei_findings)
         scan["nuclei_findings"] = nuclei_findings
@@ -1128,7 +1200,11 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         if oob_started:
             await enforce_scan_control(scan_id)
             await log("Polling OOB interactions...", "phase")
-            oob_findings = await oob.poll_interactions(log, wait_secs=12)
+            try:
+                oob_findings = await oob.poll_interactions(log, wait_secs=12)
+            except Exception as e:
+                await log("OOB polling error: {}".format(e), "error")
+                oob_findings = []
             for f in oob_findings:
                 f["id"]        = "OOB-{}-{}".format(int(time.time()*1000), len(findings_store))
                 f["timestamp"] = datetime.utcnow().isoformat()
@@ -1195,9 +1271,25 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             ]
         if ai_candidates:
             await resources.gate()
-            ai_triaged, verdict_counts = await batch_triage(
-                ai_candidates, api_key, log, triage_progress
-            )
+            try:
+                ai_triaged, verdict_counts = await batch_triage(
+                    ai_candidates, api_key, log, triage_progress
+                )
+            except Exception as e:
+                await log("Triage error: {}".format(e), "error")
+                ai_triaged = [
+                    {
+                        **finding,
+                        "verdict": "NEEDS_MANUAL_REVIEW",
+                        "triaged": False,
+                        "triage": {
+                            "verdict": "NEEDS_MANUAL_REVIEW",
+                            "reason": "Triage phase failed",
+                        },
+                    }
+                    for finding in ai_candidates
+                ]
+                verdict_counts = {"NEEDS_MANUAL_REVIEW": len(ai_triaged)}
             ai_map = {finding.get("id"): finding for finding in ai_triaged}
             triaged = [
                 ai_map.get(finding.get("id"), {
@@ -1213,6 +1305,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             ]
             verdict_counts = {"adaptive_no_ai_needed": len(triaged)}
         triaged = normalize_findings(triaged, scan_id=scan_id)
+        triaged_findings = triaged
         scan["triaged_findings"] = triaged
         triaged_map = {f["id"]: f for f in triaged}
         for i, f in enumerate(findings_store):
@@ -1230,31 +1323,55 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await log("P4: DEEP ANALYSIS", "phase")
         passable = [f for f in triaged if f.get("verdict") in ("PASS","DOWNGRADE")]
         await resources.gate()
-        analysis = (
-            await run_deep_analysis(passable, recon_data, api_key)
-            if adaptive_plan.run_deep_analysis
-            else {
+        try:
+            analysis = (
+                await run_deep_analysis(passable, recon_data, api_key)
+                if adaptive_plan.run_deep_analysis
+                else {
+                    "chains": [],
+                    "high_priority": passable[:10],
+                    "adaptive_skip": (
+                        "Deep AI analysis was not needed for the selected target profile."
+                    ),
+                }
+            )
+        except Exception as e:
+            await log("Analysis error: {}".format(e), "error")
+            analysis = {
                 "chains": [],
                 "high_priority": passable[:10],
-                "adaptive_skip": (
-                    "Deep AI analysis was not needed for the selected target profile."
-                ),
+                "analysis_error": str(e),
             }
-        )
-        ato_recon = dict(recon_data)
-        ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
-        ato_chains = detect_ato_chains(triaged, ato_recon)
-        scan["ato_chains"] = ato_chains
-        exploit_chains = build_exploit_chains(passable)
-        for finding in triaged:
-            finding.update(score_impact_finding(finding, exploit_chains))
-        passable = [f for f in triaged if f.get("verdict") in ("PASS", "DOWNGRADE")]
-        scan["triaged_findings"] = triaged
-        scan["exploit_chains"] = exploit_chains
-        attack_graph = build_attack_graph(passable, ato_chains).to_dict()
-        attack_graph["exploit_chains"] = exploit_chains
-        coverage = compute_coverage(recon_data, passable, prioritized_urls[:200])
-        coverage2 = compute_coverage_v2(scan_id, recon_data, passable, prioritized_urls[:200], scan.get("logs", []))
+        try:
+            ato_recon = dict(recon_data)
+            ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
+            ato_chains = detect_ato_chains(triaged, ato_recon)
+            scan["ato_chains"] = ato_chains
+            exploit_chains = build_exploit_chains(passable)
+            for finding in triaged:
+                finding.update(score_impact_finding(finding, exploit_chains))
+            passable = [f for f in triaged if f.get("verdict") in ("PASS", "DOWNGRADE")]
+            scan["triaged_findings"] = triaged
+            scan["exploit_chains"] = exploit_chains
+            attack_graph = build_attack_graph(passable, ato_chains).to_dict()
+            attack_graph["exploit_chains"] = exploit_chains
+            coverage = compute_coverage(recon_data, passable, prioritized_urls[:200])
+            coverage2 = compute_coverage_v2(
+                scan_id,
+                recon_data,
+                passable,
+                prioritized_urls[:200],
+                scan.get("logs", []),
+            )
+        except Exception as e:
+            await log("Coverage and attack graph error: {}".format(e), "error")
+            ato_chains = []
+            exploit_chains = {}
+            attack_graph = {"attack_paths": [], "path_count": 0, "exploit_chains": {}}
+            coverage = {"coverage_percent": 0}
+            coverage2 = {"coverage_percent": 0}
+        attack_graph_data = attack_graph
+        coverage_data = coverage2
         analysis["attack_graph"] = attack_graph
         analysis["exploit_chains"] = exploit_chains
         analysis["ato_chains"] = ato_chains
@@ -1282,10 +1399,19 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await enforce_scan_control(scan_id)
         await _save_scan_transition(scan_id, "report")
         await log("P5: GENERATING REPORT", "phase")
-        report_md  = await generate_full_report(
-            target, recon_data, triaged, analysis, api_key,
-            scope=scope_policy.to_dict(),
-            review_items=review_queue.get_all(scan_id, limit=500))
+        try:
+            report_md = await generate_full_report(
+                target, recon_data, triaged, analysis, api_key,
+                scope=scope_policy.to_dict(),
+                review_items=review_queue.get_all(scan_id, limit=500))
+        except Exception as e:
+            await log("Report generation error: {}".format(e), "error")
+            report_md = (
+                "# BurpOllama Partial Scan Report\n\n"
+                "Target: {}\n\n"
+                "Report generation failed, but the scan results remain available "
+                "in the dashboard.\n\nError: {}\n"
+            ).format(target, e)
         scan["report"] = report_md
         autopilot_state.output(scan_id, "reporter", "report", {"chars": len(report_md or "")})
         reportable = len([f for f in triaged if f.get("verdict") in ("PASS","DOWNGRADE")])
@@ -1299,23 +1425,33 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await resources.gate()
         await _save_scan_transition(scan_id, "intelligence")
         await log("P6: ANALYST INTELLIGENCE BRIEFING", "phase")
-        intelligence = (
-            _fallback_scan_intelligence(
+        try:
+            intelligence = (
+                _fallback_scan_intelligence(
+                    triaged,
+                    recon_data,
+                    attack_graph,
+                    coverage2,
+                )
+                if adaptive_plan.level == "LIGHT" or not triaged
+                else await generate_scan_intelligence(
+                    scan_id,
+                    triaged,
+                    recon_data,
+                    attack_graph,
+                    coverage2,
+                    api_key,
+                )
+            )
+        except Exception as e:
+            await log("Intelligence error: {}".format(e), "error")
+            intelligence = _fallback_scan_intelligence(
                 triaged,
                 recon_data,
                 attack_graph,
                 coverage2,
             )
-            if adaptive_plan.level == "LIGHT" or not triaged
-            else await generate_scan_intelligence(
-                scan_id,
-                triaged,
-                recon_data,
-                attack_graph,
-                coverage2,
-                api_key,
-            )
-        )
+            intelligence["generation_error"] = str(e)
         scan["intelligence"] = intelligence
         autopilot_state.output(
             scan_id,
@@ -1359,7 +1495,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await broadcast({"type": "scan_stopped", "scan_id": scan_id, "reason": str(e)})
         event_store.append(scan_id, "scan.stopped", {"reason": str(e)})
     except Exception as e:
-        scan.update({"status": "error", "error": str(e)})
+        scan.update({"status": "failed", "phase": "failed", "error": str(e)})
         autopilot_state.update_run(scan_id, status="failed", phase=scan.get("phase", "error"),
                                    checkpoint={"error": str(e)})
         autopilot_state.upsert_task(scan_id, "full_pipeline", "failed", error=str(e))
@@ -2079,6 +2215,11 @@ async def start_scan(req: ScanRequest):
     ok, reason = scope_policy.validate_target(req.target, action="scan")
     if not ok:
         raise HTTPException(403, reason)
+    authorization_warning = (
+        "Make sure you have written authorization to test this target."
+        if not scope_policy.config.allowed_domains
+        else ""
+    )
     if req.api_key:
         set_api_key(req.api_key)
     scan_id  = str(uuid.uuid4())[:12]
@@ -2087,6 +2228,7 @@ async def start_scan(req: ScanRequest):
         "status":"queued","phase":"queued",
         "control":"run",
         "requested_scan_mode": requested_scan_mode,
+        "authorization_warning": authorization_warning,
         "started":datetime.utcnow().isoformat(),"logs":[],
     }
     resume_token = autopilot_state.create_run(scan_id, req.target, status="queued", phase="queued")
@@ -2096,7 +2238,13 @@ async def start_scan(req: ScanRequest):
     autopilot_state.upsert_task(scan_id, "full_pipeline", "queued", {"scheduler_task_id": task_id})
     event_store.audit("local-user", "scan.start", scan_id, {"target": req.target})
     asyncio.create_task(run_pipeline(scan_id, req.target, key))
-    return {"scan_id":scan_id,"target":req.target,"status":"started","resume_token":resume_token}
+    return {
+        "scan_id": scan_id,
+        "target": req.target,
+        "status": "started",
+        "resume_token": resume_token,
+        "warning": authorization_warning,
+    }
 
 @app.post("/autopilot/start")
 async def start_autopilot(req: ScanRequest):
@@ -3098,6 +3246,11 @@ async def auto_profile_target(payload: dict):
     return {
         "target_profile": profile.to_dict(),
         "adaptive_plan": plan.to_dict(),
+        "warning": (
+            "Make sure you have written authorization to test this target."
+            if not scope_policy.config.allowed_domains
+            else ""
+        ),
         "summary": "Target Profile: {} | Recommended Scan: {} SCAN".format(
             profile.profile_type,
             plan.level,
@@ -3116,7 +3269,16 @@ async def set_scope(cfg: dict):
 @app.post("/scope/validate-target")
 async def validate_scope_target(req: TargetValidationRequest):
     ok, reason = scope_policy.validate_target(req.target, action=req.action or "scan")
-    return {"allowed": ok, "reason": reason, "policy": scope_policy.to_dict()}
+    return {
+        "allowed": ok,
+        "reason": reason,
+        "warning": (
+            "Make sure you have written authorization to test this target."
+            if ok and not scope_policy.config.allowed_domains
+            else ""
+        ),
+        "policy": scope_policy.to_dict(),
+    }
 
 @app.post("/scope/emergency-stop")
 async def emergency_stop():

@@ -553,6 +553,7 @@
       });
       if(!r.ok){ alert(await r.text()); return; }
       const d = await r.json();
+      if(d.warning) alert(d.warning);
       state.scans.unshift({id:d.scan_id,target:d.target,status:'running',phase:'queued',started:new Date().toISOString()});
       selectScan(d.scan_id);
       render();
@@ -823,6 +824,7 @@
       });
       if(!r.ok){ alert(await r.text()); return; }
       const d = await r.json();
+      if(d.warning) alert(d.warning);
       state.scans.unshift({id:d.scan_id,target:d.target,status:'queued',phase:'queued',started:new Date().toISOString()});
       selectScan(d.scan_id, false);
       await refreshSelectedArtifacts();
@@ -1319,6 +1321,7 @@
         });
         const validation = await validationResponse.json();
         if(!validation.allowed) throw new Error(validation.reason || 'The target is outside the saved scope.');
+        if(validation.warning) alert(validation.warning);
 
         const profileResponse = await fetch(endpoint('/auto/profile-target'), {
           method:'POST',headers:{'Content-Type':'application/json'},
@@ -1335,6 +1338,7 @@
         });
         if(!scanResponse.ok) throw new Error(await scanResponse.text());
         const scan = await scanResponse.json();
+        if(scan.warning && scan.warning !== validation.warning) alert(scan.warning);
         state.scans.unshift({id:scan.scan_id,target:scan.target,status:'queued',phase:'queued',started:new Date().toISOString()});
         selectScan(scan.scan_id, false);
         await refreshSelectedArtifacts();
