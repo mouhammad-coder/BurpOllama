@@ -1,10 +1,108 @@
 # BurpOllama
 
-Autonomous bug bounty and application security scanner with recon, passive Burp analysis, WAF-aware throttling, OOB verification, AI triage, attack graphing, and report generation.
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-89.6%25-blue?style=for-the-badge&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/License-Private-red?style=for-the-badge" alt="Private License">
+  <img src="https://img.shields.io/badge/Platform-Kali%20Linux-black?style=for-the-badge&logo=linux" alt="Kali Linux">
+  <img src="https://img.shields.io/badge/AI-Local%20%2B%20Cloud-green?style=for-the-badge" alt="Local and Cloud AI">
+  <img src="https://img.shields.io/badge/Classes-34%20Vuln%20Classes-orange?style=for-the-badge" alt="34 Vulnerability Classes">
+</p>
 
-Use this only against targets you own or have explicit written authorization to test.
+<p align="center">
+<b>Local autonomous bug bounty platform with AI triage, 34 vulnerability classes,
+Zero FP mode, exploit chain builder, and bounty-ready report export.</b>
+</p>
 
-## Kali Quick Start
+---
+
+## What It Does
+
+BurpOllama is a local web-based security platform that runs on your machine.
+You open the dashboard, enter an authorized target, and it:
+
+- Discovers attack surface automatically
+- Tests 34 vulnerability classes
+- Confirms findings with actual proof (not just detection)
+- Scores everything with CVSS++ business-aware impact scoring
+- Builds exploit chains connecting related vulnerabilities
+- Exports HackerOne and Bugcrowd ready reports
+
+**No cloud dependency. No subscription. Runs on your laptop.**
+
+> Use BurpOllama only on systems you own or have explicit written authorization to test.
+
+---
+
+## Dashboard
+
+The dashboard lives at `http://127.0.0.1:8888/ui`
+
+Guided step-by-step wizard — no command line knowledge needed.
+
+---
+
+## Vulnerability Classes (34 Total)
+
+| Category | Classes |
+|----------|---------|
+| Injection | SQLi, NoSQL, Command, SSTI, CRLF, Host Header |
+| XSS | Reflected, Stored, DOM, Blind |
+| Access Control | IDOR/BOLA, BFLA, Auth Bypass, Privilege Escalation |
+| Authentication | JWT attacks, OAuth flows, Session fixation, Default credentials |
+| API Security | Mass assignment, GraphQL auth, API version bypass, Rate limiting |
+| Server-Side | SSRF (OOB required), Path traversal/LFI, XXE candidates |
+| Client-Side | CSRF, Prototype pollution, Behavioral anomaly |
+| Infrastructure | Subdomain takeover, Secret exposure and validation, Security headers |
+| Advanced | HTTP Request Smuggling, Exploit chain detection, ATO chain analysis |
+
+---
+
+## Key Features
+
+### Zero False Positive Mode
+
+Findings must pass a 12-point proof check before reaching Valid Bugs.
+Weak signals stay in Candidates. Only confirmed proof reaches reports.
+
+### CVSS++ Impact Scoring
+
+Goes beyond standard CVSS. Adds business impact, chain bonuses,
+exploitability status, and AI confidence adjustment.
+
+### Exploit Chain Builder
+
+Connects individual findings into multi-step attack paths.
+IDOR + missing rate limit = Account Takeover chain.
+Open redirect + OAuth = Token theft chain.
+
+### Dual-Session IDOR Proof
+
+Configure Session A and Session B cookies.
+The tool automatically proves unauthorized cross-session data access.
+
+### OOB Confirmation
+
+SSRF, blind SQLi, blind XSS, and command injection require
+interactsh callback confirmation before being marked as confirmed.
+
+### Adaptive Scan Engine
+
+Automatically classifies targets as LIGHT, BALANCED, or DEEP.
+Adjusts modules, concurrency, and AI usage based on target complexity.
+
+### AI Privacy Guard
+
+Local Ollama is preferred. Cloud AI is off by default.
+Secrets, tokens, and cookies are redacted before any AI analysis.
+
+### Provider-Agnostic AI
+
+Gemini, OpenAI, Anthropic, and local Ollama with automatic failover.
+Includes cost-aware routing, while local models remain free to run.
+
+---
+
+## Quick Start on Kali Linux
 
 ```bash
 git clone https://github.com/mouhammad-coder/BurpOllama.git
@@ -14,110 +112,72 @@ bash setup.sh
 bash start.sh
 ```
 
-Guided Start Wizard: `http://127.0.0.1:8888/ui/start`
+Open: [http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui)
 
-Local domain style: `http://burpollama.localhost:8888/ui/start`
+---
 
-The default interface guides users through target, authorization, scope, scan mode,
-AI mode, optional login sessions, final review, live progress, and results. The
-original expert dashboard remains available under **Advanced Console**.
+## AI Setup
 
-Open **Settings** in the sidebar to configure API keys, local Ollama models,
-reasoning limits, storage, and callback verification. BurpOllama creates and
-updates `.env` automatically, masks saved secrets, tests providers, and can
-download missing `mistral` or `llama3.1:8b` models from the browser.
+### Option A — Free Gemini API (Recommended for Beginners)
 
-## Adaptive Scan Engine
+1. Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Enter the key in **Dashboard → Settings → AI Configuration**.
+3. The free tier currently offers limited requests; check Google AI Studio for current quotas.
 
-BurpOllama profiles each authorized target before testing and selects a
-LIGHT, BALANCED, or DEEP execution plan based on endpoint count, response
-complexity, APIs, authentication, GraphQL, JavaScript usage, admin panels,
-and parameter density.
-
-- LIGHT limits discovery and runs static, low-cost checks.
-- BALANCED is the default and selectively activates relevant modules.
-- DEEP expands authenticated, IDOR/BOLA, business-logic, and exploit-chain analysis.
-
-The plan controls URL budgets, request batching, concurrency, timeouts, CPU
-backpressure, and AI depth. Use `POST /auto/profile-target` with an authorized
-target to preview the profile and selected plan.
-
-API health: `http://127.0.0.1:8888/health`
-
-Metrics: `http://127.0.0.1:8888/metrics`
-
-## Minimal Manual Install
+### Option B — Local Ollama (No API Key Needed)
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip curl wget git dnsutils lsof wafw00f
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama pull mistral
 ```
 
-Optional recon tools:
+Configure it in **Dashboard → Settings → AI Configuration**.
+
+---
+
+## Architecture
+
+```text
+Guided Dashboard
+       │
+       ▼
+Authorization + Scope Policy
+       │
+       ▼
+Adaptive Target Profiler
+       │
+       ├── Recon and endpoint discovery
+       ├── Selective vulnerability testing
+       ├── Proof and Zero FP validation
+       └── Local/cloud AI routing
+       │
+       ▼
+CVSS++ Scoring + Exploit Chain Builder
+       │
+       ▼
+HackerOne, Bugcrowd, Markdown, and JSON Reports
+```
+
+Burp Suite traffic can also be sent to the local analyzer through
+`BurpOllama.py`, while all scan state, findings, reports, and configuration
+remain controlled by the local FastAPI backend.
+
+---
+
+## Offline Verification
+
+The repository includes a comprehensive test suite that blocks external
+network and DNS access and uses only local mock data:
 
 ```bash
-go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-go install github.com/projectdiscovery/katana/cmd/katana@latest
-go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
-go install github.com/lc/gau/v2/cmd/gau@latest
+python tests/offline_test_suite.py
 ```
 
-## AI Providers
+---
 
-BurpOllama now routes AI calls through a provider-agnostic layer:
+## Security and Authorization
 
-- Fast local Ollama model: `mistral`
-- High-risk reasoning model: `llama3.1:8b`, loaded only when needed
-- Laptop-safe defaults: 8 CPU threads, one loaded model, 4096/6144 context
-- Memory-aware fallback: reasoning is skipped below 3.5 GB free physical RAM
-- Gemini: `GEMINI_API_KEY`
-- OpenAI: `OPENAI_API_KEY`
-- Anthropic: `ANTHROPIC_API_KEY`
-
-The router prefers low-cost available providers and fails over automatically.
-
-## PostgreSQL / Enterprise Mode
-
-Local mode uses SQLite under `~/.burpollama`. For PostgreSQL-backed event and audit storage:
-
-```bash
-cp .env.example .env
-# edit BURPOLLAMA_DATABASE_URL
-docker compose up --build
-```
-
-## Burp Extension
-
-Install Jython in Burp Suite, then add `BurpOllama.py` as a Python extension. The extension ships passive HTTP and WebSocket traffic to the local backend at `http://localhost:8888/analyze`.
-
-## Key Endpoints
-
-- `POST /scan` starts a scan
-- `POST /auto/profile-target` previews the adaptive target profile and scan plan
-- `GET /scan/{scan_id}` returns scan state
-- `GET /scan/{scan_id}/report` returns Markdown report
-- `GET /scan/{scan_id}/attack-graph` returns exploit-chain graph output
-- `GET /scan/{scan_id}/coverage` returns coverage intelligence
-- `GET /ai/providers` returns provider health/cost state
-- `GET /scheduler` returns distributed scheduler state
-- `GET /storage` returns event/audit storage state
-- `GET /metrics` returns Prometheus-style metrics
-
-## Security Notes
-
-- Do not commit `.env` or API keys.
-- Reports redact common secret formats and escape target-controlled evidence.
-- OOB payloads include signed nonce attribution when `BURPOLLAMA_OOB_SIGNING_KEY` is set.
-- Advanced classes such as request smuggling, race conditions, business logic abuse, file upload abuse, and GraphQL authorization emit candidates unless the scanner has direct exploit proof.
-
-## Publishing Checklist
-
-- Review `setup.sh` before running with sudo on a new Kali host.
-- Confirm the project license before public release.
-- Keep bug bounty program scope and rate limits in configuration or engagement notes.
+- Scan only assets you own or have written permission to test.
+- Keep `.env`, API keys, authentication cookies, and exported evidence private.
+- Respect program scope, request limits, and prohibited-testing rules.
+- Review candidate findings manually before submitting a bounty report.
