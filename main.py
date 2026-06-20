@@ -5,7 +5,14 @@ Gemini-powered: Recon → WAF Check → Hunt → Triage (CoT) → Analysis → R
 + Burp Suite passive analysis layer
 """
 
-import asyncio, json, os, re, time, uuid
+import os
+from pathlib import Path
+env_file = Path(__file__).parent / ".env"
+if env_file.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_file)
+
+import asyncio, json, re, sys, time, uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -78,6 +85,9 @@ from zero_fp_gate import apply_zero_fp_gate
 from secret_validator import validate_secret
 from business_logic_classifier import classify_business_logic_candidates
 from idor_proof_engine import prove_idor
+
+STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
+_startup_banner_printed = False
 from xss_proof_engine import prove_xss
 from graphql_auth_tester import test_graphql_auth
 from jwt_attack_suite import test_jwt
@@ -1771,14 +1781,42 @@ async def _resume_pipeline_from_checkpoint(
 
 
 # ── App lifespan ──────────────────────────────────────────────────────────────
+async def _show_startup_banner():
+    global STARTUP_TIME, _startup_banner_printed
+    if _startup_banner_printed:
+        return
+    STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
+    _startup_banner_printed = True
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    print("")
+    print("╔══════════════════════════════════════════╗")
+    print("║      BurpOllama is running               ║")
+    print("╠══════════════════════════════════════════╣")
+    print("║  Dashboard: http://127.0.0.1:8888/ui     ║")
+    print("║  Press Ctrl+C to stop                    ║")
+    print("╚══════════════════════════════════════════╝")
+    print("")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     workers = [asyncio.create_task(burp_worker()) for _ in range(3)]
-    print("[BurpOllama v3.1] Ready — http://localhost:8888/ui")
+    await _show_startup_banner()
     yield
     for w in workers: w.cancel()
 
 app = FastAPI(title="BurpOllama", version="3.1.0", lifespan=lifespan)
+
+
+@app.on_event("startup")
+async def startup_event():
+    await _show_startup_banner()
+
+
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -2522,9 +2560,11 @@ async def get_stats():
     }
 
 @app.get("/health")
-async def health():
+async def health(target: Optional[str] = None):
     key = _gc.GEMINI_API_KEY
     ok  = False
+    target_reachable = None
+    checked_target = None
     if key:
         try:
             if ai_privacy_guard.is_cloud_allowed():
@@ -2533,9 +2573,24 @@ async def health():
                         "https://generativelanguage.googleapis.com/v1beta/models?key={}".format(key))
                     ok = r.status_code == 200
         except Exception: pass
+    if target:
+        checked_target = target.strip()
+        if checked_target and not re.match(r"^https?://", checked_target, re.I):
+            checked_target = "https://" + checked_target
+        try:
+            parsed = httpx.URL(checked_target)
+            if parsed.scheme not in ("http", "https") or not parsed.host:
+                raise ValueError("Invalid target URL")
+            async with httpx.AsyncClient(timeout=8, verify=False, follow_redirects=True) as client:
+                response = await client.get(checked_target)
+            target_reachable = response.status_code < 500
+        except Exception:
+            target_reachable = False
     return {
         "status":"ok","gemini_api":"connected" if ok else "disconnected",
         "api_key_set":bool(key),
+        "target": checked_target,
+        "target_reachable": target_reachable,
         "burp_queue":burp_queue.qsize(),
         "findings_stored":len(findings_store),
         "active_scans":sum(1 for s in scans.values() if s["status"]=="running"),
@@ -2548,6 +2603,28 @@ async def health():
         "oob_domain": oob.domain,
         "oob_payloads": oob.payload_count,
         "scope": scope_policy.to_dict(),
+    }
+
+
+def _database_is_ready() -> bool:
+    try:
+        event_store.status()
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/ready")
+async def ready():
+    return {
+        "ready": True,
+        "version": "3.0",
+        "ai_configured": any(
+            bool(os.getenv(key, "").strip())
+            for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+        ),
+        "database_ok": _database_is_ready(),
+        "startup_time": STARTUP_TIME,
     }
 
 def _smart_throttle_recommendation(backoff_multiplier: float, host_dead: bool) -> str:

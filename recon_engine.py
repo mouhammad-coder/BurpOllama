@@ -29,6 +29,14 @@ from finding_model import normalize_finding
 def tool_available(name: str) -> bool:
     return shutil.which(name) is not None
 
+
+def semgrep_available() -> bool:
+    """Semgrep is optional because installation can fail on some Kali releases."""
+    try:
+        return shutil.which("semgrep") is not None
+    except Exception:
+        return False
+
 async def run_cmd(cmd: list[str], timeout: int = 120) -> str:
     """Run a shell command async and return stdout."""
     try:
@@ -791,8 +799,8 @@ async def analyze_js_files(urls: list, log: Callable) -> list:
 
     log("[Recon] Analyzing {} JS files (regex + semgrep)".format(len(js_urls)))
 
-    semgrep_available = shutil.which("semgrep") is not None
-    if not semgrep_available:
+    has_semgrep = semgrep_available()
+    if not has_semgrep:
         log("[Recon] semgrep not found — regex-only JS analysis (install: pip install semgrep)")
 
     # Download all JS files first
@@ -839,9 +847,12 @@ async def analyze_js_files(urls: list, log: Callable) -> list:
                 pass
 
     # ── Pass 2: Semgrep DOM-XSS / prototype pollution ─────────────────────────
-    if semgrep_available and js_contents:
-        semgrep_findings = await _run_semgrep_on_js(js_contents, log)
-        findings.extend(semgrep_findings)
+    if has_semgrep and js_contents:
+        try:
+            semgrep_findings = await _run_semgrep_on_js(js_contents, log)
+            findings.extend(semgrep_findings)
+        except Exception as exc:
+            log("[Recon] semgrep unavailable during analysis — continuing with regex only: {}".format(exc))
 
     log("[Recon] JS analysis complete: {} findings (regex={}, semgrep={})".format(
         len(findings),

@@ -97,6 +97,13 @@
     .kv{display:grid;grid-template-columns:170px minmax(0,1fr);gap:8px;font-size:13px}
     .kv div:nth-child(odd){color:var(--muted)}
     .notice{border-left:3px solid var(--blue);background:#121b25;padding:12px;border-radius:6px;color:var(--soft)}
+    .quick-setup{margin:14px 22px 0;padding:14px 16px;border:1px solid #8a6a22;border-left:4px solid var(--amber);background:#2a2212;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+    .quick-setup-copy{line-height:1.5;color:#fff6d8}
+    .quick-setup-actions{display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0}
+    .target-preview{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#101820;color:var(--soft);font-size:13px}
+    .connection-result{min-height:20px;font-size:13px;color:var(--muted)}
+    .connection-result.ok{color:var(--green)}
+    .connection-result.error{color:var(--red)}
     .workflow{display:flex;gap:8px;align-items:center;padding:10px 22px;border-bottom:1px solid var(--line);background:#101720}
     .workflow-step{flex:1;min-width:0;border:1px solid var(--line);background:#121a23;border-radius:999px;padding:7px 10px;text-align:center;font-size:12px;color:var(--muted);font-weight:800}
     .workflow-step.active{background:#17314a;border-color:var(--blue);color:#fff}
@@ -157,6 +164,7 @@
       .topbar{height:auto;min-height:64px;align-items:flex-start;padding:14px;gap:12px;flex-direction:column}
       .wizard-steps{grid-template-columns:repeat(9,26px)}
       .choice-grid{grid-template-columns:1fr}
+      .quick-setup{margin:12px;align-items:flex-start;flex-direction:column}
     }
   </style>
 </head>
@@ -198,6 +206,7 @@
         </div>
       </header>
       <div class="workflow" id="workflow-bar"></div>
+      <div id="quick-setup-container"></div>
 
       <section class="content">
         <section id="route-start" class="route"></section>
@@ -232,6 +241,7 @@
 
     const state = {
       health: {},
+      ready: {},
       scans: [],
       findings: [],
       review: {pending: [], all: [], count: 0},
@@ -274,7 +284,9 @@
         sessionBCookie: '',
         sessionBToken: '',
         busy: false,
-        error: ''
+        error: '',
+        connectionStatus: '',
+        connectionMessage: ''
       }
     };
 
@@ -442,8 +454,9 @@
     }
 
     async function refreshAll(){
-      const [health, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage, config, ollamaModels] = await Promise.all([
+      const [health, ready, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage, config, ollamaModels] = await Promise.all([
         json('/health', {}),
+        json('/ready', {}),
         json('/scans', []),
         json('/findings?limit=500', {findings:[]}),
         json('/review', {pending:[],all:[],count:0}),
@@ -458,6 +471,7 @@
         json('/ollama/models', {installed:[],missing:[],required:[]})
       ]);
       state.health = health || {};
+      state.ready = ready || {};
       state.scans = mergeScans(scans || []);
       state.findings = findings.findings || [];
       state.review = review || state.review;
@@ -553,6 +567,56 @@
       });
       alert(r.ok ? 'Saved.' : await r.text());
       refreshAll();
+    }
+    function dismissQuickSetup(){
+      sessionStorage.setItem('burpollama.quickSetupDismissed', 'true');
+      renderQuickSetup();
+    }
+    function openGeminiKeyModal(){
+      document.getElementById('modal')?.remove();
+      const modal = document.createElement('div');
+      modal.id = 'modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:30;display:grid;place-items:center;padding:20px';
+      modal.innerHTML = `
+        <div class="card pad" style="width:min(520px,100%)">
+          <div class="card-head"><div><div class="card-title">Add Gemini API key</div><div class="card-sub">Saved only in this project’s local .env file.</div></div></div>
+          <div class="wizard-field"><label for="first-run-gemini-key">Gemini API key</label><input class="input" id="first-run-gemini-key" type="password" placeholder="AIza..."></div>
+          <div class="toolbar" style="justify-content:flex-end;margin:0">
+            <button class="btn" onclick="document.getElementById('modal').remove()">Cancel</button>
+            <button class="btn primary" onclick="saveFirstRunGeminiKey()">Save Key</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+      setTimeout(() => document.getElementById('first-run-gemini-key')?.focus(), 0);
+    }
+    async function saveFirstRunGeminiKey(){
+      const key = document.getElementById('first-run-gemini-key')?.value.trim() || '';
+      if(!key){ alert('Paste your Gemini API key first.'); return; }
+      const r = await fetch(endpoint('/config'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({GEMINI_API_KEY:key})
+      });
+      if(!r.ok){ alert(await r.text()); return; }
+      document.getElementById('modal')?.remove();
+      await refreshAll();
+    }
+    function renderQuickSetup(){
+      const container = document.getElementById('quick-setup-container');
+      const geminiConfigured = !!state.config?.configured?.GEMINI_API_KEY;
+      const dismissed = sessionStorage.getItem('burpollama.quickSetupDismissed') === 'true';
+      if(geminiConfigured || dismissed){
+        container.innerHTML = '';
+        return;
+      }
+      container.innerHTML = `<div class="quick-setup">
+        <div class="quick-setup-copy"><strong>⚡ Quick Setup:</strong> Add your free Gemini API key to enable<br>AI-powered vulnerability analysis.</div>
+        <div class="quick-setup-actions">
+          <a class="btn blue" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get Free Key</a>
+          <button class="btn primary" onclick="openGeminiKeyModal()">Enter Key Now</button>
+          <button class="btn" onclick="dismissQuickSetup()">Skip - Use Local AI</button>
+        </div>
+      </div>`;
     }
     function configValue(key, fallback=''){
       const value = state.config?.settings?.[key];
@@ -855,7 +919,56 @@
 
     function normalizeWizardTarget(value){
       const raw = String(value || '').trim();
-      return raw;
+      if(!raw) return '';
+      return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    }
+    function handleWizardTargetInput(input){
+      state.wizard.target = input.value;
+      state.wizard.connectionStatus = '';
+      state.wizard.connectionMessage = '';
+      const preview = document.getElementById('wizard-target-preview');
+      const result = document.getElementById('wizard-connection-result');
+      const normalized = normalizeWizardTarget(input.value);
+      if(preview) preview.textContent = normalized
+        ? `Will scan: ${normalized} and all pages on this domain`
+        : 'Will scan: enter a website above';
+      if(result){
+        result.className = 'connection-result';
+        result.textContent = '';
+      }
+    }
+    function normalizeWizardTargetInput(input){
+      const normalized = normalizeWizardTarget(input.value);
+      state.wizard.target = normalized;
+      input.value = normalized;
+      handleWizardTargetInput(input);
+    }
+    async function testWizardConnection(){
+      const input = document.getElementById('wizard-target');
+      const result = document.getElementById('wizard-connection-result');
+      const target = normalizeWizardTarget(input?.value || state.wizard.target);
+      if(!target){
+        state.wizard.connectionStatus = 'error';
+        state.wizard.connectionMessage = 'Enter a website URL first.';
+      }else{
+        state.wizard.target = target;
+        if(input) input.value = target;
+        state.wizard.connectionStatus = '';
+        state.wizard.connectionMessage = 'Testing connection...';
+        if(result){
+          result.className = 'connection-result';
+          result.textContent = state.wizard.connectionMessage;
+        }
+        const health = await json(`/health?target=${encodeURIComponent(target)}`, {target_reachable:false});
+        state.wizard.connectionStatus = health.target_reachable ? 'ok' : 'error';
+        state.wizard.connectionMessage = health.target_reachable
+          ? 'Website is reachable. You can continue.'
+          : 'Cannot reach this website. Check the URL and try again.';
+      }
+      if(result){
+        result.className = `connection-result ${state.wizard.connectionStatus}`;
+        result.textContent = state.wizard.connectionMessage;
+      }
     }
     function wizardChoice(field, value){
       state.wizard[field] = value;
@@ -867,11 +980,6 @@
       w.error = '';
       if(w.step === 2){
         w.target = normalizeWizardTarget(w.target);
-        if(!/^https?:\/\//i.test(w.target)){
-          w.error = 'Please start the address with http:// or https://';
-          renderStart();
-          return;
-        }
         try{
           const parsed = new URL(w.target);
           if(!['http:','https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('invalid');
@@ -898,7 +1006,8 @@
       state.wizard = {
         step:1,target:'',authorized:false,scopeType:'exact',customScope:'',
         scanMode:'conservative',aiMode:'auto_local',sessionACookie:'',sessionAToken:'',
-        sessionBCookie:'',sessionBToken:'',busy:false,error:''
+        sessionBCookie:'',sessionBToken:'',busy:false,error:'',
+        connectionStatus:'',connectionMessage:''
       };
       go('/ui/start');
     }
@@ -952,8 +1061,12 @@
         body = `<div class="card wizard-card">
           <div class="tag" style="margin-bottom:12px">Setup step 1 of 4</div>
           <div class="wizard-question">What website do you want to scan?</div>
-          <div class="wizard-help">Enter the full website address, including http:// or https://.</div>
-          <div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="https://example.com" value="${esc(w.target)}" oninput="state.wizard.target=this.value"></div>
+          <div class="wizard-help">Enter a website address. BurpOllama adds https:// automatically when needed.</div>
+          <div class="wizard-field"><label for="wizard-target">Website URL</label><input class="input" id="wizard-target" type="url" placeholder="example.com" value="${esc(w.target)}" oninput="handleWizardTargetInput(this)" onblur="normalizeWizardTargetInput(this)"></div>
+          <div class="target-preview" id="wizard-target-preview">${w.target ? `Will scan: ${esc(normalizeWizardTarget(w.target))} and all pages on this domain` : 'Will scan: enter a website above'}</div>
+          <div style="height:12px"></div>
+          <button class="btn blue" onclick="testWizardConnection()">Test Connection</button>
+          <div id="wizard-connection-result" class="connection-result ${esc(w.connectionStatus)}" style="margin-top:9px">${esc(w.connectionMessage)}</div>
           ${wizardActions('Continue')}
         </div>`;
       }else if(w.step === 3){
@@ -1148,6 +1261,7 @@
       document.getElementById('page-subtitle').textContent = subtitle;
       renderTopbar();
       renderWorkflow();
+      renderQuickSetup();
       renderStart();
       renderActiveScan();
       renderResults();
@@ -1179,7 +1293,7 @@
     function renderTopbar(){
       const dot = document.getElementById('health-dot');
       const label = document.getElementById('health-label');
-      const ok = state.health.status === 'ok';
+      const ok = state.ready.ready === true || state.health.status === 'ok';
       dot.className = 'dot ' + (ok ? 'ok' : 'warn');
       label.textContent = ok ? 'Backend online' : 'Health unknown';
       document.getElementById('queue-size').textContent = state.health.burp_queue ?? 0;
