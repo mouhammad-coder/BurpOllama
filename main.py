@@ -808,6 +808,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     scan_logs = []
     coverage_data = {}
     attack_graph_data = {}
+    intel_data = {}
 
     scan = scans[scan_id]
     scan_logs = scan.setdefault("logs", scan_logs)
@@ -913,25 +914,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                     adaptive_plan=adaptive_plan.to_dict(),
                 )
         except Exception as e:
-            await log("Recon error: {}".format(e), "error")
+            await log("Recon phase error: {}".format(str(e)), "error")
             recon_data = {
-                "domain": target,
                 "urls": [],
-                "live_hosts": [],
+                "live_hosts": [{"url": target, "tech": [], "status": 200}],
                 "js_findings": [],
-                "js_urls": [],
-                "websocket_urls": [],
-                "content_discovery": [],
-                "technologies": [],
-                "tech_stack": [],
-                "stats": {
-                    "subdomains": 0,
-                    "live_hosts": 0,
-                    "urls": 0,
-                    "urls_raw": 0,
-                    "urls_clustered": 0,
-                    "js_findings": 0,
-                },
+                "js_contents": {},
+                "subdomains": [],
             }
         previous_level = adaptive_plan.level
         target_profile = refine_profile(target_profile, recon_data)
