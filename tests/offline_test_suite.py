@@ -19,6 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -191,6 +192,10 @@ def group2_core_units():
     from security_hardening import (
         escape_markdown_table, redact_secrets, sanitize_prompt_input,
     )
+    from hunt_engine import (
+        hunt_browser_storage, hunt_clickjacking, hunt_session_security,
+    )
+    from websocket_tester import test_websocket_security
     from zero_fp_gate import apply_zero_fp_gate
 
     policy = ScopePolicy()
@@ -359,6 +364,86 @@ def group2_core_units():
     )
     RESULTS.check(2, "2.10 prompt delimiter escaped",
                   "</UNTRUSTED_TARGET_CONTENT>" not in sanitized)
+
+    async def new_class_checks():
+        from scope_policy import scope_policy as global_scope
+
+        original = global_scope.to_dict()
+        global_scope.update({
+            "allowed_domains": ["example.com"],
+            "active_testing_enabled": True,
+            "passive_only_mode": False,
+            "emergency_stop": False,
+            "max_total_requests": 5000,
+            "max_requests_per_minute": 5000,
+        }, persist=False)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/session":
+                return httpx.Response(
+                    200,
+                    headers={"Set-Cookie": "sid=123456; Path=/"},
+                    text="<html>session</html>",
+                )
+            if path == "/settings":
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/html"},
+                    text='<html><form><input type="password" name="password"></form></html>',
+                )
+            if path == "/app.js":
+                return httpx.Response(
+                    200,
+                    text=(
+                        'localStorage.setItem("auth_token", token);\\n'
+                        'window.addEventListener("message", function(event) { use(event.data); });'
+                    ),
+                )
+            return httpx.Response(200, text="<html>ok</html>")
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                session = await hunt_session_security(
+                    client, ["https://example.com/session"]
+                )
+                click = await hunt_clickjacking(
+                    client, ["https://example.com/settings"]
+                )
+                storage = await hunt_browser_storage(
+                    client, ["https://example.com/app.js"]
+                )
+            inactive = ScopePolicy()
+            inactive.update({
+                "active_testing_enabled": False,
+                "passive_only_mode": False,
+            }, persist=False)
+            websocket = await test_websocket_security(
+                "wss://example.com/ws", None, inactive
+            )
+            return session, click, storage, websocket
+        finally:
+            restore = {
+                key: value for key, value in original.items()
+                if key in global_scope.config.__dataclass_fields__
+            }
+            global_scope.update(restore, persist=False)
+
+    session, click, storage, websocket = asyncio.run(new_class_checks())
+    session_types = {item["vuln_type"] for item in session}
+    RESULTS.check(2, "2.11 session analyzer finds cookie weaknesses",
+                  {"session_cookie_no_httponly", "session_cookie_no_secure",
+                   "session_cookie_weak_entropy"}.issubset(session_types))
+    RESULTS.check(2, "2.12 clickjacking requires sensitive unprotected page",
+                  any(item["vuln_type"] == "clickjacking_candidate" for item in click))
+    storage_types = {item["vuln_type"] for item in storage}
+    RESULTS.check(2, "2.13 browser storage and postMessage analysis",
+                  {"sensitive_data_in_localstorage",
+                   "postmessage_no_origin_check"}.issubset(storage_types))
+    RESULTS.check(2, "2.14 WebSocket tester respects inactive policy",
+                  websocket == [])
 
 
 def group3_api_tests():

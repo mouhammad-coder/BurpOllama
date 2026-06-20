@@ -775,6 +775,8 @@ JS_SECRET_PATTERNS = [
     (r"sourceMappingURL=([^\s]+\.map)",                                    "Source Map Reference"),
     (r"(?i)/graphql",                                                       "GraphQL Endpoint in JS"),
     (r"(?i)(debug|test|dev)[Mm]ode\s*[:=]\s*true",                        "Debug Mode Enabled"),
+    (r"(?i)\bwss?://[^\s'\"`]+",                                          "WebSocket Endpoint"),
+    (r"(?i)new\s+WebSocket\s*\(\s*['\"]([^'\"]+)",                       "WebSocket Endpoint"),
 ]
 
 async def analyze_js_files(urls: list, log: Callable) -> list:
@@ -1234,6 +1236,31 @@ async def run_full_recon(
         len(js_endpoints)
     ))
 
+    websocket_urls = []
+    for candidate in raw_urls:
+        parsed_candidate = urlparse(candidate)
+        if parsed_candidate.scheme in {"ws", "wss"}:
+            websocket_urls.append(candidate)
+        elif re.search(r"(?i)/(?:ws|websocket|socket\.io)(?:/|$|\?)", parsed_candidate.path):
+            websocket_urls.append(candidate.replace("https://", "wss://", 1).replace("http://", "ws://", 1))
+    for item in js_findings:
+        if item.get("type") != "WebSocket Endpoint":
+            continue
+        candidate = str(item.get("evidence", "")).strip()
+        if not candidate:
+            continue
+        if candidate.startswith(("ws://", "wss://")):
+            websocket_urls.append(candidate)
+        else:
+            resolved = urljoin(base_url.rstrip("/") + "/", candidate)
+            websocket_urls.append(
+                resolved.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+            )
+    websocket_urls = list(dict.fromkeys(
+        url for url in websocket_urls
+        if scope_policy.validate_target(url, action="scan")[0]
+    ))
+
     result = {
         "domain":      domain,
         "subdomains":  subdomains,
@@ -1242,6 +1269,8 @@ async def run_full_recon(
         "urls":        urls,          # clustered — no arbitrary cap
         "content_discovery": content_discovery,
         "js_endpoints": js_endpoints,
+        "js_urls": js_urls,
+        "websocket_urls": websocket_urls,
         "js_findings": js_findings,
         "stats": {
             "subdomains":    len(subdomains),
@@ -1254,6 +1283,7 @@ async def run_full_recon(
                 if _CONTENT_DISCOVERY_STATUS.get(url) in (401, 403)
             ]),
             "js_endpoints":  len(js_endpoints),
+            "websocket_urls": len(websocket_urls),
             "js_findings":   len(js_findings),
         }
     }

@@ -75,6 +75,7 @@ class ModuleEngine:
 
     LIGHT_BASELINE = {
         "Security Headers", "CORS", "Sensitive Paths", "Subdomain Takeover",
+        "Session Security", "Clickjacking",
     }
     BASELINE = LIGHT_BASELINE | {
         "Open Redirect", "Host Header Injection", "CRLF Injection",
@@ -93,7 +94,10 @@ class ModuleEngine:
         "Default Credentials", "GraphQL Authorization", "Business Logic",
         "Race Conditions",
     }
-    JS_MODULES = {"DOM XSS", "Stored XSS", "Blind XSS", "WebSocket Security"}
+    JS_MODULES = {
+        "DOM XSS", "Stored XSS", "Blind XSS", "WebSocket Security",
+        "WebSocket Active Security", "Browser Storage Security",
+    }
     DEEP_ONLY = {
         "HTTP Desync", "Request Smuggling", "Cache Poisoning", "Web Cache Deception",
         "File Upload Abuse", "OS Command Injection",

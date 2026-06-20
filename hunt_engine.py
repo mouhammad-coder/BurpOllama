@@ -37,6 +37,8 @@ from behavioral_anomaly_detector import detect_anomalies
 from prototype_pollution_tester import test_prototype_pollution
 from request_smuggling_detector import detect_smuggling
 from api_version_tester import test_api_versions
+from websocket_tester import test_websocket_security
+from security_hardening import redact_secrets
 from scope_policy import scope_policy
 from finding_model import normalize_finding
 from adaptive_scan import ResourceController
@@ -4034,6 +4036,293 @@ async def hunt_default_credentials(client, discovered_urls, schema_endpoints):
     return findings
 
 
+SESSION_COOKIE_RE = re.compile(
+    r"(?i)(session|sessid|sid$|auth|token|jwt|connect\.sid|phpsessid|jsessionid)"
+)
+PREDICTABLE_COOKIE_RE = re.compile(r"^(?:\d{6,}|1[6-9]\d{8,12}|20\d{8,12})$")
+SENSITIVE_HTML_RE = re.compile(
+    r"(?is)(<input[^>]+type=[\"']?(?:password|email)|"
+    r"<input[^>]+name=[\"'][^\"']*(?:card|payment|amount|transfer)|"
+    r"<form\b[^>]*(?:payment|purchase|transfer|settings|profile|admin)|"
+    r"\b(?:account settings|user profile|money transfer|checkout|admin panel)\b)"
+)
+STORAGE_KEY_RE = re.compile(
+    r"(?i)(token|auth|jwt|session|password|secret|api[_-]?key|user[_-]?id)"
+)
+
+
+def _set_cookie_headers(response) -> list[str]:
+    try:
+        return list(response.headers.get_list("set-cookie"))
+    except Exception:
+        value = response.headers.get("set-cookie", "")
+        return [value] if value else []
+
+
+def _cookie_parts(header: str) -> tuple[str, str, list[str]]:
+    parts = [part.strip() for part in str(header).split(";") if part.strip()]
+    name, _, value = (parts[0] if parts else "").partition("=")
+    return name.strip(), value.strip(), parts[1:]
+
+
+def _redacted_cookie_header(header: str) -> str:
+    name, _value, attributes = _cookie_parts(header)
+    return "{}=[REDACTED]{}".format(
+        name, "; " + "; ".join(attributes) if attributes else ""
+    )
+
+
+async def hunt_session_security(client, urls: list[str]) -> list[dict]:
+    """Class 36: analyze session-cookie attributes and simple fixation signals."""
+    results: list[dict] = []
+    observed: list[tuple[str, str, str, str]] = []
+    for url in list(dict.fromkeys(urls or []))[:80]:
+        try:
+            response = await tget(client, url)
+        except Exception:
+            continue
+        for header in _set_cookie_headers(response):
+            name, value, attributes = _cookie_parts(header)
+            if not name or not SESSION_COOKIE_RE.search(name):
+                continue
+            lower_attributes = [attribute.lower() for attribute in attributes]
+            evidence = _redacted_cookie_header(header)
+            observed.append((url, name, value, evidence))
+            issues: list[tuple[str, str, str, str, str]] = []
+            if "httponly" not in lower_attributes:
+                issues.append((
+                    "session_cookie_no_httponly", "MEDIUM", "CWE-1004",
+                    "JavaScript running in the page may read and exfiltrate the session cookie.",
+                    "Add the HttpOnly attribute to every authentication cookie.",
+                ))
+            if urlparse(url).scheme == "https" and "secure" not in lower_attributes:
+                issues.append((
+                    "session_cookie_no_secure", "MEDIUM", "CWE-614",
+                    "The browser may transmit the session cookie over an unencrypted channel.",
+                    "Add the Secure attribute and serve the application exclusively over HTTPS.",
+                ))
+            same_site = next(
+                (item for item in lower_attributes if item.startswith("samesite=")), ""
+            )
+            if same_site == "samesite=none" and "secure" not in lower_attributes:
+                issues.append((
+                    "session_cookie_samesite_none", "MEDIUM", "CWE-1275",
+                    "A cross-site cookie without Secure can weaken session protections.",
+                    "Pair SameSite=None with Secure or use Lax/Strict where possible.",
+                ))
+            elif not same_site:
+                issues.append((
+                    "session_cookie_no_samesite", "LOW", "CWE-1275",
+                    "Cross-site requests may include the session cookie, increasing CSRF exposure.",
+                    "Set SameSite=Lax or SameSite=Strict for authentication cookies.",
+                ))
+            if value and len(value) < 16:
+                issues.append((
+                    "session_cookie_weak_entropy", "HIGH", "CWE-330",
+                    "A short session identifier may be guessable or brute-forced.",
+                    "Generate at least 128 bits of cryptographically secure session entropy.",
+                ))
+            if value and PREDICTABLE_COOKIE_RE.fullmatch(value):
+                issues.append((
+                    "session_cookie_predictable", "HIGH", "CWE-330",
+                    "A numeric or timestamp-like session identifier may be predictable.",
+                    "Use a cryptographically secure random session identifier.",
+                ))
+            for vuln_type, severity, cwe, scenario, remediation in issues:
+                results.append(finding(
+                    vuln_type, severity, 85, url, "GET", scenario,
+                    "Set-Cookie: {}".format(evidence), remediation, cwe=cwe,
+                    extra={
+                        "exploitability_status": "probable",
+                        "evidence_strength": "moderate",
+                        "false_positive_risk": "low",
+                        "business_impact": scenario,
+                        "reproduction_steps": [
+                            "Request the affected page over an authorized session.",
+                            "Inspect the Set-Cookie response header.",
+                            "Confirm the reported attribute or entropy weakness.",
+                        ],
+                        "redaction_status": "redacted",
+                    },
+                ))
+
+    logout_urls = [
+        url for url in urls or []
+        if re.search(r"(?i)/(?:logout|signout|logoff)(?:/|$|\?)", url)
+    ]
+    if logout_urls and observed:
+        source_url, cookie_name, before_value, evidence = observed[0]
+        try:
+            await tget(client, logout_urls[0])
+            after = await tget(client, source_url)
+            after_values = {
+                name: value
+                for header in _set_cookie_headers(after)
+                for name, value, _attributes in [_cookie_parts(header)]
+            }
+            if before_value and after_values.get(cookie_name) == before_value:
+                results.append(finding(
+                    "session_fixation_candidate", "HIGH", 75, source_url, "GET",
+                    "The same session identifier was reissued after the discovered logout flow.",
+                    "Before and after logout: {}".format(evidence),
+                    "Invalidate the server-side session on logout and issue a new identifier after authentication.",
+                    cwe="CWE-384",
+                    extra={
+                        "exploitability_status": "needs_manual_validation",
+                        "evidence_strength": "moderate",
+                        "false_positive_risk": "medium",
+                        "business_impact": "A persistent identifier may allow session fixation or continued session use.",
+                        "reproduction_steps": [
+                            "Authenticate with a controlled test account.",
+                            "Record the redacted session-cookie structure and log out.",
+                            "Request the original page and compare whether the identifier rotates.",
+                        ],
+                        "redaction_status": "redacted",
+                    },
+                ))
+        except Exception:
+            pass
+    return results
+
+
+async def hunt_clickjacking(client, urls: list[str]) -> list[dict]:
+    """Class 37: sensitive HTML pages lacking both frame defenses."""
+    results: list[dict] = []
+    for url in list(dict.fromkeys(urls or []))[:100]:
+        try:
+            response = await tget(client, url)
+        except Exception:
+            continue
+        content_type = response.headers.get("content-type", "").lower()
+        body = response.text[:300000]
+        if "html" not in content_type and "<html" not in body.lower():
+            continue
+        xfo = response.headers.get("x-frame-options", "").upper()
+        csp = response.headers.get("content-security-policy", "").lower()
+        if xfo in {"DENY", "SAMEORIGIN"} or "frame-ancestors" in csp:
+            continue
+        if not SENSITIVE_HTML_RE.search(body):
+            continue
+        poc = (
+            '<iframe src="{}" width="800" height="600" '
+            'style="opacity:0.1;position:absolute;top:0;left:0;z-index:999">'
+            "</iframe>\n<p>Click here to win a prize</p>"
+        ).format(html.escape(url, quote=True))
+        results.append(finding(
+            "clickjacking_candidate", "MEDIUM", 80, url, "GET",
+            "A sensitive page can be framed because neither X-Frame-Options nor CSP frame-ancestors is present.",
+            "X-Frame-Options: missing\nCSP frame-ancestors: missing\nPoC:\n{}".format(poc),
+            "Set Content-Security-Policy: frame-ancestors 'none' or a strict allowlist; retain X-Frame-Options for legacy clients.",
+            cwe="CWE-1021",
+            extra={
+                "exploitability_status": "probable",
+                "evidence_strength": "moderate",
+                "false_positive_risk": "low",
+                "business_impact": "An attacker may visually overlay a sensitive action and trick a user into clicking it.",
+                "reproduction_steps": [
+                    "Save the generated iframe PoC locally.",
+                    "Open it while authenticated with a controlled test account.",
+                    "Confirm whether the sensitive page renders inside the frame.",
+                ],
+                "poc": poc,
+                "redaction_status": "redacted",
+            },
+        ))
+    return results
+
+
+async def hunt_browser_storage(client, js_urls: list[str]) -> list[dict]:
+    """Class 38: static browser-storage and postMessage analysis."""
+    results: list[dict] = []
+    storage_re = re.compile(
+        r"(?i)\b(localStorage|sessionStorage)\s*\.\s*setItem\s*\(\s*"
+        r"[\"']([^\"']+)[\"']"
+    )
+    cookie_re = re.compile(
+        r"(?i)document\.cookie\s*=\s*[^;\n]*(token|auth|jwt|session|secret)"
+    )
+    message_re = re.compile(
+        r"(?i)(?:addEventListener\s*\(\s*[\"']message[\"']|onmessage\s*=)"
+    )
+    for js_url in list(dict.fromkeys(js_urls or []))[:40]:
+        allowed, _ = scope_policy.record_request(js_url, action="active")
+        if not allowed:
+            continue
+        try:
+            response = await client.get(js_url)
+        except Exception:
+            continue
+        if response.status_code != 200:
+            continue
+        lines = response.text.splitlines()
+        for index, line in enumerate(lines):
+            snippet = redact_secrets(line.strip()[:500])
+            storage_match = storage_re.search(line)
+            if storage_match and STORAGE_KEY_RE.search(storage_match.group(2)):
+                vuln_type = (
+                    "sensitive_data_in_localstorage"
+                    if storage_match.group(1).lower() == "localstorage"
+                    else "sensitive_data_in_sessionstorage"
+                )
+                results.append(finding(
+                    vuln_type, "MEDIUM", 70, js_url, "GET",
+                    "Client-side code stores a sensitive value in browser storage accessible to JavaScript.",
+                    "{}:{} {}".format(js_url, index + 1, snippet),
+                    "Keep authentication secrets in Secure, HttpOnly cookies and avoid persistent browser storage.",
+                    cwe="CWE-312",
+                    extra={
+                        "exploitability_status": "needs_manual_validation",
+                        "evidence_strength": "weak",
+                        "false_positive_risk": "medium",
+                        "business_impact": "A successful XSS or malicious extension could read the stored value.",
+                        "js_file": js_url,
+                        "line_number": index + 1,
+                        "code_snippet": snippet,
+                        "redaction_status": "redacted",
+                    },
+                ))
+            if cookie_re.search(line):
+                results.append(finding(
+                    "token_in_cookie_via_js", "MEDIUM", 70, js_url, "GET",
+                    "JavaScript appears to place an authentication value into document.cookie.",
+                    "{}:{} {}".format(js_url, index + 1, snippet),
+                    "Set authentication cookies server-side with Secure, HttpOnly, and SameSite attributes.",
+                    cwe="CWE-1004",
+                    extra={
+                        "exploitability_status": "needs_manual_validation",
+                        "evidence_strength": "weak",
+                        "false_positive_risk": "medium",
+                        "business_impact": "A script-readable authentication cookie is exposed to XSS-based theft.",
+                        "js_file": js_url, "line_number": index + 1,
+                        "code_snippet": snippet, "redaction_status": "redacted",
+                    },
+                ))
+            if message_re.search(line):
+                nearby = "\n".join(lines[index:index + 11])
+                if not re.search(
+                    r"(?i)(?:event|e)\.origin\s*(?:===|==|!==|!=)|allowedOrigins|trustedOrigins",
+                    nearby,
+                ):
+                    redacted_nearby = redact_secrets(nearby[:900])
+                    results.append(finding(
+                        "postmessage_no_origin_check", "HIGH", 75, js_url, "GET",
+                        "A message handler was found without a nearby sender-origin validation check.",
+                        "{}:{} {}".format(js_url, index + 1, redacted_nearby),
+                        "Validate event.origin against an exact allowlist before processing message data.",
+                        cwe="CWE-345",
+                        extra={
+                            "exploitability_status": "needs_manual_validation",
+                            "evidence_strength": "moderate",
+                            "false_positive_risk": "medium",
+                            "business_impact": "An untrusted origin may trigger privileged browser behavior.",
+                            "js_file": js_url, "line_number": index + 1,
+                            "code_snippet": redacted_nearby,
+                            "redaction_status": "redacted",
+                        },
+                    ))
+    return results
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MASTER HUNT RUNNER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4078,6 +4367,8 @@ async def run_hunt(
     schema_urls:    list     = None,
     graphql_schemas:list     = None,
     schema_endpoints:list    = None,
+    websocket_urls:list      = None,
+    js_urls:list             = None,
     enabled_modules:list     = None,
     enabled_classes:list     = None,
     max_urls:       int      = 200,
@@ -4161,7 +4452,7 @@ async def run_hunt(
         limits=httpx.Limits(max_connections=concurrency + 5)
     ) as client:
 
-        total_classes = len(PER_URL_CLASSES) + len(PER_BASE_CLASSES) + 21
+        total_classes = len(PER_URL_CLASSES) + len(PER_BASE_CLASSES) + 25
         class_idx     = 0
 
         # ── Per-URL classes ───────────────────────────────────────────────────
@@ -5026,6 +5317,75 @@ async def run_hunt(
             log("[Hunt] Default credentials: {} confirmed finding(s)".format(
                 len(default_credential_findings)
             ))
+
+        # ── Class 35: WebSocket Security ─────────────────────────────────────
+        class_idx += 1
+        allowed_class, class_reason = _activation_allowed("WebSocket Active Security")
+        discovered_ws = list(dict.fromkeys(websocket_urls or []))
+        if not allowed_class:
+            log("[Hunt] Class 35 WebSocket Security skipped — {}".format(class_reason))
+        elif not scope_policy.config.active_testing_enabled:
+            log("[Hunt] Class 35 WebSocket Security skipped: active testing disabled")
+        elif not discovered_ws:
+            log("[Hunt] Class 35 WebSocket Security skipped: no WebSocket URLs discovered")
+        elif throttle.host_dead:
+            log("[Hunt] Class 35 WebSocket Security skipped: target is blocking requests")
+        else:
+            log("[Hunt] {}/{} Class 35: WebSocket Security".format(class_idx, total_classes))
+            if progress_cb:
+                await progress_cb("hunt", class_idx, total_classes, "WebSocket Security")
+            for ws_url in discovered_ws[:20]:
+                all_findings.extend(
+                    await test_websocket_security(ws_url, client, scope_policy)
+                )
+
+        # ── Class 36: Session Security Analyzer ──────────────────────────────
+        class_idx += 1
+        allowed_class, class_reason = _activation_allowed("Session Security")
+        if not allowed_class:
+            log("[Hunt] Class 36 Session Security skipped — {}".format(class_reason))
+        elif not scope_policy.config.active_testing_enabled:
+            log("[Hunt] Class 36 Session Security skipped: active testing disabled")
+        elif throttle.host_dead:
+            log("[Hunt] Class 36 Session Security skipped: target is blocking requests")
+        else:
+            log("[Hunt] {}/{} Class 36: Session Security".format(class_idx, total_classes))
+            if progress_cb:
+                await progress_cb("hunt", class_idx, total_classes, "Session Security")
+            all_findings.extend(await hunt_session_security(client, all_urls))
+
+        # ── Class 37: Clickjacking ───────────────────────────────────────────
+        class_idx += 1
+        allowed_class, class_reason = _activation_allowed("Clickjacking")
+        if not allowed_class:
+            log("[Hunt] Class 37 Clickjacking skipped — {}".format(class_reason))
+        elif not scope_policy.config.active_testing_enabled:
+            log("[Hunt] Class 37 Clickjacking skipped: active testing disabled")
+        elif throttle.host_dead:
+            log("[Hunt] Class 37 Clickjacking skipped: target is blocking requests")
+        else:
+            log("[Hunt] {}/{} Class 37: Clickjacking".format(class_idx, total_classes))
+            if progress_cb:
+                await progress_cb("hunt", class_idx, total_classes, "Clickjacking")
+            all_findings.extend(await hunt_clickjacking(client, all_urls))
+
+        # ── Class 38: Browser Storage Security ───────────────────────────────
+        class_idx += 1
+        allowed_class, class_reason = _activation_allowed("Browser Storage Security")
+        discovered_js = list(dict.fromkeys(js_urls or []))
+        if not allowed_class:
+            log("[Hunt] Class 38 Browser Storage skipped — {}".format(class_reason))
+        elif not scope_policy.config.active_testing_enabled:
+            log("[Hunt] Class 38 Browser Storage skipped: active testing disabled")
+        elif not discovered_js:
+            log("[Hunt] Class 38 Browser Storage skipped: no JavaScript files discovered")
+        elif throttle.host_dead:
+            log("[Hunt] Class 38 Browser Storage skipped: target is blocking requests")
+        else:
+            log("[Hunt] {}/{} Class 38: Browser Storage Security".format(class_idx, total_classes))
+            if progress_cb:
+                await progress_cb("hunt", class_idx, total_classes, "Browser Storage Security")
+            all_findings.extend(await hunt_browser_storage(client, discovered_js))
 
     # Deduplicate by (vuln_type, url)
     seen, dedup = set(), []

@@ -39,6 +39,9 @@ from hunt_engine   import (
     hunt_host_header_injection,
     hunt_crlf_injection,
     hunt_default_credentials,
+    hunt_session_security,
+    hunt_clickjacking,
+    hunt_browser_storage,
 )
 from triage_gate   import batch_triage, run_deep_analysis
 from reporter      import (
@@ -85,6 +88,7 @@ from behavioral_anomaly_detector import detect_anomalies
 from prototype_pollution_tester import test_prototype_pollution
 from request_smuggling_detector import detect_smuggling
 from api_version_tester import test_api_versions
+from websocket_tester import test_websocket_security
 from adaptive_scan import (
     AdaptivePlan,
     ResourceController,
@@ -835,6 +839,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             target_profile,
             scan.get("requested_scan_mode", ""),
         )
+        if recon_data.get("websocket_urls"):
+            adaptive_plan.enabled_modules = sorted(set(
+                adaptive_plan.enabled_modules + ["WebSocket Active Security"]
+            ))
+        if recon_data.get("js_urls"):
+            adaptive_plan.enabled_modules = sorted(set(
+                adaptive_plan.enabled_modules + ["Browser Storage Security"]
+            ))
         resources = ResourceController(
             cpu_limit_percent=adaptive_plan.cpu_limit_percent
         )
@@ -1036,6 +1048,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 waf_info=waf_info, schema_urls=schema_urls,
                 graphql_schemas=schema_data.get("graphql_schemas", []),
                 schema_endpoints=schema_data.get("openapi_endpoints", []),
+                websocket_urls=recon_data.get("websocket_urls", []),
+                js_urls=recon_data.get("js_urls", []),
                 enabled_classes=adaptive_plan.enabled_modules,
                 max_urls=adaptive_plan.max_urls,
                 concurrency_override=adaptive_plan.concurrency,
@@ -1416,6 +1430,14 @@ async def _resume_pipeline_from_checkpoint(
                 resume_profile,
                 scan.get("requested_scan_mode", ""),
             )
+            if recon_data.get("websocket_urls"):
+                adaptive_plan.enabled_modules = sorted(set(
+                    adaptive_plan.enabled_modules + ["WebSocket Active Security"]
+                ))
+            if recon_data.get("js_urls"):
+                adaptive_plan.enabled_modules = sorted(set(
+                    adaptive_plan.enabled_modules + ["Browser Storage Security"]
+                ))
             scan["target_profile"] = resume_profile.to_dict()
             scan["adaptive_plan"] = adaptive_plan.to_dict()
         resources = ResourceController(
@@ -1450,6 +1472,8 @@ async def _resume_pipeline_from_checkpoint(
                     schema_urls=schema_urls,
                     graphql_schemas=schema_data.get("graphql_schemas", []),
                     schema_endpoints=schema_data.get("openapi_endpoints", []),
+                    websocket_urls=recon_data.get("websocket_urls", []),
+                    js_urls=recon_data.get("js_urls", []),
                     enabled_classes=adaptive_plan.enabled_modules,
                     max_urls=adaptive_plan.max_urls,
                     concurrency_override=adaptive_plan.concurrency,
@@ -2603,6 +2627,7 @@ def _system_check_results() -> dict:
         "prototype_pollution_tester": callable(test_prototype_pollution),
         "request_smuggling_detector": callable(detect_smuggling),
         "api_version_tester": callable(test_api_versions),
+        "websocket_tester": callable(test_websocket_security),
         "ato_chain_detector": callable(detect_ato_chains),
         "adaptive_scan_engine": callable(profile_target),
         "exploit_chain_engine": callable(build_exploit_chains),
@@ -2618,6 +2643,10 @@ def _system_check_results() -> dict:
         "class_32_host_header_injection": callable(hunt_host_header_injection),
         "class_33_crlf_injection": callable(hunt_crlf_injection),
         "class_34_default_credentials": callable(hunt_default_credentials),
+        "class_35_websocket_security": callable(test_websocket_security),
+        "class_36_session_security": callable(hunt_session_security),
+        "class_37_clickjacking": callable(hunt_clickjacking),
+        "class_38_browser_storage": callable(hunt_browser_storage),
     }
     checks = {
         "backend": _check_status("ok", "FastAPI backend is running."),

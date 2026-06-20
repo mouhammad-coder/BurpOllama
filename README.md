@@ -5,11 +5,11 @@
   <img src="https://img.shields.io/badge/License-Private-red?style=for-the-badge" alt="Private License">
   <img src="https://img.shields.io/badge/Platform-Kali%20Linux-black?style=for-the-badge&logo=linux" alt="Kali Linux">
   <img src="https://img.shields.io/badge/AI-Local%20%2B%20Cloud-green?style=for-the-badge" alt="Local and Cloud AI">
-  <img src="https://img.shields.io/badge/Classes-34%20Vuln%20Classes-orange?style=for-the-badge" alt="34 Vulnerability Classes">
+  <img src="https://img.shields.io/badge/Classes-38%20Vuln%20Classes-orange?style=for-the-badge" alt="38 Vulnerability Classes">
 </p>
 
 <p align="center">
-<b>Local autonomous bug bounty platform with AI triage, 34 vulnerability classes,
+<b>Local autonomous bug bounty platform with AI triage, 38 vulnerability classes,
 Zero FP mode, exploit chain builder, and bounty-ready report export.</b>
 </p>
 
@@ -21,7 +21,7 @@ BurpOllama is a local web-based security platform that runs on your machine.
 You open the dashboard, enter an authorized target, and it:
 
 - Discovers attack surface automatically
-- Tests 34 vulnerability classes
+- Tests 38 vulnerability classes
 - Confirms findings with actual proof (not just detection)
 - Scores everything with CVSS++ business-aware impact scoring
 - Builds exploit chains connecting related vulnerabilities
@@ -41,19 +41,19 @@ Guided step-by-step wizard — no command line knowledge needed.
 
 ---
 
-## Vulnerability Classes (34 Total)
+## Vulnerability Classes (38 Total)
 
 | Category | Classes |
 |----------|---------|
 | Injection | SQLi, NoSQL, Command, SSTI, CRLF, Host Header |
 | XSS | Reflected, Stored, DOM, Blind |
 | Access Control | IDOR/BOLA, BFLA, Auth Bypass, Privilege Escalation |
-| Authentication | JWT attacks, OAuth flows, Session fixation, Default credentials |
+| Authentication | JWT attacks, OAuth flows, Session security/fixation, Default credentials |
 | API Security | Mass assignment, GraphQL auth, API version bypass, Rate limiting |
 | Server-Side | SSRF (OOB required), Path traversal/LFI, XXE candidates |
-| Client-Side | CSRF, Prototype pollution, Behavioral anomaly |
+| Client-Side | CSRF, Clickjacking, Browser storage, Prototype pollution, Behavioral anomaly |
 | Infrastructure | Subdomain takeover, Secret exposure and validation, Security headers |
-| Advanced | HTTP Request Smuggling, Exploit chain detection, ATO chain analysis |
+| Advanced | WebSocket security, HTTP Request Smuggling, Exploit chain detection, ATO chain analysis |
 
 ---
 
@@ -148,7 +148,7 @@ Phase 1: Reconnaissance
 (subfinder, httpx, katana, gau, JS extraction)
     ↓
 Phase 2: Hunt
-(34 vulnerability classes, OOB confirmation)
+(38 vulnerability classes, OOB confirmation)
     ↓
 Phase 3: AI Triage
 (3-tier: auto → batch → full CoT)
@@ -215,9 +215,9 @@ program policy before scanning.
 
 ## File Structure
 
-53 Python modules, including:
+54 Python modules, including:
 
-- `hunt_engine.py` — 34 vulnerability classes
+- `hunt_engine.py` — 38 vulnerability classes
 - `main.py` — FastAPI backend with 50+ endpoints
 - `zero_fp_gate.py` — 12-point proof validation
 - `impact_scoring_engine.py` — CVSS++ scoring
