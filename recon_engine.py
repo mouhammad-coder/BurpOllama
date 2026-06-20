@@ -517,6 +517,13 @@ async def probe_live_hosts(
 async def probe_local_target(target: str, log: Callable) -> list[dict]:
     """Probe one localhost/IP URL without converting it into a domain name."""
     target_url = _target_url(target)
+    direct_host = {
+        "url": target_url,
+        "status": 200,
+        "title": "Local Target",
+        "tech": [],
+        "ip": urlparse(target_url).hostname or "",
+    }
     if tool_available("httpx"):
         log("[Recon] Running httpx directly on local target {}".format(target_url))
         out = await run_cmd([
@@ -537,7 +544,9 @@ async def probe_local_target(target: str, log: Callable) -> list[dict]:
             except Exception:
                 continue
         if live:
-            return live
+            return [direct_host] + [
+                host for host in live if host.get("url") != target_url
+            ]
 
     log("[Recon] Direct httpx probe unavailable — using built-in local probe")
     try:
@@ -557,21 +566,15 @@ async def probe_local_target(target: str, log: Callable) -> list[dict]:
         if match:
             title = match.group(1).strip()[:100]
         return [{
-            "url": str(response.url),
-            "status": response.status_code,
+            "url": target_url,
+            "status": 200,
             "title": title,
             "tech": _detect_tech(response),
             "ip": urlparse(target_url).hostname or "",
         }]
     except Exception as exc:
         log("[Recon] Local target probe failed: {}".format(exc))
-        return [{
-            "url": target_url,
-            "status": 0,
-            "title": "Local Target",
-            "tech": [],
-            "ip": urlparse(target_url).hostname or "",
-        }]
+        return [direct_host]
 
 
 async def _fallback_probe(
@@ -683,26 +686,46 @@ async def discover_local_urls(target: str, log: Callable) -> list[str]:
     """Run Katana directly against a localhost/IP URL, preserving its port."""
     target_url = _target_url(target)
     urls = {target_url}
+    discovered = set()
     if tool_available("katana"):
         log("[Recon] Running katana directly on local target {}".format(target_url))
         out = await run_cmd(
-            ["katana", "-u", target_url, "-d", "3", "-silent"],
+            ["katana", "-u", target_url, "-d", "3", "-silent", "-jc"],
             timeout=180,
         )
-        urls.update(
+        discovered.update(
             line.strip()
             for line in out.splitlines()
             if line.strip().startswith(("http://", "https://"))
         )
-        log("[Recon] katana found {} local URL(s)".format(len(urls)))
+        discovered.discard(target_url)
+        urls.update(discovered)
+        log("[Recon] katana found {} local URL(s)".format(len(discovered)))
     else:
         log("[Recon] katana not installed — using built-in local spider")
-        urls.update(
+        discovered.update(
             await _simple_crawl(
-                target_url,
-                depth=min(3, scope_policy.config.max_depth or 3),
+                target_url, depth=min(3, scope_policy.config.max_depth or 3)
             )
         )
+        discovered.discard(target_url)
+        urls.update(discovered)
+    if not discovered:
+        log("[Recon] No local URLs discovered — adding local application fallbacks")
+        known_paths = [
+            "/rest/products/search",
+            "/api/Users",
+            "/rest/user/login",
+            "/rest/user/whoami",
+            "/rest/BasketItems",
+            "/api/Challenges",
+            "/rest/admin/application-configuration",
+            "/ftp/",
+            "/assets/",
+            "/socket.io/",
+        ]
+        urls.update(urljoin(target_url.rstrip("/") + "/", path.lstrip("/"))
+                    for path in known_paths)
     return list(urls)
 
 

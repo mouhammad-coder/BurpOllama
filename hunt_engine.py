@@ -108,6 +108,8 @@ async def tget(client, url, **kwargs):
         await throttle.record_request(url)
         try:
             r = await client.get(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
+            if r is None:
+                return None
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             return r
@@ -131,6 +133,8 @@ async def tpost(client, url, **kwargs):
         await throttle.record_request(url)
         try:
             r = await client.post(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
+            if r is None:
+                return None
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             return r
@@ -1976,6 +1980,8 @@ async def _mass_assignment_request(client, method, url, headers, **kwargs):
                 method, url, headers=headers, timeout=REQUEST_TIMEOUT.get(),
                 follow_redirects=False, **kwargs
             )
+            if response is None:
+                return None
             if throttle.is_block_response(response.status_code, response.text[:500]):
                 await throttle.record_block(
                     response.status_code, response.text[:200], url,
@@ -2438,6 +2444,8 @@ async def _authenticated_request(client, method, url, **kwargs):
                 follow_redirects=False,
                 **kwargs
             )
+            if response is None:
+                return None
             if throttle.is_block_response(
                 response.status_code, response.text[:500]
             ):
@@ -4052,10 +4060,15 @@ STORAGE_KEY_RE = re.compile(
 
 
 def _set_cookie_headers(response) -> list[str]:
+    if response is None:
+        return []
     try:
         return list(response.headers.get_list("set-cookie"))
     except Exception:
-        value = response.headers.get("set-cookie", "")
+        try:
+            value = response.headers.get("set-cookie", "")
+        except Exception:
+            return []
         return [value] if value else []
 
 
@@ -4080,6 +4093,8 @@ async def hunt_session_security(client, urls: list[str]) -> list[dict]:
         try:
             response = await tget(client, url)
         except Exception:
+            continue
+        if response is None:
             continue
         for header in _set_cookie_headers(response):
             name, value, attributes = _cookie_parts(header)
@@ -4155,6 +4170,8 @@ async def hunt_session_security(client, urls: list[str]) -> list[dict]:
         try:
             await tget(client, logout_urls[0])
             after = await tget(client, source_url)
+            if after is None:
+                return results
             after_values = {
                 name: value
                 for header in _set_cookie_headers(after)
@@ -4192,6 +4209,8 @@ async def hunt_clickjacking(client, urls: list[str]) -> list[dict]:
         try:
             response = await tget(client, url)
         except Exception:
+            continue
+        if response is None:
             continue
         content_type = response.headers.get("content-type", "").lower()
         body = response.text[:300000]
@@ -4251,6 +4270,8 @@ async def hunt_browser_storage(client, js_urls: list[str]) -> list[dict]:
         try:
             response = await client.get(js_url)
         except Exception:
+            continue
+        if response is None:
             continue
         if response.status_code != 200:
             continue

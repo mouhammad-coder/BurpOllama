@@ -27,6 +27,21 @@ STATIC_SUFFIXES = (
 )
 
 
+def _is_local_target(target: str) -> bool:
+    """Return True for localhost, IPv4 addresses, and private-network targets."""
+    value = str(target or "").strip()
+    parsed = urlparse(value if "://" in value else "http://" + value)
+    host = (parsed.hostname or value.split("/", 1)[0].split(":", 1)[0]).lower()
+    return bool(
+        host == "localhost"
+        or host.startswith("127.")
+        or host.startswith("192.168.")
+        or host.startswith("10.")
+        or host.startswith("172.")
+        or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host)
+    )
+
+
 @dataclass
 class TargetProfile:
     target: str
@@ -73,13 +88,17 @@ class AdaptivePlan:
 class ModuleEngine:
     """Explicit activation registry consumed by the hunt runner."""
 
-    LIGHT_BASELINE = {
-        "Security Headers", "CORS", "Sensitive Paths", "Subdomain Takeover",
-        "Session Security", "Clickjacking",
+    MANDATORY_BASELINE = {
+        "Security Headers", "CORS", "Open Redirect", "Sensitive Paths",
+        "SQL Injection", "XSS", "IDOR", "SSRF", "Auth Bypass",
+        "Rate Limiting", "JWT Analysis", "Path Traversal and LFI",
+        "Host Header Injection", "CRLF Injection", "Session Security",
+        "Clickjacking",
     }
-    BASELINE = LIGHT_BASELINE | {
-        "Open Redirect", "Host Header Injection", "CRLF Injection",
+    LIGHT_BASELINE = MANDATORY_BASELINE | {
+        "Subdomain Takeover",
     }
+    BASELINE = LIGHT_BASELINE
     PARAMETER_MODULES = {
         "Parameter Mining", "SQL Injection", "XSS", "Path Traversal and LFI",
         "SSTI", "SSRF",
@@ -220,6 +239,8 @@ def _profile_label(profile: TargetProfile) -> str:
 
 
 def classify_profile(profile: TargetProfile) -> str:
+    if _is_local_target(profile.target):
+        return "BALANCED"
     score = 0
     score += min(profile.endpoint_count, 80) // 8
     score += profile.response_complexity // 20
@@ -392,19 +413,21 @@ def build_adaptive_plan(profile: TargetProfile, requested_mode: str = "") -> Ada
         "deep": "DEEP",
     }.get(requested)
     level = forced or classify_profile(profile)
+    if _is_local_target(profile.target) and level == "LIGHT":
+        level = "BALANCED"
     profile.recommended_scan = level
     engine = ModuleEngine.for_profile(profile, level)
     laptop_threads = max(1, int(os.getenv("OLLAMA_NUM_THREADS", "8") or 8))
     if level == "LIGHT":
         values = dict(
-            max_urls=30, concurrency=2, request_batch_size=8,
+            max_urls=50, concurrency=2, request_batch_size=8,
             request_timeout=7.0, run_nuclei=False, run_business_logic=False,
             run_deep_analysis=False, ai_mode="fast_filter_only",
             cpu_limit_percent=45,
         )
     elif level == "DEEP":
         values = dict(
-            max_urls=160, concurrency=min(6, laptop_threads),
+            max_urls=300, concurrency=min(6, laptop_threads),
             request_batch_size=16, request_timeout=12.0,
             run_nuclei=True, run_business_logic=True,
             run_deep_analysis=True, ai_mode="selective_reasoning",
@@ -412,7 +435,7 @@ def build_adaptive_plan(profile: TargetProfile, requested_mode: str = "") -> Ada
         )
     else:
         values = dict(
-            max_urls=80, concurrency=min(4, laptop_threads),
+            max_urls=150, concurrency=min(4, laptop_threads),
             request_batch_size=12, request_timeout=9.0,
             run_nuclei=False, run_business_logic=False,
             run_deep_analysis=False, ai_mode="selective_reasoning",
