@@ -138,24 +138,28 @@ Configure it in **Dashboard → Settings → AI Configuration**.
 ## Architecture
 
 ```text
-Guided Dashboard
-       │
-       ▼
-Authorization + Scope Policy
-       │
-       ▼
-Adaptive Target Profiler
-       │
-       ├── Recon and endpoint discovery
-       ├── Selective vulnerability testing
-       ├── Proof and Zero FP validation
-       └── Local/cloud AI routing
-       │
-       ▼
-CVSS++ Scoring + Exploit Chain Builder
-       │
-       ▼
-HackerOne, Bugcrowd, Markdown, and JSON Reports
+Target URL
+    ↓
+Guided Wizard (scope, mode, sessions)
+    ↓
+Adaptive Pre-Scan Analysis
+    ↓
+Phase 1: Reconnaissance
+(subfinder, httpx, katana, gau, JS extraction)
+    ↓
+Phase 2: Hunt
+(34 vulnerability classes, OOB confirmation)
+    ↓
+Phase 3: AI Triage
+(3-tier: auto → batch → full CoT)
+    ↓
+Phase 4: Exploit Chain Builder + CVSS++ Scoring
+    ↓
+Phase 5: Zero FP Gate
+(12-point proof check)
+    ↓
+Phase 6: Report
+(HackerOne, Bugcrowd, Markdown, JSON)
 ```
 
 Burp Suite traffic can also be sent to the local analyzer through
