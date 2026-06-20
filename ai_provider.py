@@ -118,7 +118,7 @@ class AIRouter:
         self.providers: list[AIProvider] = [
             AIProvider("local", self.ollama_fast_model, "http://127.0.0.1:11434/api/chat",
                        kind="local", cost_per_1k_tokens=0.0, rpm=120,
-                       enabled=os.getenv("OLLAMA_ENABLED", "1") != "0"),
+                       enabled=os.getenv("OLLAMA_ENABLED", "0") != "0"),
             AIProvider("gemini", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
                        "https://generativelanguage.googleapis.com/v1beta/models",
                        "GEMINI_API_KEY", 0.00015, 14, True, "gemini"),
@@ -182,7 +182,7 @@ class AIRouter:
         local = next((provider for provider in self.providers if provider.name == "local"), None)
         if local:
             local.model = self.ollama_fast_model
-            local.enabled = os.getenv("OLLAMA_ENABLED", "1") != "0"
+            local.enabled = os.getenv("OLLAMA_ENABLED", "0") != "0"
         self.last_routing_reason = "configuration_reloaded"
 
     def _estimate_tokens(self, prompt: str, system: str, max_tokens: int) -> int:
@@ -273,7 +273,7 @@ class AIRouter:
     async def availability(self) -> dict:
         ollama = await self.ollama_status()
         ollama_ready = (
-            os.getenv("OLLAMA_ENABLED", "1") != "0"
+            os.getenv("OLLAMA_ENABLED", "0") != "0"
             and bool(ollama.get("running"))
         )
         providers = {

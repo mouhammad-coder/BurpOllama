@@ -16,7 +16,7 @@ SETTING_DEFAULTS: dict[str, str] = {
     "OPENAI_API_KEY": "",
     "ANTHROPIC_API_KEY": "",
     "CLOUD_AI_ENABLED": "0",
-    "OLLAMA_ENABLED": "1",
+    "OLLAMA_ENABLED": "0",
     "OLLAMA_MODEL": "mistral",
     "OLLAMA_FAST_MODEL": "mistral",
     "OLLAMA_REASONING_MODEL": "llama3.1:8b",

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# BurpOllama - Foolproof launcher
+# BurpOllama - Fast launcher
 set -e
 
 CYAN="\033[1;36m"
 GREEN="\033[1;32m"
+RED="\033[1;31m"
 YELLOW="\033[1;33m"
 RESET="\033[0m"
 
@@ -11,15 +12,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 if [[ ! -d "$SCRIPT_DIR/.venv" ]]; then
-    echo -e "${CYAN}[*]${RESET} Creating Python virtual environment..."
-    python3 -m venv "$SCRIPT_DIR/.venv"
-    source "$SCRIPT_DIR/.venv/bin/activate"
-    python -m pip install --upgrade pip
-    python -m pip install -r "$SCRIPT_DIR/requirements.txt"
-    python -m pip install semgrep --break-system-packages 2>/dev/null || python -m pip install semgrep || \
-        echo -e "${YELLOW}[!]${RESET} Semgrep could not be installed; BurpOllama will use regex analysis."
-else
-    source "$SCRIPT_DIR/.venv/bin/activate"
+    echo -e "${RED}[!]${RESET} Python virtual environment not found."
+    echo "    Run: bash setup.sh"
+    exit 1
+fi
+
+PID=$(lsof -ti:8888 2>/dev/null || true)
+if [[ -n "$PID" ]]; then
+    echo -e "${YELLOW}[!]${RESET} Port 8888 is busy. Stopping the old process..."
+    kill -9 $PID 2>/dev/null || true
 fi
 
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -29,27 +30,20 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
     set +a
 fi
 
-PID=$(lsof -ti:8888 2>/dev/null || true)
-if [[ -n "$PID" ]]; then
-    echo -e "${YELLOW}[!]${RESET} Port 8888 is busy. Stopping the old process..."
-    kill -9 $PID 2>/dev/null || true
-    sleep 1
-fi
-
-OLLAMA_RUNNING=false
-if [[ "${OLLAMA_ENABLED:-1}" != "0" ]] && curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    OLLAMA_RUNNING=true
-fi
-
-if [[ "$OLLAMA_RUNNING" == "true" ]]; then
-    echo -e "${GREEN}[+]${RESET} Local Ollama is available."
+if [[ "${OLLAMA_ENABLED:-0}" == "1" ]]; then
+    OLLAMA_STATUS=$(curl -fsS --max-time 1 http://127.0.0.1:11434/api/tags 2>/dev/null || true)
+    if [[ -z "$OLLAMA_STATUS" ]]; then
+        echo -e "${YELLOW}[!]${RESET} Ollama is enabled but not running. Continuing without local AI."
+    elif [[ "$OLLAMA_STATUS" != *"mistral"* ]]; then
+        echo -e "${YELLOW}[!]${RESET} Ollama is running but mistral is not installed. Install it manually from the dashboard."
+    else
+        echo -e "${GREEN}[+]${RESET} Local Ollama and mistral are available."
+    fi
 elif [[ -n "${GEMINI_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" || -n "${ANTHROPIC_API_KEY:-}" ]]; then
     echo -e "${GREEN}[+]${RESET} Cloud AI provider configured."
 else
-    echo -e "${YELLOW}No AI provider configured. Scans will run with manual review only.${RESET}"
+    echo -e "${YELLOW}[!]${RESET} No AI provider configured. Scans will run with manual review only."
 fi
-
-export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"
 
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════╗${RESET}"
@@ -63,5 +57,6 @@ echo -e "${CYAN}║  Press Ctrl+C to stop                     ║${RESET}"
 echo -e "${CYAN}╚═══════════════════════════════════════════╝${RESET}"
 echo ""
 
-(sleep 2 && xdg-open http://127.0.0.1:8888/ui >/dev/null 2>&1) &
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/.venv/bin/activate"
 exec uvicorn main:app --host 127.0.0.1 --port 8888 --reload
