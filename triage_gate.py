@@ -7,6 +7,7 @@ JSON parse failure → re-minify + retry once → fallback KILL (safe default).
 import json
 import re
 from gemini_client import ask_gemini, set_api_key
+from ai_provider import ai_router
 from utils import prune_http_for_llm
 from security_hardening import sanitize_prompt_input
 
@@ -229,6 +230,13 @@ def _kill_fallback(reason: str) -> dict:
     }
 
 
+def _no_ai_triage_result() -> dict:
+    return {
+        "verdict": "NEEDS_MANUAL_REVIEW",
+        "reason": "No AI provider configured",
+    }
+
+
 # ── Single finding triage ─────────────────────────────────────────────────────
 
 async def run_triage_gate(finding: dict, api_key: str = "",
@@ -243,6 +251,12 @@ async def run_triage_gate(finding: dict, api_key: str = "",
     All fail -> _parse_failed = True -> caller routes to review queue
     """
     import asyncio as _aio
+    if not await ai_router.has_available_provider():
+        finding["triage"] = _no_ai_triage_result()
+        finding["verdict"] = "NEEDS_MANUAL_REVIEW"
+        finding["triaged"] = False
+        return finding
+
     vt = finding.get("vuln_type", "").lower()
     ft = "xss" if "xss" in vt else ("sqli" if "sql" in vt else "generic")
     pruned = http_context
@@ -308,6 +322,14 @@ async def run_deep_analysis(findings: list, recon_data: dict,
     """Post-triage chain identification and surface recommendations."""
     if not findings:
         return {}
+    if not await ai_router.has_available_provider():
+        return {
+            "chains": [],
+            "high_priority": [],
+            "likely_false_positives": [],
+            "additional_surfaces": [],
+            "skipped": "No AI provider configured",
+        }
 
     summary = "\n".join(
         "- [{sev}] {vt} @ {url} (verdict:{v}, conf:{c}%)".format(
@@ -523,6 +545,20 @@ async def batch_triage(
 
     log("[Triage] ━━━ Phase 3: 3-Tier Hierarchical Triage — {} findings ━━━".format(
         len(findings)))
+
+    if not await ai_router.has_available_provider():
+        log("No AI provider available. Scan will run without AI triage.")
+        triaged = []
+        for finding in findings:
+            finding.update({
+                "verdict": "NEEDS_MANUAL_REVIEW",
+                "triaged": False,
+                "triage": _no_ai_triage_result(),
+            })
+            triaged.append(finding)
+        log("[Triage] AI triage skipped; {} finding(s) require manual review.".format(
+            len(triaged)))
+        return triaged, {"NEEDS_MANUAL_REVIEW": len(triaged)}
 
     triaged    = []
     tier2_buf  = []   # accumulate batch candidates

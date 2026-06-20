@@ -1176,7 +1176,10 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             "idor", "bola", "auth", "authorization", "oauth", "jwt",
             "business logic", "privilege", "account takeover", "chain",
         )
-        if adaptive_plan.level == "DEEP":
+        ai_available = await ai_router.has_available_provider()
+        if not ai_available:
+            ai_candidates = unique_triage
+        elif adaptive_plan.level == "DEEP":
             ai_candidates = unique_triage
         else:
             ai_candidates = [
@@ -1547,7 +1550,10 @@ async def _resume_pipeline_from_checkpoint(
             async def triage_progress(phase, cur, total, label):
                 await progress("triage", cur, total, label)
 
-            if adaptive_plan.level == "DEEP":
+            ai_available = await ai_router.has_available_provider()
+            if not ai_available:
+                resume_ai_candidates = raw_findings
+            elif adaptive_plan.level == "DEEP":
                 resume_ai_candidates = raw_findings
             else:
                 resume_ai_candidates = [
@@ -1787,6 +1793,9 @@ async def _show_startup_banner():
         return
     STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
     _startup_banner_printed = True
+    cloud_enabled = os.getenv("CLOUD_AI_ENABLED", "0") == "1"
+    ai_privacy_guard.update({"cloud_ai_enabled": cloud_enabled}, persist=False)
+    scope_policy.update({"cloud_ai_enabled": cloud_enabled}, persist=False)
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1845,6 +1854,9 @@ async def set_config(cfg: dict):
     ai_router.configure_key("openai", os.getenv("OPENAI_API_KEY", ""))
     ai_router.configure_key("anthropic", os.getenv("ANTHROPIC_API_KEY", ""))
     ai_router.reload_from_env()
+    cloud_enabled = os.getenv("CLOUD_AI_ENABLED", "0") == "1"
+    ai_privacy_guard.update({"cloud_ai_enabled": cloud_enabled}, persist=False)
+    scope_policy.update({"cloud_ai_enabled": cloud_enabled}, persist=False)
     event_store.audit(
         "local-user",
         "config.saved",
@@ -1864,10 +1876,12 @@ async def set_config(cfg: dict):
 @app.get("/config")
 async def get_config():
     settings = public_settings()
+    availability = await ai_router.availability()
     return {
         **settings,
-        "key_status": "set" if settings.get("configured", {}).get("GEMINI_API_KEY") else "not set",
-        "model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        "key_status": "set" if availability["triage_capable"] else "not set",
+        "model": availability["active_model"],
+        "active_provider": availability["active_provider"],
         "ai_router": ai_router.status(),
     }
 
@@ -1895,11 +1909,25 @@ async def _ollama_model_status() -> dict:
             return model in installed_set or model in installed_bases
 
         missing = [model for model in required if not model_is_installed(model)]
+        mistral_ready = model_is_installed("mistral")
+        llama_ready = any(
+            name.split(":", 1)[0].startswith("llama")
+            for name in installed
+        )
         return {
             "available": True,
             "installed": installed,
             "required": required,
             "missing": missing,
+            "ollama_running": True,
+            "models_available": installed,
+            "mistral_ready": mistral_ready,
+            "llama_ready": llama_ready,
+            "recommended_model": (
+                "mistral" if mistral_ready
+                else "llama3.1" if llama_ready
+                else None
+            ),
         }
     except Exception as exc:
         return {
@@ -1907,8 +1935,25 @@ async def _ollama_model_status() -> dict:
             "installed": [],
             "required": required,
             "missing": required,
+            "ollama_running": False,
+            "models_available": [],
+            "mistral_ready": False,
+            "llama_ready": False,
+            "recommended_model": None,
             "error": str(exc),
         }
+
+
+@app.get("/ollama/status")
+async def get_ollama_status():
+    status = await _ollama_model_status()
+    return {
+        "ollama_running": status["ollama_running"],
+        "models_available": status["models_available"],
+        "mistral_ready": status["mistral_ready"],
+        "llama_ready": status["llama_ready"],
+        "recommended_model": status["recommended_model"],
+    }
 
 
 @app.get("/ollama/models")
@@ -1919,23 +1964,21 @@ async def get_ollama_models():
 @app.post("/ollama/pull")
 async def pull_ollama_model(payload: dict):
     model = str(payload.get("model", "")).strip()
-    allowed = {
-        os.getenv("OLLAMA_MODEL", "mistral"),
-        os.getenv("OLLAMA_FAST_MODEL", "mistral"),
-        os.getenv("OLLAMA_REASONING_MODEL", "llama3.1:8b"),
-    }
-    if model not in allowed:
-        raise HTTPException(422, "Choose one of the configured Ollama models.")
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
+        raise HTTPException(422, "Enter a valid Ollama model name.")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0)) as client:
-            response = await client.post(
-                "http://127.0.0.1:11434/api/pull",
-                json={"name": model, "stream": False},
-            )
-            response.raise_for_status()
-        return {"pulled": True, "model": model, "models": await _ollama_model_status()}
+        await asyncio.create_subprocess_exec(
+            "ollama",
+            "pull",
+            model,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return {"started": True, "model": model}
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "Ollama is not installed or is not on PATH.") from exc
     except Exception as exc:
-        raise HTTPException(503, "Ollama could not pull {}: {}".format(model, exc)) from exc
+        raise HTTPException(503, "Ollama could not start pulling {}: {}".format(model, exc)) from exc
 
 
 @app.post("/ai/providers/test")
@@ -2038,8 +2081,6 @@ async def start_scan(req: ScanRequest):
         raise HTTPException(403, reason)
     if req.api_key:
         set_api_key(req.api_key)
-    if not key and not any(p.available for p in ai_router.providers):
-        raise HTTPException(400, "Configure an AI provider or start Ollama before scanning.")
     scan_id  = str(uuid.uuid4())[:12]
     scans[scan_id] = {
         "id":scan_id,"target":req.target,
@@ -2085,8 +2126,6 @@ async def resume_autopilot(req: AutopilotResumeRequest):
         "autopilot_resume_token": stored.get("resume_token"),
     }
     key = _gc.GEMINI_API_KEY
-    if not key and not any(p.available for p in ai_router.providers):
-        raise HTTPException(400, "Configure an AI provider or start Ollama before resuming.")
     task_id = scheduler.enqueue(req.scan_id, "full_pipeline_resume", {"target": stored.get("target", "")}, priority=5)
     scans[req.scan_id]["scheduler_task_id"] = task_id
     autopilot_state.update_run(req.scan_id, status="queued", phase=scans[req.scan_id].get("phase", "queued"),
@@ -2616,13 +2655,15 @@ def _database_is_ready() -> bool:
 
 @app.get("/ready")
 async def ready():
+    availability = await ai_router.availability()
     return {
         "ready": True,
         "version": "3.0",
-        "ai_configured": any(
-            bool(os.getenv(key, "").strip())
-            for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
-        ),
+        "ai_configured": availability["triage_capable"],
+        "ai_provider": availability["active_provider"],
+        "ai_model": availability["active_model"],
+        "scan_capable": True,
+        "triage_capable": availability["triage_capable"],
         "database_ok": _database_is_ready(),
         "startup_time": STARTUP_TIME,
     }
@@ -2769,6 +2810,33 @@ def _system_check_results() -> dict:
         "dashboard_url": dashboard_url,
         "api_url": server_url,
     }
+
+
+async def _ai_provider_check_results() -> dict:
+    availability = await ai_router.availability()
+    configured = public_settings().get("configured", {})
+    return {
+        "ollama": {
+            "status": "available" if availability["available"]["ollama"] else "unavailable",
+            "models": availability["ollama_models"],
+        },
+        "gemini": {
+            "status": "configured" if configured.get("GEMINI_API_KEY") else "not_configured",
+        },
+        "openai": {
+            "status": "configured" if configured.get("OPENAI_API_KEY") else "not_configured",
+        },
+        "anthropic": {
+            "status": "configured" if configured.get("ANTHROPIC_API_KEY") else "not_configured",
+        },
+        "active_provider": availability["active_provider"],
+    }
+
+
+async def _complete_system_check_results() -> dict:
+    result = _system_check_results()
+    result["ai_providers"] = await _ai_provider_check_results()
+    return result
 
 def _create_autopilot_dry_run() -> dict:
     scan_id = "dryrun-" + uuid.uuid4().hex[:8]
@@ -2940,12 +3008,12 @@ def _create_autopilot_dry_run() -> dict:
 
 @app.get("/system-check")
 async def get_system_check():
-    return JSONResponse(_system_check_results())
+    return JSONResponse(await _complete_system_check_results())
 
 @app.get("/system/check")
 async def get_system_check_compat():
     """Beginner settings compatibility route."""
-    result = _system_check_results()
+    result = await _complete_system_check_results()
     result["ollama"] = await _ollama_model_status()
     result["config"] = {
         "env_exists": public_settings().get("env_exists", False),
@@ -2955,7 +3023,7 @@ async def get_system_check_compat():
 
 @app.post("/system-check/run")
 async def run_system_check():
-    return JSONResponse(_system_check_results())
+    return JSONResponse(await _complete_system_check_results())
 
 @app.get("/autopilot/dry-run")
 @app.post("/autopilot/dry-run")
@@ -2972,7 +3040,16 @@ async def get_observability():
 
 @app.get("/ai/providers")
 async def get_ai_providers():
-    return ai_router.status()
+    status = ai_router.status()
+    availability = await ai_router.availability()
+    for provider in status.get("providers", []):
+        key = "ollama" if provider.get("name") == "local" else provider.get("name")
+        provider["available"] = bool(availability["available"].get(key, False))
+        provider["active"] = availability["active_provider"] == key
+    status["active_provider"] = availability["active_provider"]
+    status["active_model"] = availability["active_model"]
+    status["triage_capable"] = availability["triage_capable"]
+    return status
 
 @app.get("/ai/privacy")
 async def get_ai_privacy():
@@ -3275,8 +3352,6 @@ async def retry_failed_task(scan_id: str):
     if scan.get("status") not in ("failed", "error", "stopped"):
         return {"retried": False, "scan_id": scan_id, "reason": "No failed or stopped task to retry."}
     key = _gc.GEMINI_API_KEY
-    if not key and not any(p.available for p in ai_router.providers):
-        raise HTTPException(400, "Configure an AI provider or start Ollama before retrying.")
     scan["status"] = "queued"
     scan["phase"] = "queued"
     scan["control"] = "run"

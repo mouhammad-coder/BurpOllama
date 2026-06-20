@@ -35,11 +35,46 @@ else
     echo -e "${GREEN}[+]${RESET} Existing .env preserved."
 fi
 
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  AI PROVIDER SETUP"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Choose your AI option:"
+echo "  1) Install Ollama (FREE - runs locally, no internet needed)"
+echo "  2) Use Gemini free API (FREE - needs Google account)"
+echo "  3) Skip AI setup (configure later in dashboard)"
+echo ""
+read -r -p "Choice [1/2/3]: " AI_CHOICE
+
+if [[ "$AI_CHOICE" == "1" ]]; then
+    echo "[*] Installing Ollama..."
+    curl -fsSL https://ollama.ai/install.sh | sh
+    echo "[*] Pulling mistral model (this takes 5-10 minutes)..."
+    ollama pull mistral &
+    OLLAMA_PID=$!
+    echo "[+] Ollama installing in background (PID: $OLLAMA_PID)"
+    echo "    Check progress: ollama list"
+    echo "OLLAMA_ENABLED=1" >> .env
+    echo "OLLAMA_MODEL=mistral" >> .env
+elif [[ "$AI_CHOICE" == "2" ]]; then
+    echo ""
+    echo "  Get your FREE Gemini key at:"
+    echo "  https://aistudio.google.com/app/apikey"
+    echo ""
+    read -r -p "Paste your Gemini API key (or Enter to skip): " GEMINI_KEY
+    if [[ -n "$GEMINI_KEY" ]]; then
+        echo "GEMINI_API_KEY=$GEMINI_KEY" >> .env
+        echo "CLOUD_AI_ENABLED=1" >> .env
+        echo "[+] Gemini key saved"
+    fi
+else
+    echo "[*] Skipping AI setup. Configure later in the dashboard."
+fi
+
 chmod +x "$SCRIPT_DIR/setup.sh" "$SCRIPT_DIR/start.sh" \
     "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/update.sh" 2>/dev/null || true
 
-echo ""
-echo "You will enter your API key inside the dashboard after starting."
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}║         BURPOLLAMA IS READY               ║${RESET}"

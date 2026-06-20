@@ -36,10 +36,17 @@ if [[ -n "$PID" ]]; then
     sleep 1
 fi
 
-if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-    echo -e "${YELLOW}No AI key configured. Open dashboard → Settings → AI to add one.${RESET}"
+OLLAMA_RUNNING=false
+if [[ "${OLLAMA_ENABLED:-1}" != "0" ]] && curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    OLLAMA_RUNNING=true
+fi
+
+if [[ "$OLLAMA_RUNNING" == "true" ]]; then
+    echo -e "${GREEN}[+]${RESET} Local Ollama is available."
+elif [[ -n "${GEMINI_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" || -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo -e "${GREEN}[+]${RESET} Cloud AI provider configured."
 else
-    echo -e "${GREEN}[+]${RESET} Gemini API key loaded."
+    echo -e "${YELLOW}No AI provider configured. Scans will run with manual review only.${RESET}"
 fi
 
 export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"

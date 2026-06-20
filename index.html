@@ -570,51 +570,126 @@
     }
     function dismissQuickSetup(){
       sessionStorage.setItem('burpollama.quickSetupDismissed', 'true');
+      alert('Scans will run but findings will not be AI-triaged. You will see raw results only.');
       renderQuickSetup();
     }
-    function openGeminiKeyModal(){
+    function openProviderKeyModal(provider){
+      const options = {
+        gemini: {
+          title:'Google Gemini',
+          key:'GEMINI_API_KEY',
+          placeholder:'AIza...',
+          link:'https://aistudio.google.com/app/apikey',
+          linkLabel:'Get free Gemini key ↗',
+          note:'Free tier: 15 requests/minute, 1500/day - enough for full scans'
+        },
+        openai: {
+          title:'OpenAI',
+          key:'OPENAI_API_KEY',
+          placeholder:'sk-...',
+          link:'https://platform.openai.com/api-keys',
+          linkLabel:'Open OpenAI API keys ↗',
+          note:'Uses your OpenAI account billing.'
+        },
+        anthropic: {
+          title:'Anthropic Claude',
+          key:'ANTHROPIC_API_KEY',
+          placeholder:'sk-ant-...',
+          link:'https://console.anthropic.com/settings/keys',
+          linkLabel:'Open Anthropic API keys ↗',
+          note:'Uses your Anthropic account billing.'
+        }
+      };
+      const selected = options[provider];
+      if(!selected) return;
       document.getElementById('modal')?.remove();
       const modal = document.createElement('div');
       modal.id = 'modal';
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:30;display:grid;place-items:center;padding:20px';
       modal.innerHTML = `
         <div class="card pad" style="width:min(520px,100%)">
-          <div class="card-head"><div><div class="card-title">Add Gemini API key</div><div class="card-sub">Saved only in this project’s local .env file.</div></div></div>
-          <div class="wizard-field"><label for="first-run-gemini-key">Gemini API key</label><input class="input" id="first-run-gemini-key" type="password" placeholder="AIza..."></div>
+          <div class="card-head"><div><div class="card-title">${esc(selected.title)}</div><div class="card-sub">Saved only in this project’s local .env file.</div></div></div>
+          <div class="notice">${esc(selected.note)}</div><div style="height:12px"></div>
+          <div class="wizard-field"><label for="provider-key-input">API key</label><input class="input" id="provider-key-input" type="password" placeholder="${esc(selected.placeholder)}"></div>
+          <a class="btn blue" href="${esc(selected.link)}" target="_blank" rel="noopener">${esc(selected.linkLabel)}</a>
           <div class="toolbar" style="justify-content:flex-end;margin:0">
             <button class="btn" onclick="document.getElementById('modal').remove()">Cancel</button>
-            <button class="btn primary" onclick="saveFirstRunGeminiKey()">Save Key</button>
+            <button class="btn primary" onclick="saveProviderKey('${esc(selected.key)}','provider-key-input')">Save Key</button>
           </div>
         </div>`;
       document.body.appendChild(modal);
-      setTimeout(() => document.getElementById('first-run-gemini-key')?.focus(), 0);
+      setTimeout(() => document.getElementById('provider-key-input')?.focus(), 0);
     }
-    async function saveFirstRunGeminiKey(){
-      const key = document.getElementById('first-run-gemini-key')?.value.trim() || '';
-      if(!key){ alert('Paste your Gemini API key first.'); return; }
+    function openOllamaSetupModal(){
+      document.getElementById('modal')?.remove();
+      const modal = document.createElement('div');
+      modal.id = 'modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:30;display:grid;place-items:center;padding:20px';
+      modal.innerHTML = `
+        <div class="card pad" style="width:min(650px,100%)">
+          <div class="card-title">🖥️ Free Local Ollama</div>
+          <p class="card-sub" style="font-size:14px;line-height:1.6">Ollama runs AI locally on your machine. No API key needed. Free forever.</p>
+          <div class="wizard-field"><label>Install Ollama</label><pre class="pre">curl -fsSL https://ollama.ai/install.sh | sh</pre></div>
+          <div class="wizard-field"><label>Pull the recommended model</label><pre class="pre">ollama pull mistral</pre></div>
+          <div id="ollama-modal-status" class="connection-result">Status not tested yet.</div>
+          <div class="toolbar" style="justify-content:flex-end;margin:0">
+            <button class="btn" onclick="testOllama('ollama-modal-status')">Test Ollama</button>
+            <button class="btn primary" onclick="useOllama()">Done, use Ollama</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+    }
+    async function saveConfigValues(body, successMessage='Settings saved.'){
       const r = await fetch(endpoint('/config'), {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({GEMINI_API_KEY:key})
+        body:JSON.stringify(body)
       });
       if(!r.ok){ alert(await r.text()); return; }
       document.getElementById('modal')?.remove();
       await refreshAll();
+      if(successMessage) alert(successMessage);
+    }
+    async function saveProviderKey(configKey, inputId){
+      const key = document.getElementById(inputId)?.value.trim() || '';
+      if(!key){ alert('Paste an API key first.'); return; }
+      await saveConfigValues({
+        [configKey]:key,
+        CLOUD_AI_ENABLED:'1'
+      }, 'AI provider key saved and cloud AI enabled.');
+    }
+    async function useOllama(){
+      await saveConfigValues({
+        OLLAMA_ENABLED:'1',
+        OLLAMA_MODEL:'mistral',
+        OLLAMA_FAST_MODEL:'mistral'
+      }, 'Ollama enabled. BurpOllama will use it when the service is running.');
+    }
+    async function useNoAIMode(){
+      sessionStorage.setItem('burpollama.quickSetupDismissed', 'true');
+      await saveConfigValues({
+        OLLAMA_ENABLED:'0',
+        CLOUD_AI_ENABLED:'0',
+        GEMINI_API_KEY:'',
+        OPENAI_API_KEY:'',
+        ANTHROPIC_API_KEY:''
+      }, 'No AI mode enabled. Scans still run and findings require manual review.');
     }
     function renderQuickSetup(){
       const container = document.getElementById('quick-setup-container');
-      const geminiConfigured = !!state.config?.configured?.GEMINI_API_KEY;
+      const aiConfigured = state.ready?.triage_capable === true;
       const dismissed = sessionStorage.getItem('burpollama.quickSetupDismissed') === 'true';
-      if(geminiConfigured || dismissed){
+      if(aiConfigured || dismissed){
         container.innerHTML = '';
         return;
       }
       container.innerHTML = `<div class="quick-setup">
-        <div class="quick-setup-copy"><strong>⚡ Quick Setup:</strong> Add your free Gemini API key to enable<br>AI-powered vulnerability analysis.</div>
+        <div class="quick-setup-copy"><strong>⚡ Choose your AI provider to enable smart vulnerability triage</strong></div>
         <div class="quick-setup-actions">
-          <a class="btn blue" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get Free Key</a>
-          <button class="btn primary" onclick="openGeminiKeyModal()">Enter Key Now</button>
-          <button class="btn" onclick="dismissQuickSetup()">Skip - Use Local AI</button>
+          <button class="btn primary" onclick="openOllamaSetupModal()">🆓 Free - Local Ollama</button>
+          <button class="btn blue" onclick="openProviderKeyModal('gemini')">🆓 Free - Gemini</button>
+          <button class="btn" onclick="openProviderKeyModal('openai')">OpenAI</button>
+          <button class="btn" onclick="dismissQuickSetup()">Skip</button>
         </div>
       </div>`;
     }
@@ -632,9 +707,14 @@
         'BURPOLLAMA_DATABASE_URL','BURPOLLAMA_RETENTION_DAYS',
         'BURPOLLAMA_OOB_SIGNING_KEY','BURPOLLAMA_OOB_PROVIDER'
       ];
-      const body = Object.fromEntries(ids.map(id => [id, document.getElementById(`cfg-${id}`)?.value ?? '']));
-      body.OLLAMA_ENABLED = document.getElementById('cfg-OLLAMA_ENABLED')?.checked ? '1' : '0';
-      body.AI_AUTO_REASONING = document.getElementById('cfg-AI_AUTO_REASONING')?.checked ? '1' : '0';
+      const body = Object.fromEntries(ids.flatMap(id => {
+        const el = document.getElementById(`cfg-${id}`);
+        return el ? [[id, el.value ?? '']] : [];
+      }));
+      const ollamaEnabled = document.getElementById('cfg-OLLAMA_ENABLED');
+      const autoReasoning = document.getElementById('cfg-AI_AUTO_REASONING');
+      if(ollamaEnabled) body.OLLAMA_ENABLED = ollamaEnabled.checked ? '1' : '0';
+      if(autoReasoning) body.AI_AUTO_REASONING = autoReasoning.checked ? '1' : '0';
       const r = await fetch(endpoint('/config'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const responseText = await r.text();
       if(!r.ok){ alert(responseText); return; }
@@ -642,9 +722,27 @@
       alert(state.config.restart_recommended ? 'Settings saved. Restart BurpOllama to apply storage changes.' : 'Settings saved.');
       await refreshAll();
     }
-    async function testOllama(){
-      state.ollamaModels = await json('/ollama/models', {available:false,installed:[],missing:[]});
-      alert(state.ollamaModels.available ? `Ollama is working. ${state.ollamaModels.installed.length} model(s) installed.` : 'Ollama is not reachable. Start Ollama and try again.');
+    async function testOllama(resultId=''){
+      const status = await json('/ollama/status', {ollama_running:false,models_available:[]});
+      state.ollamaModels = {
+        ...state.ollamaModels,
+        available:status.ollama_running,
+        installed:status.models_available || [],
+        ollama_running:status.ollama_running,
+        mistral_ready:status.mistral_ready,
+        llama_ready:status.llama_ready,
+        recommended_model:status.recommended_model
+      };
+      const message = status.ollama_running
+        ? `Ollama is running. Models: ${(status.models_available || []).join(', ') || 'none pulled yet'}.`
+        : 'Ollama is not reachable. Install or start Ollama and try again.';
+      const result = resultId ? document.getElementById(resultId) : null;
+      if(result){
+        result.className = `connection-result ${status.ollama_running ? 'ok' : 'error'}`;
+        result.textContent = message;
+      }else{
+        alert(message);
+      }
       renderSettings();
     }
     async function testAIProviders(){
@@ -658,8 +756,8 @@
       const r = await fetch(endpoint('/ollama/pull'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model})});
       if(!r.ok){ alert(await r.text()); return; }
       const d = await r.json();
-      state.ollamaModels = d.models || state.ollamaModels;
-      alert(`${model} downloaded successfully.`);
+      alert(`${d.model || model} download started. Poll Ollama status to check progress.`);
+      setTimeout(refreshAll, 2000);
       renderSettings();
     }
     async function pullMissingModels(){
@@ -668,11 +766,10 @@
       for(const model of missing){
         const r = await fetch(endpoint('/ollama/pull'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model})});
         if(!r.ok){ alert(await r.text()); return; }
-        const d = await r.json();
-        state.ollamaModels = d.models || state.ollamaModels;
+        await r.json();
       }
-      alert('Missing models downloaded successfully.');
-      renderSettings();
+      alert('Missing model downloads started. Use Test Connection to check progress.');
+      setTimeout(refreshAll, 2000);
     }
     async function saveSessions(){
       const body = {
@@ -1831,34 +1928,44 @@
         ${state.scans.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(x.target)}</td><td><span class="status ${esc(x.status)}">${esc(x.status)}</span></td><td><button class="btn" onclick="openReport('${esc(x.id)}')">Open</button></td><td><a class="btn" href="/scan/${esc(x.id)}/report/executive" target="_blank">Executive</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/technical" target="_blank">Technical</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/json" target="_blank">JSON</a></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No reports yet.</div></td></tr>'}
         </tbody></table></div></details>`;
     }
+    function aiProviderBadge(provider, available){
+      const active = state.ready?.ai_provider === provider;
+      if(active) return '<span class="pill"><span class="dot ok"></span>ACTIVE</span>';
+      if(available) return '<span class="pill"><span class="dot ok"></span>AVAILABLE</span>';
+      return '<span class="pill"><span class="dot"></span>NOT CONFIGURED</span>';
+    }
     function renderSettings(){
       const models = state.ollamaModels || {installed:[],missing:[],required:[]};
       const providerRows = state.providerTest?.providers || [];
+      const configured = state.config?.configured || {};
+      const ollamaAvailable = !!(models.ollama_running ?? models.available);
       document.getElementById('route-settings').innerHTML = `
         <div class="notice beginner-tip">Configure BurpOllama here. Settings are saved to the project’s local <span class="mono">.env</span> file automatically; no terminal editing is needed.</div>
         <div style="height:14px"></div>
-        <div class="card pad"><div class="card-title">AI provider keys</div><div class="card-sub">Keys are masked after saving.</div><div style="height:12px"></div><div class="grid cols-3">
-          <div class="wizard-field"><label>Gemini API key</label><input class="input" id="cfg-GEMINI_API_KEY" type="password" value="${esc(configValue('GEMINI_API_KEY'))}" placeholder="Optional"></div>
-          <div class="wizard-field"><label>OpenAI API key</label><input class="input" id="cfg-OPENAI_API_KEY" type="password" value="${esc(configValue('OPENAI_API_KEY'))}" placeholder="Optional"></div>
-          <div class="wizard-field"><label>Anthropic API key</label><input class="input" id="cfg-ANTHROPIC_API_KEY" type="password" value="${esc(configValue('ANTHROPIC_API_KEY'))}" placeholder="Optional"></div>
-        </div></div>
+        <div class="card pad" style="border-color:#2f8a5c">
+          <div class="card-head"><div><div class="card-title">LOCAL AI (RECOMMENDED - FREE)</div><div class="card-sub">🖥️ Ollama - Runs on your machine</div></div>${aiProviderBadge('ollama', ollamaAvailable)}</div>
+          <div class="kv"><div>Status</div><div>${ollamaAvailable ? 'Running' : 'Not running'}</div><div>Model</div><div class="mono">${esc(models.recommended_model || configValue('OLLAMA_MODEL','mistral'))}</div><div>Models available</div><div>${esc((models.installed || models.models_available || []).join(', ') || 'None detected')}</div></div>
+          <div style="height:12px"></div>
+          <div class="toolbar"><button class="btn" onclick="openOllamaSetupModal()">Install Ollama</button><button class="btn blue" onclick="pullOllamaModel('mistral')">Pull mistral</button><button class="btn" onclick="testOllama()">Test Connection</button><button class="btn primary" onclick="useOllama()">Use Ollama</button></div>
+        </div>
         <div style="height:14px"></div>
-        <div class="card pad"><div class="card-head"><div><div class="card-title">Local Ollama</div><div class="card-sub">Laptop-safe defaults use one model at a time.</div></div><span class="pill"><span class="dot ${models.available ? 'ok' : 'warn'}"></span>${models.available ? 'Connected' : 'Not connected'}</span></div>
-          <div class="grid cols-3">
-            <label><input type="checkbox" id="cfg-OLLAMA_ENABLED" ${configValue('OLLAMA_ENABLED','1') === '1' ? 'checked' : ''}> Enable Ollama</label>
-            <div class="wizard-field"><label>Default model</label><input class="input" id="cfg-OLLAMA_MODEL" value="${esc(configValue('OLLAMA_MODEL','mistral'))}"></div>
-            <div class="wizard-field"><label>Fast model</label><input class="input" id="cfg-OLLAMA_FAST_MODEL" value="${esc(configValue('OLLAMA_FAST_MODEL','mistral'))}"></div>
-            <div class="wizard-field"><label>Reasoning model</label><input class="input" id="cfg-OLLAMA_REASONING_MODEL" value="${esc(configValue('OLLAMA_REASONING_MODEL','llama3.1:8b'))}"></div>
-            <div class="wizard-field"><label>CPU threads</label><input class="input" type="number" id="cfg-OLLAMA_NUM_THREADS" value="${esc(configValue('OLLAMA_NUM_THREADS','8'))}"></div>
-            <div class="wizard-field"><label>Maximum loaded models</label><input class="input" type="number" id="cfg-OLLAMA_MAX_LOADED_MODELS" value="${esc(configValue('OLLAMA_MAX_LOADED_MODELS','1'))}"></div>
-            <div class="wizard-field"><label>Fast context</label><input class="input" type="number" id="cfg-OLLAMA_FAST_NUM_CTX" value="${esc(configValue('OLLAMA_FAST_NUM_CTX','4096'))}"></div>
-            <div class="wizard-field"><label>Reasoning context</label><input class="input" type="number" id="cfg-OLLAMA_REASONING_NUM_CTX" value="${esc(configValue('OLLAMA_REASONING_NUM_CTX','6144'))}"></div>
-            <div class="wizard-field"><label>Reasoning timeout (seconds)</label><input class="input" type="number" id="cfg-OLLAMA_REASONING_TIMEOUT" value="${esc(configValue('OLLAMA_REASONING_TIMEOUT','180'))}"></div>
-            <div class="wizard-field"><label>Reasoning temperature</label><input class="input" type="number" step="0.01" id="cfg-OLLAMA_REASONING_TEMPERATURE" value="${esc(configValue('OLLAMA_REASONING_TEMPERATURE','0.03'))}"></div>
-            <div class="wizard-field"><label>Keep model loaded</label><input class="input" id="cfg-OLLAMA_KEEP_ALIVE" value="${esc(configValue('OLLAMA_KEEP_ALIVE','10m'))}"></div>
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">FREE CLOUD AI</div><div class="card-sub">✨ Google Gemini - Free: 1500 requests/day</div></div>${aiProviderBadge('gemini', !!configured.GEMINI_API_KEY)}</div>
+          <div class="toolbar"><input class="input" id="cfg-GEMINI_API_KEY" type="password" value="${esc(configValue('GEMINI_API_KEY'))}" placeholder="Gemini API key"><button class="btn primary" onclick="saveProviderKey('GEMINI_API_KEY','cfg-GEMINI_API_KEY')">Save</button><a class="btn blue" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get Free Key ↗</a></div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-title">PAID CLOUD AI</div><div style="height:12px"></div>
+          <div class="grid cols-2">
+            <div><div class="card-head"><div class="card-sub">OpenAI GPT</div>${aiProviderBadge('openai', !!configured.OPENAI_API_KEY)}</div><div class="toolbar"><input class="input" id="cfg-OPENAI_API_KEY" type="password" value="${esc(configValue('OPENAI_API_KEY'))}" placeholder="OpenAI API key"><button class="btn primary" onclick="saveProviderKey('OPENAI_API_KEY','cfg-OPENAI_API_KEY')">Save</button></div></div>
+            <div><div class="card-head"><div class="card-sub">Anthropic Claude</div>${aiProviderBadge('anthropic', !!configured.ANTHROPIC_API_KEY)}</div><div class="toolbar"><input class="input" id="cfg-ANTHROPIC_API_KEY" type="password" value="${esc(configValue('ANTHROPIC_API_KEY'))}" placeholder="Anthropic API key"><button class="btn primary" onclick="saveProviderKey('ANTHROPIC_API_KEY','cfg-ANTHROPIC_API_KEY')">Save</button></div></div>
           </div>
-          <div class="notice">Installed: ${esc((models.installed || []).join(', ') || 'None detected')}<br>Missing: ${esc((models.missing || []).join(', ') || 'None')}</div>
-          <div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="testOllama()">Test Ollama</button><button class="btn blue" onclick="pullMissingModels()">Pull Missing Models</button>${(models.missing || []).map(model => `<button class="btn" onclick="pullOllamaModel('${esc(model)}')">Download ${esc(model)}</button>`).join('')}</div>
+        </div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">NO AI MODE</div><div class="card-sub">Run without AI triage</div></div>${state.ready?.ai_provider === 'none' ? '<span class="pill"><span class="dot ok"></span>ACTIVE</span>' : ''}</div>
+          <div class="notice">Scans still work. Findings are not AI-analyzed. You review all results.</div><div style="height:12px"></div>
+          <button class="btn danger" onclick="useNoAIMode()">Use No AI Mode</button>
         </div>
         <div style="height:14px"></div>
         <div class="card pad"><div class="card-title">Automatic reasoning</div><div style="height:12px"></div><div class="grid cols-3">
@@ -1968,6 +2075,7 @@
       const s = state.systemCheck || {};
       const dry = state.dryRunResult;
       const checks = normalizeSystemChecks(s.checks);
+      const aiProviders = s.ai_providers || {};
       const summary = checks.reduce((acc, c) => {
         acc[c.uiStatus] = (acc[c.uiStatus] || 0) + 1;
         return acc;
@@ -1986,6 +2094,16 @@
           ${metric('Red', summary.red, 'Needs attention')}
         </div>
         <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-head"><div><div class="card-title">AI Providers</div><div class="card-sub">Active: ${esc(aiProviders.active_provider || 'none')}</div></div></div>
+          <div class="grid cols-4">
+            ${systemAIProviderCard('Ollama', aiProviders.ollama?.status, (aiProviders.ollama?.models || []).join(', '))}
+            ${systemAIProviderCard('Gemini', aiProviders.gemini?.status)}
+            ${systemAIProviderCard('OpenAI', aiProviders.openai?.status)}
+            ${systemAIProviderCard('Anthropic', aiProviders.anthropic?.status)}
+          </div>
+        </div>
+        <div style="height:14px"></div>
         <div class="grid cols-2">
           <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Server</div><div class="mono">${esc(s.api_url || s.server_url || 'http://127.0.0.1:8888')}</div><div>Dashboard</div><div class="mono">${esc(s.dashboard_url || 'http://127.0.0.1:8888/ui')}</div></div></div>
           <div class="card pad"><div class="card-title">Dry Run</div><div style="height:12px"></div><div class="notice">The dry run creates mock local scan data in memory and durable Autopilot state. It does not scan the internet.</div></div>
@@ -1993,6 +2111,14 @@
         ${dry ? `<div style="height:14px"></div><div class="card pad"><div class="card-head"><div><div class="card-title">Autopilot Dry Run Result</div><div class="card-sub">${esc(dry.target)}</div></div><span class="tag">DRY RUN</span></div><div class="kv"><div>Scan mode</div><div>${esc(dry.scan_mode)}</div></div><div style="height:14px"></div><div class="grid cols-4"><div class="card pad" style="border-color:var(--green)"><div class="metric" style="color:var(--green)">${esc(dry.valid_bugs_count ?? 0)}</div><div class="metric-label">Valid bugs</div></div><div class="card pad" style="border-color:var(--amber)"><div class="metric" style="color:var(--amber)">${esc(dry.needs_more_proof_count ?? 0)}</div><div class="metric-label">Needs more proof</div></div><div class="card pad"><div class="metric">${esc(dry.candidates_count ?? 0)}</div><div class="metric-label">Candidates</div></div><div class="card pad" style="border-color:var(--blue)"><div class="metric" style="color:var(--blue)">${esc(dry.informational_count ?? 0)}</div><div class="metric-label">Informational</div></div></div></div>` : ''}
         <div style="height:14px"></div>
         <div class="grid cols-3">${checks.map(systemCheckCard).join('') || '<div class="empty" style="grid-column:1/-1">Click Run System Check to verify the local platform.</div>'}</div>`;
+    }
+    function systemAIProviderCard(name, status='not_configured', detail=''){
+      const active = String(state.systemCheck?.ai_providers?.active_provider || '').toLowerCase() === name.toLowerCase();
+      const working = status === 'available';
+      const configured = status === 'configured';
+      const color = working ? 'var(--green)' : (configured ? 'var(--amber)' : '#4b5563');
+      const label = working ? 'Configured and working' : (configured ? 'Configured - not tested' : 'Not configured');
+      return `<div class="card pad" style="border-color:${color}"><div class="card-head"><strong>${esc(name)}</strong>${active ? '<span class="tag">ACTIVE</span>' : ''}</div><div class="small" style="color:${color}">${esc(label)}</div>${detail ? `<div class="small muted" style="margin-top:7px">${esc(detail)}</div>` : ''}</div>`;
     }
     function normalizeSystemChecks(checks){
       if (Array.isArray(checks)) {

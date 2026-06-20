@@ -122,7 +122,7 @@ class AIRouter:
             AIProvider("gemini", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
                        "https://generativelanguage.googleapis.com/v1beta/models",
                        "GEMINI_API_KEY", 0.00015, 14, True, "gemini"),
-            AIProvider("openai", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            AIProvider("openai", os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                        "https://api.openai.com/v1/chat/completions",
                        "OPENAI_API_KEY", 0.0004, 60, True, "openai-compatible"),
             AIProvider("anthropic", os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest"),
@@ -245,10 +245,66 @@ class AIRouter:
                 p for p in candidates
                 if (estimated_tokens / 1000.0) * p.cost_per_1k_tokens <= max_estimated_cost
             ]
-        if ai_privacy_guard.config.local_ollama_preferred:
-            candidates.sort(key=lambda p: (p.name != "local", p.failures >= 3, p.cost_per_1k_tokens, p.failures))
-            return candidates
-        return sorted(candidates, key=lambda p: (p.failures >= 3, p.cost_per_1k_tokens, p.failures))
+        priority = {"local": 0, "gemini": 1, "openai": 2, "anthropic": 3}
+        return sorted(
+            candidates,
+            key=lambda p: (
+                priority.get(p.name, 99),
+                p.failures >= 3,
+                p.failures,
+            ),
+        )
+
+    async def ollama_status(self) -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get("http://127.0.0.1:11434/api/tags")
+                response.raise_for_status()
+                payload = response.json()
+            models = [
+                str(model.get("name") or model.get("model") or "")
+                for model in payload.get("models", [])
+                if model.get("name") or model.get("model")
+            ]
+            return {"running": True, "models": models}
+        except Exception:
+            return {"running": False, "models": []}
+
+    async def availability(self) -> dict:
+        ollama = await self.ollama_status()
+        ollama_ready = (
+            os.getenv("OLLAMA_ENABLED", "1") != "0"
+            and bool(ollama.get("running"))
+        )
+        providers = {
+            "ollama": ollama_ready,
+            "gemini": bool(os.getenv("GEMINI_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "openai": bool(os.getenv("OPENAI_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "anthropic": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+        }
+        active = next(
+            (name for name in ("ollama", "gemini", "openai", "anthropic") if providers[name]),
+            "none",
+        )
+        models = ollama.get("models", [])
+        model = {
+            "ollama": self.ollama_fast_model,
+            "gemini": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest"),
+            "none": "none",
+        }[active]
+        return {
+            "available": providers,
+            "active_provider": active,
+            "active_model": model,
+            "ollama_running": bool(ollama.get("running")),
+            "ollama_models": models,
+            "triage_capable": active != "none",
+        }
+
+    async def has_available_provider(self) -> bool:
+        return bool((await self.availability()).get("triage_capable"))
 
     async def complete(
         self,
@@ -261,11 +317,27 @@ class AIRouter:
         api_key: str = "",
     ) -> str:
         estimated_tokens = self._estimate_tokens(prompt, system, max_tokens)
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+        availability = await self.availability()
+        if not availability["triage_capable"]:
+            message = "No AI provider available. Scan will run without AI triage."
+            self.last_selected_provider = "none"
+            self.last_selected_model = "none"
+            self.last_routing_reason = "no_ai_provider_available"
+            print(message)
+            return message
         providers = self._ranked(max_estimated_cost, estimated_tokens)
+        availability_names = {
+            "local": availability["available"]["ollama"],
+            "gemini": availability["available"]["gemini"],
+            "openai": availability["available"]["openai"],
+            "anthropic": availability["available"]["anthropic"],
+        }
+        providers = [p for p in providers if availability_names.get(p.name, False)]
         if preferred_provider:
             providers.sort(key=lambda p: p.name != preferred_provider)
         if api_key:
-            os.environ["GEMINI_API_KEY"] = api_key
             providers.sort(key=lambda p: p.name != "gemini")
 
         for provider in providers:
@@ -362,7 +434,12 @@ class AIRouter:
                 provider.failures += 1
                 provider.last_error = str(exc)[:200]
                 continue
-        return ""
+        message = "No AI provider available. Scan will run without AI triage."
+        self.last_selected_provider = "none"
+        self.last_selected_model = "none"
+        self.last_routing_reason = "no_ai_provider_available"
+        print(message)
+        return message
 
     async def _call_provider(self, provider: AIProvider, prompt: str, system: str,
                              temperature: float, max_tokens: int,

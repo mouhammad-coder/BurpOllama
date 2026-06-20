@@ -125,9 +125,14 @@ def apply_zero_fp_gate(
         evidence_strength = _lower(finding.get("evidence_strength"))
         false_positive_risk = _lower(finding.get("false_positive_risk"))
         confidence = int(float(finding.get("confidence", 0) or 0))
+        verdict = _text(finding.get("verdict")).upper()
 
         if not scope_ok:
             result["skipped_out_of_scope"].append(_with_gate(finding, "SKIPPED", failed))
+        elif verdict == "NEEDS_MANUAL_REVIEW":
+            result["needs_more_proof"].append(
+                _with_gate(finding, "MANUAL REVIEW", failed)
+            )
         elif exploitability == "false_positive" or false_positive_risk == "high":
             result["false_positives_removed"].append(_with_gate(finding, "REMOVED", failed))
         elif not failed:
