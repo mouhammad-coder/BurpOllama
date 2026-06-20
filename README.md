@@ -185,3 +185,45 @@ python tests/offline_test_suite.py
 - Keep `.env`, API keys, authentication cookies, and exported evidence private.
 - Respect program scope, request limits, and prohibited-testing rules.
 - Review candidate findings manually before submitting a bounty report.
+
+---
+
+## Passive Burp Suite Integration
+
+Install Jython in Burp Suite, then load `BurpOllama.py` as a Python extension.
+Every request you browse passes through BurpOllama passive analysis automatically.
+WebSocket frames are also captured and analyzed.
+
+---
+
+## Requirements
+
+- Kali Linux (recommended) or Ubuntu 22+
+- Python 3.10+
+- 8 GB RAM minimum, 16 GB recommended
+- Optional: Go for recon tools and Ollama for local AI
+
+---
+
+## Legal Notice
+
+Use BurpOllama only against targets you own or have explicit written permission
+to test. Unauthorized testing is illegal. Always read and follow the bug bounty
+program policy before scanning.
+
+---
+
+## File Structure
+
+53 Python modules, including:
+
+- `hunt_engine.py` — 34 vulnerability classes
+- `main.py` — FastAPI backend with 50+ endpoints
+- `zero_fp_gate.py` — 12-point proof validation
+- `impact_scoring_engine.py` — CVSS++ scoring
+- `exploit_chain_engine.py` — Multi-step attack path builder
+- `adaptive_scan.py` — Intelligent scan depth classification
+- `triage_gate.py` — 3-tier AI triage with learning engine
+- `attack_graph.py` — Directed exploit chain graph
+- `idor_proof_engine.py` — Dual-session IDOR confirmation
+- `oob_engine.py` — interactsh OOB confirmation engine
