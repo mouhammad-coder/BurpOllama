@@ -22,6 +22,7 @@ import re
 import sqlite3
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -84,13 +85,22 @@ class LearningEngine:
 
     def _ensure_db(self):
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
-        with sqlite3.connect(self._db_path) as conn:
+        conn = sqlite3.connect(self._db_path)
+        try:
             conn.executescript(DDL)
+            conn.commit()
+        finally:
+            conn.close()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         c = sqlite3.connect(self._db_path)
         c.row_factory = sqlite3.Row
-        return c
+        try:
+            yield c
+            c.commit()
+        finally:
+            c.close()
 
     # ── Evidence fingerprinting ───────────────────────────────────────────────
 

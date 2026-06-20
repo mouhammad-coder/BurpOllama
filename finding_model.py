@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from security_hardening import redact_secrets
 
 EXPLOITABILITY_STATUSES = {
     "confirmed", "probable", "candidate", "needs_manual_validation", "false_positive"
@@ -104,7 +105,7 @@ def normalize_finding(finding: dict[str, Any], scan_id: str = "") -> dict[str, A
     vuln = f.get("vulnerability_class") or f.get("vuln_type") or f.get("title") or "Unknown"
     title = f.get("title") or vuln
     url = f.get("affected_url") or f.get("url") or ""
-    evidence = str(f.get("evidence", ""))
+    evidence = redact_secrets(str(f.get("evidence", "")))
     proof = ProofGate.evaluate({**f, "title": title, "vulnerability_class": vuln})
 
     normalized = {
@@ -155,10 +156,10 @@ def normalize_finding(finding: dict[str, Any], scan_id: str = "") -> dict[str, A
         "exploitability_status": normalized["exploitability_status"],
         "evidence_strength": normalized["evidence_strength"],
         "false_positive_risk": normalized["false_positive_risk"],
+        "evidence": evidence,
     })
     return normalized
 
 
 def normalize_findings(findings: list[dict[str, Any]], scan_id: str = "") -> list[dict[str, Any]]:
     return [normalize_finding(f, scan_id=scan_id) for f in findings or []]
-

@@ -12,7 +12,28 @@ Only use against targets you own or have written authorization to test.
 NOTE: Jython uses Python 2.7 syntax — NO f-strings, NO walrus operator.
 """
 
-from burp import IBurpExtender, IHttpListener, IProxyListener, ITab, IExtensionStateListener
+try:
+    from burp import IBurpExtender, IHttpListener, IProxyListener, ITab, IExtensionStateListener
+    BURP_RUNTIME_AVAILABLE = True
+except ImportError:
+    # Keep the module importable for offline validation and packaging checks.
+    # Burp supplies the real interfaces when the extension is loaded in Jython.
+    BURP_RUNTIME_AVAILABLE = False
+
+    class IBurpExtender(object):
+        pass
+
+    class IHttpListener(object):
+        pass
+
+    class IProxyListener(object):
+        pass
+
+    class ITab(object):
+        pass
+
+    class IExtensionStateListener(object):
+        pass
 
 # IWebSocketMessageHandler is available in Burp Suite 2021.9+
 # Graceful import — extension still works without it on older versions
@@ -20,12 +41,30 @@ try:
     from burp import IWebSocketMessageHandler
     WS_SUPPORT = True
 except ImportError:
+    class IWebSocketMessageHandler(object):
+        pass
     WS_SUPPORT = False
-from java.io import PrintWriter
-from javax.swing import (JPanel, JLabel, JCheckBox, JScrollPane,
-                         JTextArea, BorderFactory, BoxLayout, Box)
-from javax.swing import SwingConstants
-from java.awt import BorderLayout, Color, Font, Dimension
+try:
+    from java.io import PrintWriter
+    from javax.swing import (JPanel, JLabel, JCheckBox, JScrollPane,
+                             JTextArea, BorderFactory, BoxLayout, Box)
+    from javax.swing import SwingConstants
+    from java.awt import BorderLayout, Color, Font, Dimension
+except ImportError:
+    class _UnavailableUI(object):
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __getattr__(self, name):
+            return _UnavailableUI()
+
+        def __call__(self, *args, **kwargs):
+            return _UnavailableUI()
+
+    PrintWriter = _UnavailableUI
+    JPanel = JLabel = JCheckBox = JScrollPane = JTextArea = _UnavailableUI
+    BorderFactory = BoxLayout = Box = SwingConstants = _UnavailableUI()
+    BorderLayout = Color = Font = Dimension = _UnavailableUI
 import json
 import re
 import threading
