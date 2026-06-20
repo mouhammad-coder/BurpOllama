@@ -4079,6 +4079,7 @@ async def run_hunt(
     graphql_schemas:list     = None,
     schema_endpoints:list    = None,
     enabled_modules:list     = None,
+    enabled_classes:list     = None,
     max_urls:       int      = 200,
     concurrency_override:int = None,
     request_timeout:float    = None,
@@ -4093,11 +4094,12 @@ async def run_hunt(
     a target that is actively blocking all requests.
     """
     log("[Hunt] ━━━ Phase 2: HUNT ━━━")
-    enabled_set = set(enabled_modules or [])
+    activation_list = enabled_classes if enabled_classes is not None else enabled_modules
+    enabled_set = set(activation_list or [])
     resources = resource_controller or ResourceController()
 
     def _activation_allowed(name: str):
-        if enabled_modules is not None and name not in enabled_set:
+        if activation_list is not None and name not in enabled_set:
             return False, "disabled by adaptive module plan"
         return scope_policy.vulnerability_allowed(name)
 
@@ -4255,7 +4257,7 @@ async def run_hunt(
         auth_matrix_enabled = any(
             name in enabled_set
             for name in ("IDOR", "Auth Bypass", "Business Logic")
-        ) or enabled_modules is None
+        ) or activation_list is None
         if not auth_matrix_enabled:
             log("[Hunt] Auth matrix skipped by adaptive module plan")
         elif not scope_policy.config.authenticated_testing_enabled:
@@ -4273,7 +4275,7 @@ async def run_hunt(
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "OOB Blind SQLi")
         oob_sqli_enabled = (
-            enabled_modules is None or "SQL Injection" in enabled_set
+            activation_list is None or "SQL Injection" in enabled_set
         )
         if (
             oob_sqli_enabled
@@ -4291,7 +4293,7 @@ async def run_hunt(
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "GraphQL Authorization Tester")
         graphql_auth_enabled = (
-            enabled_modules is None
+            activation_list is None
             or "GraphQL Authorization" in enabled_set
         )
         if not graphql_auth_enabled:

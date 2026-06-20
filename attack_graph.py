@@ -38,6 +38,7 @@ SEV_SCORE = {
 CHAIN_RULES: List[Tuple[str, str, float, str]] = [
     # Open Redirect → OAuth token theft
     ("open redirect",      "oauth",           1.8,  "Open redirect enables OAuth token theft"),
+    ("open redirect",      "session",         1.9,  "Open redirect can expose a token and enable session hijack"),
     # XSS → session hijack
     ("xss",                "session",         1.9,  "XSS enables session cookie theft"),
     # XSS → CSRF bypass
@@ -48,6 +49,7 @@ CHAIN_RULES: List[Tuple[str, str, float, str]] = [
     ("ssrf",               "aws",             2.5,  "SSRF + cloud metadata = credential dump"),
     # IDOR → mass data exfiltration
     ("idor",               "data exfil",      1.7,  "IDOR enables bulk data exfiltration"),
+    ("idor",               "privilege",       2.2,  "IDOR enables privilege escalation and admin access"),
     # Auth bypass → admin IDOR
     ("auth bypass",        "idor",            2.2,  "Auth bypass unlocks admin IDOR"),
     # Auth bypass → RCE
@@ -56,6 +58,7 @@ CHAIN_RULES: List[Tuple[str, str, float, str]] = [
     ("jwt alg:none",       "auth bypass",     2.9,  "JWT alg:none grants unauthenticated access"),
     # SQLi → credential dump
     ("sql injection",      "credential",      2.3,  "SQLi enables credential exfiltration"),
+    ("sql injection",      "auth bypass",     2.4,  "SQLi enables authentication bypass and account takeover"),
     # SQLi → SSRF (out-of-band)
     ("sql injection",      "oob",             1.5,  "Blind SQLi enables OOB data channel"),
     # Subdomain takeover → phishing / XSS
@@ -84,6 +87,8 @@ CHAIN_RULES: List[Tuple[str, str, float, str]] = [
     ("rate limit",         "credential",      1.5,  "No rate limit enables credential stuffing"),
     # GraphQL introspection → IDOR
     ("graphql introspection","idor",          1.3,  "Schema disclosure enables targeted IDOR"),
+    ("api exposure",       "sensitive",       1.6,  "Exposed API reveals a sensitive endpoint"),
+    ("sensitive endpoint", "data exfil",      1.8,  "Sensitive endpoint enables unauthorized data extraction"),
 ]
 
 

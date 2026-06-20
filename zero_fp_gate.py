@@ -4,7 +4,8 @@ from typing import Any
 
 from finding_model import normalize_finding
 from deduplication import deduplicate_findings
-from report_quality_scorer import score_finding
+from report_quality_scorer import score_finding as score_quality
+from impact_scoring_engine import score_finding as score_impact
 from scope_policy import ScopePolicy, scope_policy
 
 
@@ -79,7 +80,11 @@ def _failed_ready_checks(finding: dict, policy: ScopePolicy = scope_policy) -> l
     return failed
 
 
-def apply_zero_fp_gate(findings: list[dict], scope: dict) -> dict:
+def apply_zero_fp_gate(
+    findings: list[dict],
+    scope: dict,
+    chain_data: dict | None = None,
+) -> dict:
     policy = scope_policy
     if scope:
         policy = ScopePolicy()
@@ -100,13 +105,17 @@ def apply_zero_fp_gate(findings: list[dict], scope: dict) -> dict:
         scoring_input["_scope_match"] = policy.validate_target(
             affected_url, action="report"
         )[0] if affected_url else False
-        quality = score_finding(scoring_input)
+        quality = score_quality(scoring_input)
         finding["quality_score"] = quality["score"]
         finding["grade"] = quality["grade"]
         finding["quality_grade"] = quality["grade"]
         finding["ready_to_submit"] = quality["ready_to_submit"]
         finding["quality_improvements"] = quality["improvements"]
         finding["quality_blocking_issues"] = quality["blocking_issues"]
+        impact = score_impact(finding, chain_data)
+        finding["cvss_plus_plus"] = impact["cvss_plus_plus"]
+        finding["classification"] = impact["classification"]
+        finding["impact_scoring"] = impact
         failed = _failed_ready_checks(finding, policy)
         if quality["score"] < 70:
             failed.append("quality_score_below_70")
@@ -137,4 +146,9 @@ def apply_zero_fp_gate(findings: list[dict], scope: dict) -> dict:
         else:
             result["candidates"].append(_with_gate(finding, "CANDIDATE", failed))
 
+    for bucket in result.values():
+        bucket.sort(
+            key=lambda item: float(item.get("cvss_plus_plus", 0) or 0),
+            reverse=True,
+        )
     return result

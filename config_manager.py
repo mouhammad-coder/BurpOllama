@@ -53,6 +53,11 @@ INTEGER_RANGES = {
 }
 MODEL_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
 KEEP_ALIVE_RE = re.compile(r"^(?:0|-1|\d+(?:ms|s|m|h))$")
+API_KEY_PATTERNS = {
+    "GEMINI_API_KEY": re.compile(r"^AIza[A-Za-z0-9_-]{20,}$"),
+    "OPENAI_API_KEY": re.compile(r"^sk-[A-Za-z0-9_-]{20,}$"),
+    "ANTHROPIC_API_KEY": re.compile(r"^sk-ant-[A-Za-z0-9_-]{20,}$"),
+}
 
 
 def _parse_env_file() -> dict[str, str]:
@@ -99,16 +104,13 @@ def load_project_env() -> dict[str, str]:
 def _mask(value: str) -> str:
     if not value:
         return ""
-    if len(value) <= 8:
-        return "••••••••"
-    return "••••••••" + value[-4:]
+    return value[:4] + "****"
 
 
 def public_settings() -> dict[str, Any]:
     values = {**SETTING_DEFAULTS, **_parse_env_file()}
     return {
         "env_exists": ENV_PATH.exists(),
-        "env_path": str(ENV_PATH),
         "settings": {
             key: (_mask(value) if key in SECRET_KEYS else value)
             for key, value in values.items()
@@ -132,6 +134,8 @@ def _clean_value(key: str, value: Any) -> str:
         if lowered in {"0", "false", "no", "off"}:
             return "0"
         raise ValueError(f"{key} must be enabled or disabled.")
+    if key in API_KEY_PATTERNS and text and not API_KEY_PATTERNS[key].fullmatch(text):
+        raise ValueError(f"{key} does not look like a valid provider API key.")
     if key in INTEGER_RANGES:
         try:
             number = int(text)
@@ -164,7 +168,11 @@ def save_settings(updates: dict[str, Any]) -> dict[str, Any]:
         if key not in SETTING_DEFAULTS:
             continue
         text = str(incoming if incoming is not None else "")
-        if key in SECRET_KEYS and ("•" in text or text.startswith("********")):
+        if key in SECRET_KEYS and (
+            text == _mask(existing.get(key, ""))
+            or "•" in text
+            or text.startswith("********")
+        ):
             continue
         try:
             existing[key] = _clean_value(key, incoming)

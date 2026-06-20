@@ -54,6 +54,9 @@ from dual_session  import auth_matrix
 from review_queue  import review_queue
 from delta_tracker import delta_tracker
 from attack_graph import build_attack_graph
+from exploit_chain_engine import build_exploit_chains
+from impact_scoring_engine import score_finding as score_impact_finding
+from poc_generator import generate_safe_poc
 from ato_chain_detector import detect_ato_chains
 from ai_provider import ai_router
 from coverage_intelligence import compute_coverage, prioritize_urls
@@ -1033,7 +1036,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 waf_info=waf_info, schema_urls=schema_urls,
                 graphql_schemas=schema_data.get("graphql_schemas", []),
                 schema_endpoints=schema_data.get("openapi_endpoints", []),
-                enabled_modules=adaptive_plan.enabled_modules,
+                enabled_classes=adaptive_plan.enabled_modules,
                 max_urls=adaptive_plan.max_urls,
                 concurrency_override=adaptive_plan.concurrency,
                 request_timeout=adaptive_plan.request_timeout,
@@ -1215,10 +1218,18 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
         ato_chains = detect_ato_chains(triaged, ato_recon)
         scan["ato_chains"] = ato_chains
+        exploit_chains = build_exploit_chains(passable)
+        for finding in triaged:
+            finding.update(score_impact_finding(finding, exploit_chains))
+        passable = [f for f in triaged if f.get("verdict") in ("PASS", "DOWNGRADE")]
+        scan["triaged_findings"] = triaged
+        scan["exploit_chains"] = exploit_chains
         attack_graph = build_attack_graph(passable, ato_chains).to_dict()
+        attack_graph["exploit_chains"] = exploit_chains
         coverage = compute_coverage(recon_data, passable, prioritized_urls[:200])
         coverage2 = compute_coverage_v2(scan_id, recon_data, passable, prioritized_urls[:200], scan.get("logs", []))
         analysis["attack_graph"] = attack_graph
+        analysis["exploit_chains"] = exploit_chains
         analysis["ato_chains"] = ato_chains
         analysis["coverage"] = coverage
         analysis["coverage_v2"] = coverage2
@@ -1439,7 +1450,7 @@ async def _resume_pipeline_from_checkpoint(
                     schema_urls=schema_urls,
                     graphql_schemas=schema_data.get("graphql_schemas", []),
                     schema_endpoints=schema_data.get("openapi_endpoints", []),
-                    enabled_modules=adaptive_plan.enabled_modules,
+                    enabled_classes=adaptive_plan.enabled_modules,
                     max_urls=adaptive_plan.max_urls,
                     concurrency_override=adaptive_plan.concurrency,
                     request_timeout=adaptive_plan.request_timeout,
@@ -1587,7 +1598,16 @@ async def _resume_pipeline_from_checkpoint(
             ato_recon["openapi_endpoints"] = schema_data.get("openapi_endpoints", [])
             ato_chains = detect_ato_chains(triaged, ato_recon)
             scan["ato_chains"] = ato_chains
+            exploit_chains = build_exploit_chains(passable)
+            for finding in triaged:
+                finding.update(score_impact_finding(finding, exploit_chains))
+            passable = [
+                f for f in triaged if f.get("verdict") in ("PASS", "DOWNGRADE")
+            ]
+            scan["triaged_findings"] = triaged
+            scan["exploit_chains"] = exploit_chains
             attack_graph = build_attack_graph(passable, ato_chains).to_dict()
+            attack_graph["exploit_chains"] = exploit_chains
             coverage = compute_coverage(
                 recon_data,
                 passable,
@@ -1601,6 +1621,7 @@ async def _resume_pipeline_from_checkpoint(
                 scan.get("logs", []),
             )
             analysis["attack_graph"] = attack_graph
+            analysis["exploit_chains"] = exploit_chains
             analysis["ato_chains"] = ato_chains
             analysis["coverage"] = coverage
             analysis["coverage_v2"] = coverage2
@@ -2408,6 +2429,13 @@ async def analyze_burp_traffic(payload: BurpTraffic):
 async def get_findings(severity: Optional[str]=None, verdict: Optional[str]=None,
                        source: Optional[str]=None, limit: int=500):
     data = evaluate_findings(findings_store)
+    for finding in data:
+        scan = scans.get(finding.get("scan_id"), {})
+        chain_data = (
+            scan.get("exploit_chains")
+            or scan.get("analysis", {}).get("exploit_chains")
+        )
+        finding.update(score_impact_finding(finding, chain_data))
     if severity: data=[f for f in data if f.get("severity","").upper()==severity.upper()]
     if verdict:  data=[f for f in data if f.get("verdict","")==verdict]
     if source:   data=[f for f in data if f.get("source","")==source]
@@ -2416,7 +2444,13 @@ async def get_findings(severity: Optional[str]=None, verdict: Optional[str]=None
 @app.get("/findings/{scan_id}/buckets")
 async def get_finding_buckets(scan_id: str):
     findings = [f for f in findings_store if f.get("scan_id") == scan_id]
-    gated = apply_zero_fp_gate(findings, scope_policy.to_dict())
+    scan = scans.get(scan_id, {})
+    chain_data = (
+        scan.get("exploit_chains")
+        or scan.get("analysis", {}).get("exploit_chains")
+        or build_exploit_chains(findings)
+    )
+    gated = apply_zero_fp_gate(findings, scope_policy.to_dict(), chain_data)
     return {
         "scan_id": scan_id,
         "summary": {name: len(items) for name, items in gated.items()},
@@ -2571,6 +2605,9 @@ def _system_check_results() -> dict:
         "api_version_tester": callable(test_api_versions),
         "ato_chain_detector": callable(detect_ato_chains),
         "adaptive_scan_engine": callable(profile_target),
+        "exploit_chain_engine": callable(build_exploit_chains),
+        "impact_scoring_engine": callable(score_impact_finding),
+        "poc_generator": callable(generate_safe_poc),
         "class_25_stored_xss": callable(hunt_stored_xss),
         "class_26_dom_xss": callable(hunt_dom_xss),
         "class_27_blind_xss": callable(hunt_blind_xss),
@@ -3179,10 +3216,18 @@ async def get_scan_attack_graph(scan_id: str):
         if finding.get("scan_id") == scan_id
         and str(finding.get("verdict", "")).upper() in ("PASS", "DOWNGRADE")
     ]
-    return build_attack_graph(
+    graph = build_attack_graph(
         findings,
         scans[scan_id].get("ato_chains", []),
     ).to_dict()
+    exploit_chains = (
+        scans[scan_id].get("exploit_chains")
+        or scans[scan_id].get("analysis", {}).get("exploit_chains")
+        or build_exploit_chains(findings)
+    )
+    scans[scan_id]["exploit_chains"] = exploit_chains
+    graph["exploit_chains"] = exploit_chains
+    return graph
 
 
 @app.get("/scan/{scan_id}/ato-chains")

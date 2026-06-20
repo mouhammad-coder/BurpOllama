@@ -11,6 +11,7 @@ import json
 from gemini_client import ask_gemini
 from security_hardening import escape_markdown_table, safe_code_block
 from finding_model import normalize_finding, normalize_findings
+from impact_scoring_engine import score_finding as score_impact_finding
 
 
 SEVERITY_EMOJI = {
@@ -42,6 +43,11 @@ async def generate_full_report(
         if f.get("verdict", "PASS") in ("PASS", "DOWNGRADE")
         and f.get("severity", "INFO") != "INFO"
     ]
+    chain_data = analysis.get("exploit_chains") or {}
+    for finding in reportable:
+        impact_score = score_impact_finding(finding, chain_data)
+        finding.setdefault("cvss_plus_plus", impact_score["cvss_plus_plus"])
+        finding.setdefault("classification", impact_score["classification"])
     reportable.sort(key=lambda x: SEVERITY_ORDER.get(x.get("severity", "INFO"), 5))
 
     # Counts
@@ -142,6 +148,24 @@ async def generate_full_report(
             lines.append("**Steps:** {}".format(" → ".join(chain.get("steps", []))))
             lines.append("")
 
+    # CVSS++ impact ranking
+    lines.append("## Impact Ranking (CVSS++)")
+    lines.append("")
+    lines.append("| Finding | CVSS++ | Classification |")
+    lines.append("|---------|--------|----------------|")
+    for finding in sorted(
+        reportable,
+        key=lambda item: float(item.get("cvss_plus_plus", 0) or 0),
+        reverse=True,
+    ):
+        title = finding.get("title") or finding.get("vuln_type") or "Finding"
+        lines.append("| {} | {} | {} |".format(
+            escape_markdown_table(title),
+            escape_markdown_table(finding.get("cvss_plus_plus", 0)),
+            escape_markdown_table(finding.get("classification", "Low")),
+        ))
+    lines.append("")
+
     # Findings
     lines.append("## Vulnerability Findings")
     lines.append("")
@@ -164,6 +188,10 @@ async def generate_full_report(
         lines.append("| **Confidence** | {}% |".format(f.get("confidence", 0)))
         lines.append("| **CWE** | {} |".format(f.get("cwe", "N/A")))
         lines.append("| **CVSS** | {} |".format(f.get("cvss", 0)))
+        lines.append("| **CVSS++** | {} ({}) |".format(
+            f.get("cvss_plus_plus", 0),
+            f.get("classification", "Low"),
+        ))
         lines.append("| **URL** | `{}` |".format(escape_markdown_table(f.get("url", ""))))
         lines.append("| **Method** | `{}` |".format(escape_markdown_table(f.get("method", ""))))
         lines.append("| **Source** | {} |".format(escape_markdown_table(f.get("source", "auto"))))
@@ -196,6 +224,35 @@ async def generate_full_report(
         chain_hint = triage.get("chain_hint", "")
         if chain_hint:
             lines.append("**Chain Hint:** {}".format(chain_hint))
+            lines.append("")
+
+    # Exploit chains
+    lines.append("## Exploit Chains")
+    lines.append("")
+    exploit_chains = chain_data.get("chains", []) if isinstance(chain_data, dict) else []
+    if not exploit_chains:
+        lines.append("No exploit chains identified in this scan.")
+        lines.append("")
+    else:
+        for chain in exploit_chains:
+            lines.append("### {}: {}".format(
+                chain.get("id", "CHAIN"),
+                chain.get("title", "Exploit chain"),
+            ))
+            lines.append("")
+            lines.append("**Exploitation steps:**")
+            lines.append("")
+            for index, step in enumerate(chain.get("steps", []), start=1):
+                lines.append("{}. {}".format(index, step))
+            lines.append("")
+            lines.append("**Safe read-only PoC steps:**")
+            lines.append("")
+            for index, step in enumerate(chain.get("poc_steps", []), start=1):
+                lines.append("{}. {}".format(index, step))
+            lines.append("")
+            lines.append("**Exploitability score:** {}".format(
+                chain.get("exploitability_score", 0)
+            ))
             lines.append("")
 
     # Recon summary
