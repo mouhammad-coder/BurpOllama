@@ -1,0 +1,2 @@
+start.sh merge=ours
+setup.sh merge=ours

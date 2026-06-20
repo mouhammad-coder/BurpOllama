@@ -72,7 +72,7 @@ else
     echo "[*] Skipping AI setup. Configure later in the dashboard."
 fi
 
-chmod +x "$SCRIPT_DIR/setup.sh" "$SCRIPT_DIR/start.sh" \
+chmod +x "$SCRIPT_DIR/setup.sh" \
     "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/update.sh" 2>/dev/null || true
 
 echo ""
