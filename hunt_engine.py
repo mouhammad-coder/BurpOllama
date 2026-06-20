@@ -4384,7 +4384,7 @@ async def run_hunt(
     if HOST_DEAD_WAF is triggered mid-scan rather than continuing to hammer
     a target that is actively blocking all requests.
     """
-    log("[Hunt] ━━━ Phase 2: HUNT ━━━")
+    await log("[Hunt] ━━━ Phase 2: HUNT ━━━")
     activation_list = enabled_classes if enabled_classes is not None else enabled_modules
     enabled_set = set(activation_list or [])
     resources = resource_controller or ResourceController()
@@ -4403,7 +4403,7 @@ async def run_hunt(
     all_urls = list(urls)
     if schema_urls:
         all_urls.extend(schema_urls)
-        log("[Hunt] +{} schema-derived URLs injected from API schemas".format(len(schema_urls)))
+        await log("[Hunt] +{} schema-derived URLs injected from API schemas".format(len(schema_urls)))
 
     strategy    = scope_policy.normalize_mode((waf_info or {}).get("strategy", scope_policy.config.scan_mode))
     conc_map    = {"passive_only": 0, "conservative": 3, "normal": 8, "intensive_authorized": 12}
@@ -4412,7 +4412,7 @@ async def run_hunt(
         if concurrency_override is not None
         else conc_map.get(strategy, 8)
     )
-    log("[Hunt] Strategy: {} | Concurrency: {} | URLs: {}".format(
+    await log("[Hunt] Strategy: {} | Concurrency: {} | URLs: {}".format(
         strategy, concurrency, min(len(all_urls), 200)))
 
     all_findings = []
@@ -4433,15 +4433,15 @@ async def run_hunt(
     sem = asyncio.Semaphore(concurrency)
 
     if oob.available:
-        log("[Hunt] OOB engine active — injecting blind payloads into SQLi/SSRF/param mining")
+        await log("[Hunt] OOB engine active — injecting blind payloads into SQLi/SSRF/param mining")
 
-    def _check_host_dead(class_name: str) -> bool:
+    async def _check_host_dead(class_name: str) -> bool:
         """
         v3.4: Check HOST_DEAD_WAF flag before starting each hunt class.
         Returns True if scan should pivot to passive-only (skip active classes).
         """
         if throttle._host_dead:
-            log("[Hunt] HOST_DEAD_WAF — skipping active class '{}', pivoting to passive-only".format(
+            await log("[Hunt] HOST_DEAD_WAF — skipping active class '{}', pivoting to passive-only".format(
                 class_name), )
             return True
         return False
@@ -4461,12 +4461,12 @@ async def run_hunt(
             class_idx += 1
             allowed_class, class_reason = _activation_allowed(name)
             if not allowed_class:
-                log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
+                await log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
                 continue
             # v3.4: skip active classes if HOST_DEAD_WAF triggered
-            if _check_host_dead(name):
+            if await _check_host_dead(name):
                 break
-            log("[Hunt] {}/{} {}".format(class_idx, total_classes, name))
+            await log("[Hunt] {}/{} {}".format(class_idx, total_classes, name))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, name)
 
@@ -4496,11 +4496,11 @@ async def run_hunt(
             class_idx += 1
             allowed_class, class_reason = _activation_allowed(name)
             if not allowed_class:
-                log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
+                await log("[Hunt] Skipping '{}' — {}".format(name, class_reason))
                 continue
-            if _check_host_dead(name):
+            if await _check_host_dead(name):
                 break
-            log("[Hunt] {}/{} {}".format(class_idx, total_classes, name))
+            await log("[Hunt] {}/{} {}".format(class_idx, total_classes, name))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, name)
 
@@ -4520,9 +4520,9 @@ async def run_hunt(
         if not throttle._host_dead:
             allowed_class, class_reason = _activation_allowed("Parameter Mining")
             if not allowed_class:
-                log("[Hunt] Skipping Parameter Mining — {}".format(class_reason))
+                await log("[Hunt] Skipping Parameter Mining — {}".format(class_reason))
             else:
-                log("[Hunt] {}/{} Parameter Mining".format(class_idx, total_classes))
+                await log("[Hunt] {}/{} Parameter Mining".format(class_idx, total_classes))
                 if progress_cb:
                     await progress_cb("hunt", class_idx, total_classes, "Parameter Mining")
                 param_findings = await hunt_parameter_mining(client, all_urls, live_hosts)
@@ -4532,17 +4532,17 @@ async def run_hunt(
         class_idx += 1
         allowed_class, class_reason = _activation_allowed("Web Cache Deception")
         if allowed_class:
-            log("[Hunt] {}/{} Web Cache Deception".format(class_idx, total_classes))
+            await log("[Hunt] {}/{} Web Cache Deception".format(class_idx, total_classes))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "Web Cache Deception")
             cache_findings = await hunt_cache_deception(client, all_urls, live_hosts)
             all_findings.extend(cache_findings)
         else:
-            log("[Hunt] Skipping Web Cache Deception — {}".format(class_reason))
+            await log("[Hunt] Skipping Web Cache Deception — {}".format(class_reason))
 
         # ── Dual-Session Authorization Matrix (Class 16) ─────────────────────
         class_idx += 1
-        log("[Hunt] {}/{} Dual-Session Auth Matrix".format(class_idx, total_classes))
+        await log("[Hunt] {}/{} Dual-Session Auth Matrix".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "Auth Matrix")
         auth_matrix_enabled = any(
@@ -4550,19 +4550,19 @@ async def run_hunt(
             for name in ("IDOR", "Auth Bypass", "Business Logic")
         ) or activation_list is None
         if not auth_matrix_enabled:
-            log("[Hunt] Auth matrix skipped by adaptive module plan")
+            await log("[Hunt] Auth matrix skipped by adaptive module plan")
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Auth matrix skipped by ScopePolicy")
+            await log("[Hunt] Auth matrix skipped by ScopePolicy")
         elif auth_matrix.configured:
             matrix_findings = await auth_matrix.run_matrix(urls_to_test, log)
             all_findings.extend(matrix_findings)
-            log("[Hunt] Auth matrix: {} violation(s)".format(len(matrix_findings)))
+            await log("[Hunt] Auth matrix: {} violation(s)".format(len(matrix_findings)))
         else:
-            log("[Hunt] Auth matrix: not configured (set sessions in dashboard → Config)")
+            await log("[Hunt] Auth matrix: not configured (set sessions in dashboard → Config)")
 
         # ── OOB Blind SQLi injection pass ─────────────────────────────────────
         class_idx += 1
-        log("[Hunt] {}/{} OOB Blind SQLi Injection".format(class_idx, total_classes))
+        await log("[Hunt] {}/{} OOB Blind SQLi Injection".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "OOB Blind SQLi")
         oob_sqli_enabled = (
@@ -4576,11 +4576,11 @@ async def run_hunt(
             oob_findings = await _hunt_oob_sqli(client, urls_to_test, waf_info, log)
             all_findings.extend(oob_findings)
         else:
-            log("[Hunt] OOB engine unavailable or disabled by ScopePolicy — skipping blind SQLi injection")
+            await log("[Hunt] OOB engine unavailable or disabled by ScopePolicy — skipping blind SQLi injection")
 
         # ── Class 18: GraphQL Authorization Tester ───────────────────────────
         class_idx += 1
-        log("[Hunt] {}/{} GraphQL Authorization Tester".format(class_idx, total_classes))
+        await log("[Hunt] {}/{} GraphQL Authorization Tester".format(class_idx, total_classes))
         if progress_cb:
             await progress_cb("hunt", class_idx, total_classes, "GraphQL Authorization Tester")
         graphql_auth_enabled = (
@@ -4588,15 +4588,15 @@ async def run_hunt(
             or "GraphQL Authorization" in enabled_set
         )
         if not graphql_auth_enabled:
-            log("[Hunt] GraphQL authorization tester skipped by adaptive module plan")
+            await log("[Hunt] GraphQL authorization tester skipped by adaptive module plan")
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] GraphQL authorization tester skipped by ScopePolicy")
+            await log("[Hunt] GraphQL authorization tester skipped by ScopePolicy")
         elif not auth_matrix.configured:
-            log("[Hunt] GraphQL authorization tester skipped: dual sessions not configured")
+            await log("[Hunt] GraphQL authorization tester skipped: dual sessions not configured")
         elif not graphql_schemas:
-            log("[Hunt] GraphQL authorization tester skipped: no discovered schema")
+            await log("[Hunt] GraphQL authorization tester skipped: no discovered schema")
         elif throttle.host_dead:
-            log("[Hunt] GraphQL authorization tester skipped: target is blocking requests")
+            await log("[Hunt] GraphQL authorization tester skipped: target is blocking requests")
         else:
             session_a_headers, session_b_headers = auth_matrix.session_headers()
             for schema_entry in graphql_schemas[:5]:
@@ -4607,7 +4607,7 @@ async def run_hunt(
                     action="authenticated",
                 )
                 if not allowed:
-                    log("[Hunt] GraphQL auth skipped for {}: {}".format(graphql_url, reason))
+                    await log("[Hunt] GraphQL auth skipped for {}: {}".format(graphql_url, reason))
                     continue
                 graphql_findings = await test_graphql_auth(
                     graphql_url,
@@ -4617,7 +4617,7 @@ async def run_hunt(
                     client,
                 )
                 all_findings.extend(graphql_findings)
-                log("[Hunt] GraphQL auth: {} finding(s) from {}".format(
+                await log("[Hunt] GraphQL auth: {} finding(s) from {}".format(
                     len(graphql_findings),
                     graphql_url,
                 ))
@@ -4629,15 +4629,15 @@ async def run_hunt(
             if any(hint in url.lower() for hint in OAUTH_HINTS)
         ]
         if not oauth_urls:
-            log("[Hunt] Class 19 OAuth Flow Tester skipped: no OAuth endpoints discovered")
+            await log("[Hunt] Class 19 OAuth Flow Tester skipped: no OAuth endpoints discovered")
         else:
             allowed_class, class_reason = _activation_allowed("OAuth Flow")
             if not allowed_class:
-                log("[Hunt] Class 19 OAuth Flow Tester skipped — {}".format(class_reason))
+                await log("[Hunt] Class 19 OAuth Flow Tester skipped — {}".format(class_reason))
             elif throttle.host_dead:
-                log("[Hunt] Class 19 OAuth Flow Tester skipped: target is blocking requests")
+                await log("[Hunt] Class 19 OAuth Flow Tester skipped: target is blocking requests")
             else:
-                log("[Hunt] {}/{} Class 19: OAuth Flow Tester".format(
+                await log("[Hunt] {}/{} Class 19: OAuth Flow Tester".format(
                     class_idx, total_classes
                 ))
                 if progress_cb:
@@ -4658,7 +4658,7 @@ async def run_hunt(
                     all_findings.extend(
                         normalize_finding(item) for item in oauth_findings
                     )
-                    log("[Hunt] OAuth flow: {} finding(s) from {}".format(
+                    await log("[Hunt] OAuth flow: {} finding(s) from {}".format(
                         len(oauth_findings),
                         base_host,
                     ))
@@ -4673,23 +4673,23 @@ async def run_hunt(
             and endpoint.get("body")
         ]
         if not mutation_endpoints:
-            log("[Hunt] Class 20 Mass Assignment skipped: no JSON mutation endpoints discovered")
+            await log("[Hunt] Class 20 Mass Assignment skipped: no JSON mutation endpoints discovered")
         else:
             allowed_class, class_reason = _activation_allowed(
                 "Mass Assignment"
             )
             if not allowed_class:
-                log("[Hunt] Class 20 Mass Assignment skipped — {}".format(class_reason))
+                await log("[Hunt] Class 20 Mass Assignment skipped — {}".format(class_reason))
             elif not scope_policy.config.authenticated_testing_enabled:
-                log("[Hunt] Class 20 Mass Assignment skipped: authenticated testing disabled")
+                await log("[Hunt] Class 20 Mass Assignment skipped: authenticated testing disabled")
             elif not auth_matrix.configured:
-                log("[Hunt] Class 20 Mass Assignment skipped: dual sessions not configured")
+                await log("[Hunt] Class 20 Mass Assignment skipped: dual sessions not configured")
             elif not auth_matrix.mutations_allowed:
-                log("[Hunt] Class 20 Mass Assignment skipped: allow_mutations is disabled")
+                await log("[Hunt] Class 20 Mass Assignment skipped: allow_mutations is disabled")
             elif throttle.host_dead:
-                log("[Hunt] Class 20 Mass Assignment skipped: target is blocking requests")
+                await log("[Hunt] Class 20 Mass Assignment skipped: target is blocking requests")
             else:
-                log("[Hunt] {}/{} Class 20: Mass Assignment Testing".format(
+                await log("[Hunt] {}/{} Class 20: Mass Assignment Testing".format(
                     class_idx, total_classes
                 ))
                 if progress_cb:
@@ -4701,7 +4701,7 @@ async def run_hunt(
                     client, mutation_endpoints, session_a_headers
                 )
                 all_findings.extend(mass_findings)
-                log("[Hunt] Mass assignment: {} confirmed finding(s)".format(
+                await log("[Hunt] Mass assignment: {} confirmed finding(s)".format(
                     len(mass_findings)
                 ))
 
@@ -4711,15 +4711,15 @@ async def run_hunt(
             "Behavioral Anomaly"
         )
         if not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 21 Behavioral Anomalies skipped: active testing disabled")
+            await log("[Hunt] Class 21 Behavioral Anomalies skipped: active testing disabled")
         elif not allowed_class:
-            log("[Hunt] Class 21 Behavioral Anomalies skipped — {}".format(
+            await log("[Hunt] Class 21 Behavioral Anomalies skipped — {}".format(
                 class_reason
             ))
         elif throttle.host_dead:
-            log("[Hunt] Class 21 Behavioral Anomalies skipped: target is blocking requests")
+            await log("[Hunt] Class 21 Behavioral Anomalies skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 21: Behavioral Anomaly Detector".format(
+            await log("[Hunt] {}/{} Class 21: Behavioral Anomaly Detector".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -4745,7 +4745,7 @@ async def run_hunt(
                 all_findings.extend(
                     normalize_finding(item) for item in anomaly_findings
                 )
-            log("[Hunt] Behavioral anomalies: {} candidate(s)".format(
+            await log("[Hunt] Behavioral anomalies: {} candidate(s)".format(
                 anomaly_count
             ))
 
@@ -4764,23 +4764,23 @@ async def run_hunt(
             "Prototype Pollution"
         )
         if not prototype_endpoints:
-            log("[Hunt] Class 22 Prototype Pollution skipped: no POST/PUT JSON endpoints discovered")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: no POST/PUT JSON endpoints discovered")
         elif not allowed_class:
-            log("[Hunt] Class 22 Prototype Pollution skipped — {}".format(
+            await log("[Hunt] Class 22 Prototype Pollution skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 22 Prototype Pollution skipped: active testing disabled")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: active testing disabled")
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Class 22 Prototype Pollution skipped: authenticated testing disabled")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: authenticated testing disabled")
         elif not auth_matrix.configured:
-            log("[Hunt] Class 22 Prototype Pollution skipped: dual sessions not configured")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: dual sessions not configured")
         elif not auth_matrix.mutations_allowed:
-            log("[Hunt] Class 22 Prototype Pollution skipped: allow_mutations is disabled")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: allow_mutations is disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 22 Prototype Pollution skipped: target is blocking requests")
+            await log("[Hunt] Class 22 Prototype Pollution skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 22: Prototype Pollution Testing".format(
+            await log("[Hunt] {}/{} Class 22: Prototype Pollution Testing".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -4809,7 +4809,7 @@ async def run_hunt(
                 all_findings.extend(
                     normalize_finding(item) for item in prototype_findings
                 )
-                log("[Hunt] Prototype pollution: {} finding(s)".format(
+                await log("[Hunt] Prototype pollution: {} finding(s)".format(
                     len(prototype_findings)
                 ))
             finally:
@@ -4829,17 +4829,17 @@ async def run_hunt(
             scope_policy.config.scan_mode
         ) in {"normal", "intensive_authorized"}
         if not deep_authorized:
-            log("[Hunt] Class 23 Request Smuggling skipped: Deep Authorized Scan required")
+            await log("[Hunt] Class 23 Request Smuggling skipped: Deep Authorized Scan required")
         elif not allowed_class:
-            log("[Hunt] Class 23 Request Smuggling skipped — {}".format(
+            await log("[Hunt] Class 23 Request Smuggling skipped — {}".format(
                 class_reason
             ))
         elif not smuggling_bases:
-            log("[Hunt] Class 23 Request Smuggling skipped: no HTTPS endpoints discovered")
+            await log("[Hunt] Class 23 Request Smuggling skipped: no HTTPS endpoints discovered")
         elif throttle.host_dead:
-            log("[Hunt] Class 23 Request Smuggling skipped: target is blocking requests")
+            await log("[Hunt] Class 23 Request Smuggling skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 23: Request Smuggling Timing Detector".format(
+            await log("[Hunt] {}/{} Class 23: Request Smuggling Timing Detector".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -4855,7 +4855,7 @@ async def run_hunt(
             all_findings.extend(
                 normalize_finding(item) for item in smuggling_findings
             )
-            log("[Hunt] Request smuggling: {} candidate(s)".format(
+            await log("[Hunt] Request smuggling: {} candidate(s)".format(
                 len(smuggling_findings)
             ))
 
@@ -4869,15 +4869,15 @@ async def run_hunt(
             if re.search(r"(?i)(/v\d+/|/api/\d+/)", urlparse(url).path)
         ]
         if not allowed_class:
-            log("[Hunt] Class 24 API Versions skipped — {}".format(class_reason))
+            await log("[Hunt] Class 24 API Versions skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 24 API Versions skipped: active testing disabled")
+            await log("[Hunt] Class 24 API Versions skipped: active testing disabled")
         elif not base_urls:
-            log("[Hunt] Class 24 API Versions skipped: no live API origins discovered")
+            await log("[Hunt] Class 24 API Versions skipped: no live API origins discovered")
         elif throttle.host_dead:
-            log("[Hunt] Class 24 API Versions skipped: target is blocking requests")
+            await log("[Hunt] Class 24 API Versions skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 24: API Version Testing".format(
+            await log("[Hunt] {}/{} Class 24: API Version Testing".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -4895,7 +4895,7 @@ async def run_hunt(
             all_findings.extend(
                 normalize_finding(item) for item in version_findings
             )
-            log("[Hunt] API versions: {} finding(s)".format(
+            await log("[Hunt] API versions: {} finding(s)".format(
                 len(version_findings)
             ))
 
@@ -4912,17 +4912,17 @@ async def run_hunt(
             "Stored XSS"
         )
         if not stored_xss_endpoints:
-            log("[Hunt] Class 25 Stored XSS skipped: no schema-known text mutation endpoints")
+            await log("[Hunt] Class 25 Stored XSS skipped: no schema-known text mutation endpoints")
         elif not allowed_class:
-            log("[Hunt] Class 25 Stored XSS skipped — {}".format(class_reason))
+            await log("[Hunt] Class 25 Stored XSS skipped — {}".format(class_reason))
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Class 25 Stored XSS skipped: authenticated testing disabled")
+            await log("[Hunt] Class 25 Stored XSS skipped: authenticated testing disabled")
         elif not auth_matrix.configured or not auth_matrix.mutations_allowed:
-            log("[Hunt] Class 25 Stored XSS skipped: authorized mutation session required")
+            await log("[Hunt] Class 25 Stored XSS skipped: authorized mutation session required")
         elif throttle.host_dead:
-            log("[Hunt] Class 25 Stored XSS skipped: target is blocking requests")
+            await log("[Hunt] Class 25 Stored XSS skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 25: Stored XSS".format(
+            await log("[Hunt] {}/{} Class 25: Stored XSS".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -4944,7 +4944,7 @@ async def run_hunt(
             finally:
                 await stored_client.aclose()
             all_findings.extend(stored_findings)
-            log("[Hunt] Stored XSS: {} finding(s)".format(
+            await log("[Hunt] Stored XSS: {} finding(s)".format(
                 len(stored_findings)
             ))
 
@@ -4959,22 +4959,22 @@ async def run_hunt(
             "DOM XSS"
         )
         if not js_urls:
-            log("[Hunt] Class 26 DOM XSS skipped: no non-minified JavaScript discovered")
+            await log("[Hunt] Class 26 DOM XSS skipped: no non-minified JavaScript discovered")
         elif not allowed_class:
-            log("[Hunt] Class 26 DOM XSS skipped — {}".format(class_reason))
+            await log("[Hunt] Class 26 DOM XSS skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 26 DOM XSS skipped: active testing disabled")
+            await log("[Hunt] Class 26 DOM XSS skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 26 DOM XSS skipped: target is blocking requests")
+            await log("[Hunt] Class 26 DOM XSS skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 26: DOM XSS".format(
+            await log("[Hunt] {}/{} Class 26: DOM XSS".format(
                 class_idx, total_classes
             ))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "DOM XSS")
             dom_findings = await hunt_dom_xss(client, js_urls)
             all_findings.extend(dom_findings)
-            log("[Hunt] DOM XSS: {} candidate(s)".format(
+            await log("[Hunt] DOM XSS: {} candidate(s)".format(
                 len(dom_findings)
             ))
 
@@ -4988,17 +4988,17 @@ async def run_hunt(
             "Blind XSS"
         )
         if not blind_xss_endpoints:
-            log("[Hunt] Class 27 Blind XSS skipped: no likely deferred-render inputs")
+            await log("[Hunt] Class 27 Blind XSS skipped: no likely deferred-render inputs")
         elif not allowed_class:
-            log("[Hunt] Class 27 Blind XSS skipped — {}".format(class_reason))
+            await log("[Hunt] Class 27 Blind XSS skipped — {}".format(class_reason))
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Class 27 Blind XSS skipped: authenticated testing disabled")
+            await log("[Hunt] Class 27 Blind XSS skipped: authenticated testing disabled")
         elif not auth_matrix.configured or not auth_matrix.mutations_allowed:
-            log("[Hunt] Class 27 Blind XSS skipped: authorized mutation session required")
+            await log("[Hunt] Class 27 Blind XSS skipped: authorized mutation session required")
         elif throttle.host_dead:
-            log("[Hunt] Class 27 Blind XSS skipped: target is blocking requests")
+            await log("[Hunt] Class 27 Blind XSS skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 27: Blind XSS".format(
+            await log("[Hunt] {}/{} Class 27: Blind XSS".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5018,7 +5018,7 @@ async def run_hunt(
             finally:
                 await blind_client.aclose()
             all_findings.extend(blind_findings)
-            log("[Hunt] Blind XSS: {} submission candidate(s); confirmed only by OOB HTTP callback".format(
+            await log("[Hunt] Blind XSS: {} submission candidate(s); confirmed only by OOB HTTP callback".format(
                 len(blind_findings)
             ))
 
@@ -5035,17 +5035,17 @@ async def run_hunt(
         ]
         allowed_class, class_reason = _activation_allowed("CSRF")
         if not csrf_endpoints:
-            log("[Hunt] Class 28 CSRF skipped: no auth-sensitive state-changing endpoints")
+            await log("[Hunt] Class 28 CSRF skipped: no auth-sensitive state-changing endpoints")
         elif not allowed_class:
-            log("[Hunt] Class 28 CSRF skipped — {}".format(class_reason))
+            await log("[Hunt] Class 28 CSRF skipped — {}".format(class_reason))
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Class 28 CSRF skipped: authenticated testing disabled")
+            await log("[Hunt] Class 28 CSRF skipped: authenticated testing disabled")
         elif not auth_matrix.configured or not auth_matrix.mutations_allowed:
-            log("[Hunt] Class 28 CSRF skipped: authorized mutation session required")
+            await log("[Hunt] Class 28 CSRF skipped: authorized mutation session required")
         elif throttle.host_dead:
-            log("[Hunt] Class 28 CSRF skipped: target is blocking requests")
+            await log("[Hunt] Class 28 CSRF skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 28: CSRF".format(
+            await log("[Hunt] {}/{} Class 28: CSRF".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5065,7 +5065,7 @@ async def run_hunt(
             finally:
                 await csrf_client.aclose()
             all_findings.extend(csrf_findings)
-            log("[Hunt] CSRF: {} finding(s)".format(len(csrf_findings)))
+            await log("[Hunt] CSRF: {} finding(s)".format(len(csrf_findings)))
 
         # ── Class 29: Path Traversal and LFI ─────────────────────────────────
         class_idx += 1
@@ -5073,15 +5073,15 @@ async def run_hunt(
             "Path Traversal and LFI"
         )
         if not allowed_class:
-            log("[Hunt] Class 29 Path Traversal/LFI skipped — {}".format(
+            await log("[Hunt] Class 29 Path Traversal/LFI skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 29 Path Traversal/LFI skipped: active testing disabled")
+            await log("[Hunt] Class 29 Path Traversal/LFI skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 29 Path Traversal/LFI skipped: target is blocking requests")
+            await log("[Hunt] Class 29 Path Traversal/LFI skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 29: Path Traversal and LFI".format(
+            await log("[Hunt] {}/{} Class 29: Path Traversal and LFI".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5103,7 +5103,7 @@ async def run_hunt(
             finally:
                 await path_client.aclose()
             all_findings.extend(traversal_findings)
-            log("[Hunt] Path traversal/LFI: {} finding(s)".format(
+            await log("[Hunt] Path traversal/LFI: {} finding(s)".format(
                 len(traversal_findings)
             ))
 
@@ -5120,19 +5120,19 @@ async def run_hunt(
             "NoSQL Injection"
         )
         if not nosql_endpoints:
-            log("[Hunt] Class 30 NoSQL Injection skipped: no JSON POST endpoints")
+            await log("[Hunt] Class 30 NoSQL Injection skipped: no JSON POST endpoints")
         elif not allowed_class:
-            log("[Hunt] Class 30 NoSQL Injection skipped — {}".format(
+            await log("[Hunt] Class 30 NoSQL Injection skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.authenticated_testing_enabled:
-            log("[Hunt] Class 30 NoSQL Injection skipped: authenticated testing disabled")
+            await log("[Hunt] Class 30 NoSQL Injection skipped: authenticated testing disabled")
         elif not auth_matrix.configured or not auth_matrix.mutations_allowed:
-            log("[Hunt] Class 30 NoSQL Injection skipped: authorized mutation session required")
+            await log("[Hunt] Class 30 NoSQL Injection skipped: authorized mutation session required")
         elif throttle.host_dead:
-            log("[Hunt] Class 30 NoSQL Injection skipped: target is blocking requests")
+            await log("[Hunt] Class 30 NoSQL Injection skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 30: NoSQL Injection".format(
+            await log("[Hunt] {}/{} Class 30: NoSQL Injection".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5154,7 +5154,7 @@ async def run_hunt(
             finally:
                 await nosql_client.aclose()
             all_findings.extend(nosql_findings)
-            log("[Hunt] NoSQL injection: {} finding(s)".format(
+            await log("[Hunt] NoSQL injection: {} finding(s)".format(
                 len(nosql_findings)
             ))
 
@@ -5182,17 +5182,17 @@ async def run_hunt(
             "OS Command Injection"
         )
         if not command_query_urls and not command_json_endpoints:
-            log("[Hunt] Class 31 OS Command Injection skipped: no command-like parameters")
+            await log("[Hunt] Class 31 OS Command Injection skipped: no command-like parameters")
         elif not allowed_class:
-            log("[Hunt] Class 31 OS Command Injection skipped — {}".format(
+            await log("[Hunt] Class 31 OS Command Injection skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 31 OS Command Injection skipped: active testing disabled")
+            await log("[Hunt] Class 31 OS Command Injection skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 31 OS Command Injection skipped: target is blocking requests")
+            await log("[Hunt] Class 31 OS Command Injection skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 31: OS Command Injection".format(
+            await log("[Hunt] {}/{} Class 31: OS Command Injection".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5216,7 +5216,7 @@ async def run_hunt(
             finally:
                 await command_client.aclose()
             all_findings.extend(command_findings)
-            log("[Hunt] OS command injection: {} immediate finding(s); OOB probes confirm during polling".format(
+            await log("[Hunt] OS command injection: {} immediate finding(s); OOB probes confirm during polling".format(
                 len(command_findings)
             ))
 
@@ -5226,17 +5226,17 @@ async def run_hunt(
             "Host Header Injection"
         )
         if not live_hosts:
-            log("[Hunt] Class 32 Host Header Injection skipped: no live hosts")
+            await log("[Hunt] Class 32 Host Header Injection skipped: no live hosts")
         elif not allowed_class:
-            log("[Hunt] Class 32 Host Header Injection skipped — {}".format(
+            await log("[Hunt] Class 32 Host Header Injection skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 32 Host Header Injection skipped: active testing disabled")
+            await log("[Hunt] Class 32 Host Header Injection skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 32 Host Header Injection skipped: target is blocking requests")
+            await log("[Hunt] Class 32 Host Header Injection skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 32: Host Header Injection".format(
+            await log("[Hunt] {}/{} Class 32: Host Header Injection".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5247,7 +5247,7 @@ async def run_hunt(
                 client, live_hosts, all_urls
             )
             all_findings.extend(host_findings)
-            log("[Hunt] Host header injection: {} finding(s)".format(
+            await log("[Hunt] Host header injection: {} finding(s)".format(
                 len(host_findings)
             ))
 
@@ -5257,15 +5257,15 @@ async def run_hunt(
             "CRLF Injection"
         )
         if not allowed_class:
-            log("[Hunt] Class 33 CRLF Injection skipped — {}".format(
+            await log("[Hunt] Class 33 CRLF Injection skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 33 CRLF Injection skipped: active testing disabled")
+            await log("[Hunt] Class 33 CRLF Injection skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 33 CRLF Injection skipped: target is blocking requests")
+            await log("[Hunt] Class 33 CRLF Injection skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 33: CRLF Injection".format(
+            await log("[Hunt] {}/{} Class 33: CRLF Injection".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5274,7 +5274,7 @@ async def run_hunt(
                 )
             crlf_findings = await hunt_crlf_injection(client, all_urls)
             all_findings.extend(crlf_findings)
-            log("[Hunt] CRLF injection: {} finding(s)".format(
+            await log("[Hunt] CRLF injection: {} finding(s)".format(
                 len(crlf_findings)
             ))
 
@@ -5291,19 +5291,19 @@ async def run_hunt(
             "Default Credentials"
         )
         if not deep_authorized:
-            log("[Hunt] Class 34 Default Credentials skipped: Deep Authorized Scan required")
+            await log("[Hunt] Class 34 Default Credentials skipped: Deep Authorized Scan required")
         elif not login_urls:
-            log("[Hunt] Class 34 Default Credentials skipped: no login endpoints")
+            await log("[Hunt] Class 34 Default Credentials skipped: no login endpoints")
         elif not allowed_class:
-            log("[Hunt] Class 34 Default Credentials skipped — {}".format(
+            await log("[Hunt] Class 34 Default Credentials skipped — {}".format(
                 class_reason
             ))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 34 Default Credentials skipped: active testing disabled")
+            await log("[Hunt] Class 34 Default Credentials skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 34 Default Credentials skipped: target is blocking requests")
+            await log("[Hunt] Class 34 Default Credentials skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 34: Default Credentials".format(
+            await log("[Hunt] {}/{} Class 34: Default Credentials".format(
                 class_idx, total_classes
             ))
             if progress_cb:
@@ -5314,7 +5314,7 @@ async def run_hunt(
                 client, login_urls, schema_endpoints
             )
             all_findings.extend(default_credential_findings)
-            log("[Hunt] Default credentials: {} confirmed finding(s)".format(
+            await log("[Hunt] Default credentials: {} confirmed finding(s)".format(
                 len(default_credential_findings)
             ))
 
@@ -5323,15 +5323,15 @@ async def run_hunt(
         allowed_class, class_reason = _activation_allowed("WebSocket Active Security")
         discovered_ws = list(dict.fromkeys(websocket_urls or []))
         if not allowed_class:
-            log("[Hunt] Class 35 WebSocket Security skipped — {}".format(class_reason))
+            await log("[Hunt] Class 35 WebSocket Security skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 35 WebSocket Security skipped: active testing disabled")
+            await log("[Hunt] Class 35 WebSocket Security skipped: active testing disabled")
         elif not discovered_ws:
-            log("[Hunt] Class 35 WebSocket Security skipped: no WebSocket URLs discovered")
+            await log("[Hunt] Class 35 WebSocket Security skipped: no WebSocket URLs discovered")
         elif throttle.host_dead:
-            log("[Hunt] Class 35 WebSocket Security skipped: target is blocking requests")
+            await log("[Hunt] Class 35 WebSocket Security skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 35: WebSocket Security".format(class_idx, total_classes))
+            await log("[Hunt] {}/{} Class 35: WebSocket Security".format(class_idx, total_classes))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "WebSocket Security")
             for ws_url in discovered_ws[:20]:
@@ -5343,13 +5343,13 @@ async def run_hunt(
         class_idx += 1
         allowed_class, class_reason = _activation_allowed("Session Security")
         if not allowed_class:
-            log("[Hunt] Class 36 Session Security skipped — {}".format(class_reason))
+            await log("[Hunt] Class 36 Session Security skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 36 Session Security skipped: active testing disabled")
+            await log("[Hunt] Class 36 Session Security skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 36 Session Security skipped: target is blocking requests")
+            await log("[Hunt] Class 36 Session Security skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 36: Session Security".format(class_idx, total_classes))
+            await log("[Hunt] {}/{} Class 36: Session Security".format(class_idx, total_classes))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "Session Security")
             all_findings.extend(await hunt_session_security(client, all_urls))
@@ -5358,13 +5358,13 @@ async def run_hunt(
         class_idx += 1
         allowed_class, class_reason = _activation_allowed("Clickjacking")
         if not allowed_class:
-            log("[Hunt] Class 37 Clickjacking skipped — {}".format(class_reason))
+            await log("[Hunt] Class 37 Clickjacking skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 37 Clickjacking skipped: active testing disabled")
+            await log("[Hunt] Class 37 Clickjacking skipped: active testing disabled")
         elif throttle.host_dead:
-            log("[Hunt] Class 37 Clickjacking skipped: target is blocking requests")
+            await log("[Hunt] Class 37 Clickjacking skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 37: Clickjacking".format(class_idx, total_classes))
+            await log("[Hunt] {}/{} Class 37: Clickjacking".format(class_idx, total_classes))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "Clickjacking")
             all_findings.extend(await hunt_clickjacking(client, all_urls))
@@ -5374,15 +5374,15 @@ async def run_hunt(
         allowed_class, class_reason = _activation_allowed("Browser Storage Security")
         discovered_js = list(dict.fromkeys(js_urls or []))
         if not allowed_class:
-            log("[Hunt] Class 38 Browser Storage skipped — {}".format(class_reason))
+            await log("[Hunt] Class 38 Browser Storage skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
-            log("[Hunt] Class 38 Browser Storage skipped: active testing disabled")
+            await log("[Hunt] Class 38 Browser Storage skipped: active testing disabled")
         elif not discovered_js:
-            log("[Hunt] Class 38 Browser Storage skipped: no JavaScript files discovered")
+            await log("[Hunt] Class 38 Browser Storage skipped: no JavaScript files discovered")
         elif throttle.host_dead:
-            log("[Hunt] Class 38 Browser Storage skipped: target is blocking requests")
+            await log("[Hunt] Class 38 Browser Storage skipped: target is blocking requests")
         else:
-            log("[Hunt] {}/{} Class 38: Browser Storage Security".format(class_idx, total_classes))
+            await log("[Hunt] {}/{} Class 38: Browser Storage Security".format(class_idx, total_classes))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "Browser Storage Security")
             all_findings.extend(await hunt_browser_storage(client, discovered_js))
@@ -5396,7 +5396,7 @@ async def run_hunt(
             dedup.append(f)
 
     REQUEST_TIMEOUT.reset(timeout_token)
-    log("[Hunt] ━━━ Phase 2 complete: {} raw findings | OOB payloads: {} ━━━".format(
+    await log("[Hunt] ━━━ Phase 2 complete: {} raw findings | OOB payloads: {} ━━━".format(
         len(dedup), oob.payload_count))
     return dedup
 
@@ -5432,5 +5432,5 @@ async def _hunt_oob_sqli(client, urls: list, waf_info: dict, log: Callable) -> l
     tasks = [test_url(u) for u in urls[:50]]
     await asyncio.gather(*tasks)
 
-    log("[Hunt] OOB blind SQLi payloads fired — interactions polled at end of Phase 2")
+    await log("[Hunt] OOB blind SQLi payloads fired — interactions polled at end of Phase 2")
     return results   # actual findings come from oob.poll_interactions() in pipeline

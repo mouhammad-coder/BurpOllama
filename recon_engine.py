@@ -30,6 +30,26 @@ def tool_available(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def _is_local_target(target: str) -> bool:
+    """Returns True if target is localhost, IP, or local network."""
+    value = str(target or "").strip()
+    parsed = urlparse(value if "://" in value else "http://" + value)
+    host = parsed.hostname or value.split("/", 1)[0].split(":", 1)[0]
+    return bool(
+        host == "localhost"
+        or host.startswith("127.")
+        or host.startswith("192.168.")
+        or host.startswith("10.")
+        or host.startswith("172.")
+        or re.match(r"^\d+\.\d+\.\d+\.\d+$", host)
+    )
+
+
+def _target_url(target: str) -> str:
+    value = str(target or "").strip()
+    return value if "://" in value else "http://" + value
+
+
 def semgrep_available() -> bool:
     """Semgrep is optional because installation can fail on some Kali releases."""
     try:
@@ -494,6 +514,66 @@ async def probe_live_hosts(
     return live
 
 
+async def probe_local_target(target: str, log: Callable) -> list[dict]:
+    """Probe one localhost/IP URL without converting it into a domain name."""
+    target_url = _target_url(target)
+    if tool_available("httpx"):
+        log("[Recon] Running httpx directly on local target {}".format(target_url))
+        out = await run_cmd([
+            "httpx", "-u", target_url, "-silent", "-status-code", "-title",
+            "-tech-detect", "-json", "-timeout", "8",
+        ], timeout=30)
+        live = []
+        for line in out.strip().splitlines():
+            try:
+                obj = json.loads(line)
+                live.append({
+                    "url": obj.get("url") or target_url,
+                    "status": obj.get("status-code", 0),
+                    "title": obj.get("title", "Local Target"),
+                    "tech": obj.get("tech", []),
+                    "ip": obj.get("host", urlparse(target_url).hostname or ""),
+                })
+            except Exception:
+                continue
+        if live:
+            return live
+
+    log("[Recon] Direct httpx probe unavailable — using built-in local probe")
+    try:
+        async with httpx.AsyncClient(
+            timeout=8,
+            verify=False,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (BugHunter)"},
+        ) as client:
+            response = await client.get(target_url)
+        title = "Local Target"
+        match = re.search(
+            r"<title[^>]*>(.*?)</title>",
+            response.text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            title = match.group(1).strip()[:100]
+        return [{
+            "url": str(response.url),
+            "status": response.status_code,
+            "title": title,
+            "tech": _detect_tech(response),
+            "ip": urlparse(target_url).hostname or "",
+        }]
+    except Exception as exc:
+        log("[Recon] Local target probe failed: {}".format(exc))
+        return [{
+            "url": target_url,
+            "status": 0,
+            "title": "Local Target",
+            "tech": [],
+            "ip": urlparse(target_url).hostname or "",
+        }]
+
+
 async def _fallback_probe(
     subdomains: list[str],
     live: list,
@@ -599,6 +679,33 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
     return list(urls)
 
 
+async def discover_local_urls(target: str, log: Callable) -> list[str]:
+    """Run Katana directly against a localhost/IP URL, preserving its port."""
+    target_url = _target_url(target)
+    urls = {target_url}
+    if tool_available("katana"):
+        log("[Recon] Running katana directly on local target {}".format(target_url))
+        out = await run_cmd(
+            ["katana", "-u", target_url, "-d", "3", "-silent"],
+            timeout=180,
+        )
+        urls.update(
+            line.strip()
+            for line in out.splitlines()
+            if line.strip().startswith(("http://", "https://"))
+        )
+        log("[Recon] katana found {} local URL(s)".format(len(urls)))
+    else:
+        log("[Recon] katana not installed — using built-in local spider")
+        urls.update(
+            await _simple_crawl(
+                target_url,
+                depth=min(3, scope_policy.config.max_depth or 3),
+            )
+        )
+    return list(urls)
+
+
 async def _simple_crawl(base_url: str, depth: int = 2) -> set[str]:
     """Minimal HTML link crawler fallback."""
     ok, _ = scope_policy.validate_target(base_url, action="scan")
@@ -639,8 +746,8 @@ async def _simple_crawl(base_url: str, depth: int = 2) -> set[str]:
 # ── Phase 1c.5: Technology-aware Active Content Discovery ─────────────────────
 
 GENERIC_CONTENT_PATHS = [
-    "/.git/HEAD", "/.env", "/backup.zip", "/api/v1", "/api/v2",
-    "/graphql", "/graphiql",
+    "/.git/HEAD", "/.env", "/backup.zip", "/api", "/api/v1", "/api/v2",
+    "/graphql", "/graphiql", "/robots.txt",
 ]
 ADMIN_CONTENT_PATHS = [
     "/admin", "/administrator", "/manage", "/management", "/dashboard", "/portal",
@@ -1166,10 +1273,14 @@ async def run_full_recon(
         scan_level, target
     ))
     domain = target.replace("https://", "").replace("http://", "").split("/")[0]
+    local_target = _is_local_target(target)
 
     # 1a. Subdomains
     log("[Recon] 1a — Subdomain enumeration")
-    if scan_level == "LIGHT":
+    if local_target:
+        log("[Recon] Local target detected — skipping subfinder, using direct probing")
+        subdomains = [urlparse(_target_url(target)).hostname or domain]
+    elif scan_level == "LIGHT":
         subdomains = [domain]
         log("[Recon] LIGHT plan: broad subdomain enumeration skipped")
     else:
@@ -1179,13 +1290,19 @@ async def run_full_recon(
 
     # 1b. Live hosts
     log("[Recon] 1b — Probing live hosts")
-    live_hosts = await probe_live_hosts(
-        subdomains, log, concurrency=concurrency
-    )
+    if local_target:
+        live_hosts = await probe_local_target(target, log)
+    else:
+        live_hosts = await probe_live_hosts(
+            subdomains, log, concurrency=concurrency
+        )
 
     # 1c. URL discovery
     log("[Recon] 1c — URL/endpoint discovery")
-    raw_urls = await discover_urls(live_hosts, log)
+    if local_target:
+        raw_urls = await discover_local_urls(target, log)
+    else:
+        raw_urls = await discover_urls(live_hosts, log)
     raw_urls = raw_urls[:max_urls * 3]
 
     # ── Replace naive [:500] cap with structural clustering ───────────────────
@@ -1203,12 +1320,17 @@ async def run_full_recon(
         for tech in (host.get("tech") or [])
         if str(tech).strip()
     })
+    content_tech_stack = (
+        sorted(set(tech_stack + list(TECH_CONTENT_PATHS)))
+        if local_target
+        else tech_stack
+    )
     content_discovery = (
-        []
-        if scan_level == "LIGHT"
-        else await discover_content(
-            live_hosts, tech_stack, log, concurrency=concurrency
+        await discover_content(
+            live_hosts, content_tech_stack, log, concurrency=concurrency
         )
+        if local_target or scan_level != "LIGHT"
+        else []
     )
     content_urls = list(content_discovery)
     if content_urls:
