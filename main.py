@@ -33,6 +33,7 @@ import gemini_client as _gc
 from recon_engine  import (
     run_full_recon, run_nuclei_scan,
     COMMON_CONTENT_PATHS, TECH_CONTENT_PATHS, BACKUP_EXTENSIONS,
+    probe_target_connection,
 )
 from hunt_engine   import (
     run_hunt,
@@ -2779,6 +2780,39 @@ async def health(target: Optional[str] = None):
         "oob_domain": oob.domain,
         "oob_payloads": oob.payload_count,
         "scope": scope_policy.to_dict(),
+    }
+
+
+@app.get("/test-connection")
+async def test_connection(url: str):
+    checked_url = str(url or "").strip()
+    if checked_url and not re.match(r"^https?://", checked_url, re.I):
+        checked_url = "http://" + checked_url
+    try:
+        parsed = httpx.URL(checked_url)
+        if parsed.scheme not in ("http", "https") or not parsed.host:
+            raise ValueError("Invalid target URL")
+    except Exception as exc:
+        return {
+            "reachable": False,
+            "status_code": None,
+            "error": str(exc),
+            "method_used": "httpx",
+        }
+
+    response, _method_url, error = await probe_target_connection(checked_url)
+    if response is None:
+        return {
+            "reachable": False,
+            "status_code": None,
+            "error": error or "All connection attempts failed",
+            "method_used": "httpx",
+        }
+    return {
+        "reachable": response.status_code < 500,
+        "status_code": response.status_code,
+        "error": None,
+        "method_used": "httpx",
     }
 
 

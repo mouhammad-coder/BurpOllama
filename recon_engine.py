@@ -50,6 +50,71 @@ def _target_url(target: str) -> str:
     return value if "://" in value else "http://" + value
 
 
+def _local_connection_candidates(target: str) -> list[str]:
+    """Return loopback transport aliases while preserving the target port/path."""
+    target_url = _target_url(target)
+    parsed = urlparse(target_url)
+    host = (parsed.hostname or "").lower()
+    if not (
+        host == "localhost"
+        or host == "0.0.0.0"
+        or host.startswith("127.")
+    ):
+        return [target_url]
+    port = ":{}".format(parsed.port) if parsed.port else ""
+    suffix = parsed.path or ""
+    if parsed.query:
+        suffix += "?" + parsed.query
+    return [
+        "http://127.0.0.1{}{}".format(port, suffix),
+        "http://localhost{}{}".format(port, suffix),
+        "http://0.0.0.0{}{}".format(port, suffix),
+    ]
+
+
+def _canonicalize_local_url(url: str, canonical_base_url: str) -> str:
+    """Map a loopback transport URL back to the user-authorized hostname."""
+    parsed = urlparse(url)
+    canonical = urlparse(canonical_base_url)
+    if not parsed.netloc or not canonical.netloc:
+        return url
+    if (
+        (parsed.hostname or "").lower()
+        in {"localhost", "127.0.0.1", "0.0.0.0"}
+    ):
+        return parsed._replace(
+            scheme=canonical.scheme,
+            netloc=canonical.netloc,
+        ).geturl()
+    return url
+
+
+async def probe_target_connection(target: str):
+    """Probe a target, trying equivalent loopback aliases when appropriate."""
+    target_url = _target_url(target)
+    candidates = _local_connection_candidates(target_url)
+    errors = []
+    timeout = (
+        httpx.Timeout(15.0, connect=10.0)
+        if _is_local_target(target_url)
+        else httpx.Timeout(15.0, connect=10.0)
+    )
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=timeout,
+        follow_redirects=True,
+        limits=httpx.Limits(max_connections=10),
+    ) as client:
+        for candidate in candidates:
+            try:
+                response = await client.get(candidate)
+                if response is not None:
+                    return response, candidate, None
+            except Exception as exc:
+                errors.append("{}: {}".format(candidate, exc))
+    return None, None, "; ".join(errors) or "All connection attempts failed"
+
+
 def _extract_title(body: str) -> str:
     match = re.search(
         r"<title[^>]*>(.*?)</title>",
@@ -542,57 +607,23 @@ async def probe_local_target(target: str, log: Callable) -> list[dict]:
         "tech": [],
         "ip": urlparse(target_url).hostname or "",
     }
-    if tool_available("httpx"):
-        log("[Recon] Running httpx directly on local target {}".format(target_url))
-        out = await run_cmd([
-            "httpx", "-u", target_url, "-silent", "-status-code", "-title",
-            "-tech-detect", "-json", "-timeout", "8",
-        ], timeout=30)
-        live = []
-        for line in out.strip().splitlines():
-            try:
-                obj = json.loads(line)
-                live.append({
-                    "url": obj.get("url") or target_url,
-                    "status": obj.get("status-code", 0),
-                    "title": obj.get("title", "Local Target"),
-                    "tech": obj.get("tech", []),
-                    "ip": obj.get("host", urlparse(target_url).hostname or ""),
-                })
-            except Exception:
-                continue
-        if live:
-            return [direct_host] + [
-                host for host in live if host.get("url") != target_url
-            ]
-
-    log("[Recon] Direct httpx probe unavailable — using built-in local probe")
-    try:
-        async with httpx.AsyncClient(
-            timeout=8,
-            verify=False,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (BugHunter)"},
-        ) as client:
-            response = await client.get(target_url)
-        title = "Local Target"
-        match = re.search(
-            r"<title[^>]*>(.*?)</title>",
-            response.text,
-            re.IGNORECASE | re.DOTALL,
+    response, method_url, error = await probe_target_connection(target_url)
+    if response is not None:
+        await _recon_log(
+            log,
+            "[Recon] Local probe: {} via {} → HTTP {}".format(
+                target_url, method_url, response.status_code
+            ),
         )
-        if match:
-            title = match.group(1).strip()[:100]
         return [{
             "url": target_url,
-            "status": 200,
-            "title": title,
+            "status": response.status_code,
+            "title": _extract_title(response.text),
             "tech": _detect_tech(response),
             "ip": urlparse(target_url).hostname or "",
         }]
-    except Exception as exc:
-        log("[Recon] Local target probe failed: {}".format(exc))
-        return [direct_host]
+    await _recon_log(log, "[Recon] Local target probe failed: {}".format(error))
+    return [direct_host]
 
 
 async def _fallback_probe(
@@ -700,51 +731,176 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
     return list(urls)
 
 
-async def discover_local_urls(target: str, log: Callable) -> list[str]:
-    """Run Katana directly against a localhost/IP URL, preserving its port."""
+async def _python_crawl(
+    base_url: str,
+    client: httpx.AsyncClient,
+    max_depth: int = 3,
+    canonical_base_url: str | None = None,
+) -> list[str]:
+    """Primary local crawler using only httpx and regular expressions."""
+    canonical_base = canonical_base_url or base_url
+    request_origin = urlparse(base_url)
+    canonical_origin = urlparse(canonical_base)
+    allowed_hosts = {
+        (request_origin.hostname or "").lower(),
+        (canonical_origin.hostname or "").lower(),
+    }
+    if _is_local_target(canonical_base):
+        allowed_hosts.update({"localhost", "127.0.0.1", "0.0.0.0"})
+
+    visited = set()
+    to_visit = [base_url]
+    found = []
+    for _depth in range(max(1, int(max_depth))):
+        next_visit = []
+        for url in to_visit:
+            if url in visited:
+                continue
+            visited.add(url)
+            try:
+                canonical_request = _canonicalize_local_url(
+                    url, canonical_base
+                )
+                allowed, _reason = scope_policy.record_request(
+                    canonical_request, action="scan"
+                )
+                if not allowed:
+                    continue
+                response = await client.get(url, timeout=8)
+                if response is None:
+                    continue
+                found.append(canonical_request)
+                links = re.findall(
+                    r"""(?i)\bhref\s*=\s*["']([^"']+)["']""",
+                    response.text or "",
+                )
+                links += re.findall(
+                    r"""(?i)\bsrc\s*=\s*["']([^"']+)["']""",
+                    response.text or "",
+                )
+                links += re.findall(
+                    r"""(?i)\baction\s*=\s*["']([^"']+)["']""",
+                    response.text or "",
+                )
+                for link in links:
+                    if link.lower().startswith((
+                        "javascript:", "mailto:", "tel:", "data:", "blob:",
+                    )):
+                        continue
+                    full = urljoin(str(response.url), link).split("#", 1)[0]
+                    parsed_link = urlparse(full)
+                    if (
+                        parsed_link.scheme in {"http", "https"}
+                        and (parsed_link.hostname or "").lower() in allowed_hosts
+                        and full not in visited
+                    ):
+                        next_visit.append(full)
+            except Exception:
+                pass
+        to_visit = list(dict.fromkeys(next_visit))
+    return list(dict.fromkeys(found))
+
+
+JUICE_SHOP_PATHS = [
+    "/rest/products/search?q=test",
+    "/api/Users",
+    "/rest/user/login",
+    "/rest/BasketItems",
+    "/api/Challenges",
+    "/rest/admin/application-configuration",
+    "/ftp/",
+    "/socket.io/",
+    "/assets/public/",
+    "/#/login",
+    "/#/search",
+]
+
+
+async def discover_local_urls(
+    target: str,
+    log: Callable,
+    reachable_url: str | None = None,
+) -> list[str]:
+    """Crawl local targets in Python first, then optionally supplement with Katana."""
     target_url = _target_url(target)
     urls = {target_url}
-    discovered = set()
-    if tool_available("katana"):
-        log("[Recon] Running katana directly on local target {}".format(target_url))
-        out = await run_cmd(
-            ["katana", "-u", target_url, "-d", "3", "-silent", "-jc"],
-            timeout=180,
-        )
-        discovered.update(
-            line.strip()
-            for line in out.splitlines()
-            if line.strip().startswith(("http://", "https://"))
-        )
-        discovered.discard(target_url)
-        urls.update(discovered)
-        log("[Recon] katana found {} local URL(s)".format(len(discovered)))
-    else:
-        log("[Recon] katana not installed — using built-in local spider")
-        discovered.update(
-            await _simple_crawl(
-                target_url, depth=min(3, scope_policy.config.max_depth or 3)
+    method_url = reachable_url
+    timeout = httpx.Timeout(15.0, connect=10.0)
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=timeout,
+        follow_redirects=True,
+        limits=httpx.Limits(max_connections=10),
+    ) as client:
+        if not method_url:
+            for candidate in _local_connection_candidates(target_url):
+                try:
+                    response = await client.get(candidate, timeout=5)
+                    if response is not None and response.status_code < 500:
+                        method_url = candidate
+                        break
+                except Exception:
+                    continue
+
+        if method_url:
+            crawled = await _python_crawl(
+                method_url,
+                client,
+                max_depth=3,
+                canonical_base_url=target_url,
             )
-        )
-        discovered.discard(target_url)
-        urls.update(discovered)
-    if not discovered:
-        log("[Recon] No local URLs discovered — adding local application fallbacks")
-        known_paths = [
-            "/rest/products/search",
-            "/api/Users",
-            "/rest/user/login",
-            "/rest/user/whoami",
-            "/rest/BasketItems",
-            "/api/Challenges",
-            "/rest/admin/application-configuration",
-            "/ftp/",
-            "/assets/",
-            "/socket.io/",
-        ]
-        urls.update(urljoin(target_url.rstrip("/") + "/", path.lstrip("/"))
-                    for path in known_paths)
-    return list(urls)
+            urls.update(crawled)
+            await _recon_log(
+                log,
+                "[Recon] Python crawler found {} local URL(s)".format(
+                    len(crawled)
+                ),
+            )
+
+            for path in JUICE_SHOP_PATHS:
+                request_url = urljoin(method_url.rstrip("/") + "/", path.lstrip("/"))
+                canonical_url = urljoin(
+                    target_url.rstrip("/") + "/", path.lstrip("/")
+                )
+                try:
+                    response = await client.get(request_url, timeout=5)
+                    if response is not None and response.status_code < 500:
+                        urls.add(canonical_url)
+                        await _recon_log(
+                            log,
+                            "[Recon] Local path: {} → {}".format(
+                                path, response.status_code
+                            ),
+                        )
+                except Exception:
+                    pass
+
+            # Katana is supplemental only, and only runs after a successful
+            # Python reachability check.
+            if tool_available("katana"):
+                await _recon_log(
+                    log,
+                    "[Recon] Running katana on reachable local URL {}".format(
+                        method_url
+                    ),
+                )
+                out = await run_cmd(
+                    ["katana", "-u", method_url, "-d", "3", "-silent", "-jc"],
+                    timeout=180,
+                )
+                for line in out.splitlines():
+                    candidate = line.strip()
+                    if candidate.startswith(("http://", "https://")):
+                        urls.add(
+                            _canonicalize_local_url(candidate, target_url)
+                        )
+        else:
+            await _recon_log(
+                log,
+                "[Recon] Local URL is unreachable — skipping katana and continuing",
+            )
+
+    return list(dict.fromkeys(urls))
 
 
 async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
@@ -1402,19 +1558,18 @@ async def run_full_recon(
     # never leave the remaining pipeline without a host.
     live_hosts = []
     initial_body = ""
+    transport_url = None
     try:
         allowed, _reason = scope_policy.record_request(base_url, action="scan")
         if not allowed:
             raise PermissionError(_reason)
-        async with httpx.AsyncClient(
-            verify=False,
-            timeout=10,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (BurpOllama Recon)"},
-        ) as client:
-            response = await client.get(base_url)
+        response, transport_url, connection_error = (
+            await probe_target_connection(base_url)
+        )
         if response is None:
-            raise RuntimeError("empty HTTP response")
+            raise RuntimeError(
+                connection_error or "All connection attempts failed"
+            )
         initial_body = (response.text or "")[:1_500_000]
         tech = []
         server = response.headers.get("server", "")
@@ -1442,8 +1597,8 @@ async def run_full_recon(
         })
         await _recon_log(
             log,
-            "[Recon] Direct probe: {} → HTTP {}".format(
-                base_url, response.status_code
+            "[Recon] Direct probe: {} via {} → HTTP {}".format(
+                base_url, transport_url, response.status_code
             ),
         )
     except Exception as exc:
@@ -1510,7 +1665,9 @@ async def run_full_recon(
     await _recon_log(log, "[Recon] 1c — URL/endpoint discovery")
     try:
         raw_urls = (
-            await discover_local_urls(base_url, log)
+            await discover_local_urls(
+                base_url, log, reachable_url=transport_url
+            )
             if local_target
             else await discover_urls(live_hosts, log)
         )
@@ -1522,7 +1679,7 @@ async def run_full_recon(
             ),
         )
         raw_urls = []
-    if not tool_available("katana") or not raw_urls:
+    if not local_target and (not tool_available("katana") or not raw_urls):
         raw_urls = list(raw_urls or []) + list(
             await _simple_crawl(base_url, depth=3)
         )
