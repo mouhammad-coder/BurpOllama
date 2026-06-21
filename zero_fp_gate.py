@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from finding_model import normalize_finding
 from deduplication import deduplicate_findings
+from fp_eliminator import eliminate_false_positives
 from report_quality_scorer import score_finding as score_quality
 from impact_scoring_engine import score_finding as score_impact
 from scope_policy import ScopePolicy, scope_policy
@@ -12,6 +14,7 @@ from scope_policy import ScopePolicy, scope_policy
 READY_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
 READY_EXPLOITABILITY = {"confirmed", "probable"}
 READY_EVIDENCE = {"strong", "moderate"}
+logger = logging.getLogger(__name__)
 
 
 def _text(value: Any) -> str:
@@ -84,6 +87,8 @@ def apply_zero_fp_gate(
     findings: list[dict],
     scope: dict,
     chain_data: dict | None = None,
+    tech_stack: list[str] | None = None,
+    scan_context: dict | None = None,
 ) -> dict:
     policy = scope_policy
     if scope:
@@ -98,7 +103,43 @@ def apply_zero_fp_gate(
         "skipped_out_of_scope": [],
     }
 
-    for raw in deduplicate_findings(findings or []):
+    deduplicated = deduplicate_findings(findings or [])
+    pre_eliminated = [
+        finding for finding in deduplicated
+        if _lower(finding.get("exploitability_status")) in {
+            "false_positive", "not_vulnerable"
+        }
+        or _text(finding.get("verdict")).upper() == "KILL"
+    ]
+    eliminator_input = [
+        finding for finding in deduplicated
+        if finding not in pre_eliminated
+    ]
+    fp_result = eliminate_false_positives(
+        eliminator_input,
+        tech_stack or [],
+        scan_context or {},
+    )
+    eliminated = pre_eliminated + fp_result.get("false_positives", [])
+    logger.info(
+        "FP eliminator removed %d of %d finding(s)",
+        len(eliminated),
+        len(findings or []),
+    )
+    result["false_positives_removed"].extend(
+        _with_gate(
+            normalize_finding(finding),
+            "REMOVED",
+            ["fp_eliminator:{}".format(finding.get("fp_reason", "rule match"))],
+        )
+        for finding in eliminated
+    )
+    gate_findings = (
+        fp_result.get("confirmed", [])
+        + fp_result.get("candidates", [])
+    )
+
+    for raw in gate_findings:
         finding = normalize_finding(raw)
         affected_url = _text(finding.get("affected_url") or finding.get("url"))
         scoring_input = dict(finding)

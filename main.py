@@ -35,6 +35,7 @@ from recon_engine  import (
     COMMON_CONTENT_PATHS, TECH_CONTENT_PATHS, BACKUP_EXTENSIONS,
     probe_target_connection,
 )
+from recon_intelligence import advanced_recon_intelligence
 from hunt_engine   import (
     run_hunt,
     hunt_stored_xss,
@@ -951,6 +952,30 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             "scan_id": scan_id,
             "data": scan["adaptive_plan"],
         })
+        try:
+            recon_data["intelligence"] = await advanced_recon_intelligence(
+                target,
+                recon_data.get("urls", []),
+                recon_data.get("js_contents", {}),
+                [
+                    host.get("url", "")
+                    for host in recon_data.get("live_hosts", [])
+                    if isinstance(host, dict) and host.get("url")
+                ],
+                recon_data.get("tech_stack")
+                or recon_data.get("technologies")
+                or [],
+            )
+            await log(
+                "Recon intelligence: {} hidden endpoints | {} high-value targets".format(
+                    len(recon_data["intelligence"].get("hidden_endpoints", [])),
+                    len(recon_data["intelligence"].get("high_value_targets", [])),
+                ),
+                "success",
+            )
+        except Exception as e:
+            await log("Recon intelligence error: {}".format(e), "error")
+            recon_data["intelligence"] = {}
         scan["recon"] = recon_data
         autopilot_state.output(scan_id, "recon", "recon_data", {
             "stats": recon_data.get("stats", {}),
@@ -2594,7 +2619,9 @@ async def get_autopilot_mode(scan_id: str):
 async def get_scan_intelligence(scan_id: str):
     if scan_id not in scans:
         raise HTTPException(404, "Scan not found")
-    return JSONResponse(scans[scan_id].get("intelligence", {}))
+    return JSONResponse(
+        scans[scan_id].get("recon", {}).get("intelligence", {})
+    )
 
 @app.get("/scan/{scan_id}/autopilot/report")
 async def get_autopilot_report(scan_id: str):
@@ -2726,7 +2753,28 @@ async def get_finding_buckets(scan_id: str):
         or scan.get("analysis", {}).get("exploit_chains")
         or build_exploit_chains(findings)
     )
-    gated = apply_zero_fp_gate(findings, scope_policy.to_dict(), chain_data)
+    gated = apply_zero_fp_gate(
+        findings,
+        scope_policy.to_dict(),
+        chain_data,
+        tech_stack=scan.get("recon", {}).get("tech_stack", []),
+        scan_context={"recon": scan.get("recon", {})},
+    )
+    eliminated = sum(
+        1
+        for finding in gated.get("false_positives_removed", [])
+        if any(
+            str(check).startswith("fp_eliminator:")
+            for check in finding.get("zero_fp_failed_checks", [])
+        )
+    )
+    await log_broadcast(
+        scan_id,
+        "FP eliminator removed {} finding(s) before the 12-point gate".format(
+            eliminated
+        ),
+        "info",
+    )
     return {
         "scan_id": scan_id,
         "summary": {name: len(items) for name, items in gated.items()},

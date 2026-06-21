@@ -44,6 +44,7 @@ from finding_model import normalize_finding
 from adaptive_scan import ResourceController
 from hunt_sqli_advanced import hunt_sqli_advanced
 from smart_idor_detector import detect_idor as detect_idor_smart
+from business_logic_hunter import hunt_business_logic_deep
 
 # ── Shared config ─────────────────────────────────────────────────────────────
 BASE_HEADERS = {
@@ -157,6 +158,27 @@ class _ScopedHuntClient:
     async def get(self, url, timeout=None, **kwargs):
         kwargs.pop("timeout", None)
         return await tget(self._client, url, **kwargs)
+
+
+class _BusinessLogicScopeAdapter:
+    """Expose BurpOllama authorization through the generated module's API."""
+
+    def is_in_scope(self, url: str) -> bool:
+        return scope_policy.validate_target(url, action="active")[0]
+
+    def allow_active(self, url: str) -> bool:
+        return bool(
+            scope_policy.config.active_testing_enabled
+            and scope_policy.config.authenticated_testing_enabled
+            and auth_matrix.configured
+            and auth_matrix.mutations_allowed
+            and self.is_in_scope(url)
+        )
+
+    allow_state_changing = allow_active
+    allow_mutation = allow_active
+    allow_destructive = False
+    allow_irreversible = False
 
 
 def _advanced_sqli_finding(raw: dict, url: str) -> dict:
@@ -4592,7 +4614,7 @@ async def _run_hunt_impl(
         limits=httpx.Limits(max_connections=concurrency + 5)
     ) as client:
 
-        total_classes = len(PER_URL_CLASSES) + len(PER_BASE_CLASSES) + 25
+        total_classes = len(PER_URL_CLASSES) + len(PER_BASE_CLASSES) + 26
         class_idx     = 0
 
         # ── Per-URL classes ───────────────────────────────────────────────────
@@ -5526,6 +5548,36 @@ async def _run_hunt_impl(
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "Browser Storage Security")
             all_findings.extend(await hunt_browser_storage(client, discovered_js))
+
+        # ── Class 39: Deep Business Logic Hunting ───────────────────────────
+        class_idx += 1
+        allowed_class, class_reason = _activation_allowed("Business Logic")
+        if not allowed_class:
+            await log("[Hunt] Class 39 Business Logic skipped — {}".format(class_reason))
+        elif not scope_policy.config.active_testing_enabled:
+            await log("[Hunt] Class 39 Business Logic skipped: active testing disabled")
+        elif throttle.host_dead:
+            await log("[Hunt] Class 39 Business Logic skipped: target is blocking requests")
+        else:
+            await log("[Hunt] {}/{} Class 39: Deep Business Logic Hunting".format(
+                class_idx, total_classes
+            ))
+            if progress_cb:
+                await progress_cb(
+                    "hunt", class_idx, total_classes, "Deep Business Logic Hunting"
+                )
+            business_logic_findings = await hunt_business_logic_deep(
+                client,
+                urls_to_test,
+                base_urls,
+                _BusinessLogicScopeAdapter(),
+            )
+            all_findings.extend(
+                normalize_finding(item) for item in business_logic_findings
+            )
+            await log("[Hunt] Deep business logic: {} confirmed finding(s)".format(
+                len(business_logic_findings)
+            ))
 
     # Deduplicate by (vuln_type, url)
     seen, dedup = set(), []

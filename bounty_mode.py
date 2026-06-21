@@ -112,6 +112,8 @@ def build_bounty_mode(scan: dict, scope: dict, session_status: dict, coverage: d
         scope,
         scan.get("exploit_chains")
         or scan.get("analysis", {}).get("exploit_chains"),
+        tech_stack=scan.get("recon", {}).get("tech_stack", []),
+        scan_context={"recon": scan.get("recon", {})},
     )
 
     def gate_items(bucket: str, label: str, quality_bucket: str) -> list[dict[str, Any]]:
