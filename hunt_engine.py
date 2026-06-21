@@ -3726,6 +3726,8 @@ async def hunt_host_header_injection(client, live_hosts, discovered_urls):
 
 
 def _crlf_header_injected(response):
+    if response is None:
+        return False
     return any(
         "burpollama=test" in value.lower()
         for value in response.headers.get_list("set-cookie")
@@ -3733,6 +3735,8 @@ def _crlf_header_injected(response):
 
 
 def _crlf_location_reflected(response):
+    if response is None:
+        return False
     location = response.headers.get("location", "")
     lowered = location.lower()
     return bool(
@@ -3865,6 +3869,8 @@ def _login_field_names(endpoint):
 
 
 def _login_success(response):
+    if response is None:
+        return False, {}
     text = response.text or ""
     lowered = text.lower()
     location = response.headers.get("location", "").lower()

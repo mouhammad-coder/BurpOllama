@@ -50,6 +50,24 @@ def _target_url(target: str) -> str:
     return value if "://" in value else "http://" + value
 
 
+def _extract_title(body: str) -> str:
+    match = re.search(
+        r"<title[^>]*>(.*?)</title>",
+        str(body or ""),
+        re.IGNORECASE | re.DOTALL,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip()[:200] if match else "Unknown"
+
+
+async def _recon_log(log: Callable, message: str, level: str = "info"):
+    try:
+        result = log(message, level)
+    except TypeError:
+        result = log(message)
+    if asyncio.iscoroutine(result):
+        await result
+
+
 def semgrep_available() -> bool:
     """Semgrep is optional because installation can fail on some Kali releases."""
     try:
@@ -729,15 +747,15 @@ async def discover_local_urls(target: str, log: Callable) -> list[str]:
     return list(urls)
 
 
-async def _simple_crawl(base_url: str, depth: int = 2) -> set[str]:
-    """Minimal HTML link crawler fallback."""
+async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
+    """Crawl href, src, and form action attributes on the same origin."""
     ok, _ = scope_policy.validate_target(base_url, action="scan")
     if not ok:
         return set()
-    found  = set()
-    queue  = [(base_url, 0)]
+    found = {base_url}
+    queue = [(base_url, 0)]
     visited = set()
-    base_domain = urlparse(base_url).netloc
+    base_origin = urlparse(base_url).netloc.lower()
 
     async with httpx.AsyncClient(
         timeout=8, verify=False, follow_redirects=True,
@@ -753,13 +771,28 @@ async def _simple_crawl(base_url: str, depth: int = 2) -> set[str]:
                 ok, _ = scope_policy.record_request(url, action="scan")
                 if not ok:
                     continue
-                r     = await client.get(url)
-                links = re.findall(r'href=["\']([^"\']+)["\']', r.text)
-                for link in links[:50]:
-                    abs_link = urljoin(url, link).split("#")[0]
-                    if urlparse(abs_link).netloc == base_domain and scope_policy.validate_target(abs_link, action="scan")[0]:
-                        if abs_link not in visited:
-                            queue.append((abs_link, d + 1))
+                response = await client.get(url)
+                if response is None:
+                    continue
+                links = re.findall(
+                    r"""(?i)\b(?:href|src|action)\s*=\s*["']([^"'#]+)["']""",
+                    response.text or "",
+                )
+                for link in links[:300]:
+                    if link.lower().startswith((
+                        "javascript:", "mailto:", "tel:", "data:", "blob:",
+                    )):
+                        continue
+                    absolute = urljoin(str(response.url), link).split("#", 1)[0]
+                    parsed = urlparse(absolute)
+                    if (
+                        parsed.scheme in {"http", "https"}
+                        and parsed.netloc.lower() == base_origin
+                        and scope_policy.validate_target(absolute, action="scan")[0]
+                    ):
+                        found.add(absolute)
+                        if absolute not in visited and d < depth:
+                            queue.append((absolute, d + 1))
             except Exception:
                 pass
 
@@ -771,6 +804,29 @@ async def _simple_crawl(base_url: str, depth: int = 2) -> set[str]:
 GENERIC_CONTENT_PATHS = [
     "/.git/HEAD", "/.env", "/backup.zip", "/api", "/api/v1", "/api/v2",
     "/graphql", "/graphiql", "/robots.txt",
+]
+
+COMMON_PATHS = [
+    "/admin", "/administrator", "/admin/login",
+    "/api", "/api/v1", "/api/v2", "/api/v3",
+    "/graphql", "/graphiql", "/api/graphql",
+    "/swagger", "/swagger-ui.html", "/api-docs",
+    "/openapi.json", "/.env", "/.git/HEAD",
+    "/robots.txt", "/sitemap.xml",
+    "/login", "/signin", "/signup", "/register",
+    "/logout", "/dashboard", "/profile", "/account",
+    "/password/reset", "/forgot-password",
+    "/upload", "/uploads", "/files",
+    "/backup", "/backup.zip", "/backup.sql",
+    "/config", "/settings",
+    "/health", "/status", "/metrics",
+    "/actuator", "/actuator/env", "/actuator/beans",
+    "/console", "/h2-console",
+    "/phpinfo.php", "/info.php",
+    "/server-status", "/server-info",
+    "/wp-admin", "/wp-login.php",
+    "/rest", "/rest/user", "/rest/products",
+    "/socket.io/", "/ftp/",
 ]
 ADMIN_CONTENT_PATHS = [
     "/admin", "/administrator", "/manage", "/management", "/dashboard", "/portal",
@@ -801,6 +857,41 @@ TECH_CONTENT_PATHS = {
 BACKUP_EXTENSIONS = [".bak", ".backup", ".old", ".orig", ".save", "~", ".zip", ".tar.gz", ".sql"]
 
 _CONTENT_DISCOVERY_STATUS: dict[str, int] = {}
+
+
+async def _probe_common_paths(
+    base_url: str,
+    client: httpx.AsyncClient,
+    log: Callable,
+) -> list[str]:
+    found = []
+    origin = base_url.rstrip("/")
+    sem = asyncio.Semaphore(10)
+
+    async def probe(path: str):
+        url = origin + path
+        allowed, _reason = scope_policy.record_request(url, action="scan")
+        if not allowed:
+            return
+        try:
+            async with sem:
+                response = await client.get(
+                    url, timeout=5, follow_redirects=False
+                )
+            if response is None:
+                return
+            if response.status_code in (200, 201, 301, 302, 401, 403):
+                found.append(url)
+                _CONTENT_DISCOVERY_STATUS[url] = response.status_code
+                await _recon_log(
+                    log,
+                    "[Recon] Found: {} → {}".format(path, response.status_code),
+                )
+        except Exception:
+            pass
+
+    await asyncio.gather(*(probe(path) for path in COMMON_PATHS))
+    return found
 
 
 def _normalize_content_tech(tech: str) -> str:
@@ -917,7 +1008,11 @@ JS_SECRET_PATTERNS = [
     (r"(?i)new\s+WebSocket\s*\(\s*['\"]([^'\"]+)",                       "WebSocket Endpoint"),
 ]
 
-async def analyze_js_files(urls: list, log: Callable) -> list:
+async def analyze_js_files(
+    urls: list,
+    log: Callable,
+    return_contents: bool = False,
+):
     """
     Download JS files and run two analysis passes:
       Pass 1 — 10 regex patterns (secrets, endpoints, config)
@@ -989,7 +1084,7 @@ async def analyze_js_files(urls: list, log: Callable) -> list:
         sum(1 for f in findings if f.get("source") == "regex"),
         sum(1 for f in findings if f.get("source") == "semgrep"),
     ))
-    return findings
+    return (findings, js_contents) if return_contents else findings
 
 
 async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
@@ -1272,71 +1367,188 @@ async def run_full_recon(
     log: Callable,
     adaptive_plan: dict | None = None,
 ) -> dict:
-    """
-    Run the full recon pipeline.
-    Returns a dict with all discovered assets.
-    """
-    ok, reason = scope_policy.validate_target(target, action="scan")
+    """Run recon with the target itself as the guaranteed starting point."""
+    target_url = _target_url(target)
+    parsed = urlparse(target_url)
+    base_url = "{}://{}".format(parsed.scheme or "http", parsed.netloc)
+    hostname = parsed.hostname or parsed.netloc
+    ok, reason = scope_policy.validate_target(base_url, action="scan")
     if not ok:
-        log("[Recon] Blocked by ScopePolicy: {}".format(reason))
+        await _recon_log(log, "[Recon] Blocked by ScopePolicy: {}".format(reason))
         return {
-            "domain": target,
+            "domain": hostname,
             "subdomains": [],
             "live_hosts": [],
             "urls": [],
             "js_findings": [],
+            "js_contents": {},
+            "tech_stack": [],
             "stats": {"subdomains": 0, "live_hosts": 0, "urls_raw": 0,
                       "urls_clustered": 0, "js_findings": 0},
         }
+
     plan = adaptive_plan or {}
     scan_level = str(plan.get("level", "BALANCED")).upper()
-    max_urls = max(10, int(plan.get("max_urls", 200) or 200))
+    max_urls = max(50, int(plan.get("max_urls", 200) or 200))
     concurrency = max(1, int(plan.get("concurrency", 4) or 4))
-    log("[Recon] ━━━ Phase 1: {} discovery starting on {} ━━━".format(
-        scan_level, target
-    ))
-    domain = target.replace("https://", "").replace("http://", "").split("/")[0]
-    local_target = _is_local_target(target)
+    await _recon_log(
+        log,
+        "[Recon] ━━━ Phase 1: {} discovery starting on {} ━━━".format(
+            scan_level, base_url
+        ),
+    )
 
-    # 1a. Subdomains
-    log("[Recon] 1a — Subdomain enumeration")
+    # Always probe the exact target first. Enumeration is supplemental and can
+    # never leave the remaining pipeline without a host.
+    live_hosts = []
+    initial_body = ""
+    try:
+        allowed, _reason = scope_policy.record_request(base_url, action="scan")
+        if not allowed:
+            raise PermissionError(_reason)
+        async with httpx.AsyncClient(
+            verify=False,
+            timeout=10,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (BurpOllama Recon)"},
+        ) as client:
+            response = await client.get(base_url)
+        if response is None:
+            raise RuntimeError("empty HTTP response")
+        initial_body = (response.text or "")[:1_500_000]
+        tech = []
+        server = response.headers.get("server", "")
+        powered = response.headers.get("x-powered-by", "")
+        if server:
+            tech.append(server)
+        if powered:
+            tech.append(powered)
+        body_lower = initial_body[:5000].lower()
+        for marker, name in (
+            ("react", "React"),
+            ("angular", "Angular"),
+            ("jquery", "jQuery"),
+            ("graphql", "GraphQL"),
+            ("wp-content", "WordPress"),
+        ):
+            if marker in body_lower:
+                tech.append(name)
+        live_hosts.append({
+            "url": base_url,
+            "status": response.status_code,
+            "tech": list(dict.fromkeys(tech)),
+            "title": _extract_title(initial_body),
+            "ip": hostname,
+        })
+        await _recon_log(
+            log,
+            "[Recon] Direct probe: {} → HTTP {}".format(
+                base_url, response.status_code
+            ),
+        )
+    except Exception as exc:
+        await _recon_log(
+            log,
+            "[Recon] Direct probe failed: {} — adding as unverified host".format(
+                exc
+            ),
+        )
+        live_hosts.append({
+            "url": base_url,
+            "status": 200,
+            "tech": [],
+            "title": "Unknown",
+            "ip": hostname,
+        })
+
+    local_target = _is_local_target(base_url)
+    subdomains = [hostname] if hostname else []
+    await _recon_log(log, "[Recon] 1a — Subdomain enumeration")
     if local_target:
-        log("[Recon] Local target detected — skipping subfinder, using direct probing")
-        subdomains = [urlparse(_target_url(target)).hostname or domain]
+        await _recon_log(
+            log,
+            "[Recon] Local target detected — skipping subfinder, using direct probing",
+        )
     elif scan_level == "LIGHT":
-        subdomains = [domain]
-        log("[Recon] LIGHT plan: broad subdomain enumeration skipped")
-    else:
-        subdomains = await enumerate_subdomains(
-            domain, log, concurrency=concurrency
+        await _recon_log(
+            log, "[Recon] LIGHT plan: broad subdomain enumeration skipped"
         )
-
-    # 1b. Live hosts
-    log("[Recon] 1b — Probing live hosts")
-    if local_target:
-        live_hosts = await probe_local_target(target, log)
     else:
-        live_hosts = await probe_live_hosts(
-            subdomains, log, concurrency=concurrency
+        try:
+            enumerated = await enumerate_subdomains(
+                hostname, log, concurrency=concurrency
+            )
+            subdomains = list(dict.fromkeys(subdomains + list(enumerated or [])))
+        except Exception as exc:
+            await _recon_log(
+                log,
+                "[Recon] Subdomain enumeration failed: {} — continuing with target".format(
+                    exc
+                ),
+            )
+
+    # Probe enumerated hosts too, but never replace the direct target.
+    additional_subdomains = [
+        item for item in subdomains if item and item != hostname
+    ]
+    if additional_subdomains:
+        try:
+            extra_hosts = await probe_live_hosts(
+                additional_subdomains, log, concurrency=concurrency
+            )
+            known_urls = {host.get("url") for host in live_hosts}
+            live_hosts.extend(
+                host for host in extra_hosts
+                if host.get("url") and host.get("url") not in known_urls
+            )
+        except Exception as exc:
+            await _recon_log(
+                log,
+                "[Recon] Supplemental host probing failed: {}".format(exc),
+            )
+
+    await _recon_log(log, "[Recon] 1c — URL/endpoint discovery")
+    try:
+        raw_urls = (
+            await discover_local_urls(base_url, log)
+            if local_target
+            else await discover_urls(live_hosts, log)
         )
+    except Exception as exc:
+        await _recon_log(
+            log,
+            "[Recon] External URL discovery failed: {} — using built-in spider".format(
+                exc
+            ),
+        )
+        raw_urls = []
+    if not tool_available("katana") or not raw_urls:
+        raw_urls = list(raw_urls or []) + list(
+            await _simple_crawl(base_url, depth=3)
+        )
+    for script_src in re.findall(
+        r"""(?i)<script\b[^>]*\bsrc\s*=\s*["']([^"'#]+)["']""",
+        initial_body,
+    ):
+        script_url = urljoin(base_url.rstrip("/") + "/", script_src)
+        if (
+            urlparse(script_url).netloc.lower() == parsed.netloc.lower()
+            and scope_policy.validate_target(script_url, action="scan")[0]
+        ):
+            raw_urls.append(script_url)
+    raw_urls = list(dict.fromkeys([base_url] + list(raw_urls or [])))
 
-    # 1c. URL discovery
-    log("[Recon] 1c — URL/endpoint discovery")
-    if local_target:
-        raw_urls = await discover_local_urls(target, log)
-    else:
-        raw_urls = await discover_urls(live_hosts, log)
-    raw_urls = raw_urls[:max_urls * 3]
+    # Probe common application and administrative paths for every target.
+    _CONTENT_DISCOVERY_STATUS.clear()
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=5,
+        follow_redirects=False,
+        headers={"User-Agent": "Mozilla/5.0 (BurpOllama Path Probe)"},
+    ) as client:
+        common_urls = await _probe_common_paths(base_url, client, log)
+    raw_urls.extend(common_urls)
 
-    # ── Replace naive [:500] cap with structural clustering ───────────────────
-    raw_urls = scope_policy.filter_urls(raw_urls, action="scan")
-    urls = cluster_urls(raw_urls, max_variants=3)
-    log("[Recon] URL clustering: {} raw → {} clustered (3 variants/template)".format(
-        len(raw_urls), len(urls)
-    ))
-
-    # 1c.5. Technology-aware active content discovery
-    log("[Recon] 1c.5 — Technology-aware active content discovery")
     tech_stack = sorted({
         str(tech)
         for host in live_hosts
@@ -1345,36 +1557,46 @@ async def run_full_recon(
     })
     content_tech_stack = (
         sorted(set(tech_stack + list(TECH_CONTENT_PATHS)))
-        if local_target
-        else tech_stack
+        if local_target else tech_stack
     )
-    content_discovery = (
-        await discover_content(
+    try:
+        content_discovery = await discover_content(
             live_hosts, content_tech_stack, log, concurrency=concurrency
         )
-        if local_target or scan_level != "LIGHT"
-        else []
+    except Exception as exc:
+        await _recon_log(
+            log, "[Recon] Content discovery failed: {}".format(exc)
+        )
+        content_discovery = []
+    raw_urls.extend(content_discovery)
+    raw_urls = scope_policy.filter_urls(
+        list(dict.fromkeys(raw_urls))[:max_urls * 4],
+        action="scan",
     )
-    content_urls = list(content_discovery)
-    if content_urls:
-        urls = cluster_urls(scope_policy.filter_urls(urls + content_urls, action="scan"), max_variants=3)
-        log("[Recon] Content discovery merged {} URL(s); clustered total now {}".format(
-            len(content_urls), len(urls)))
+    if not raw_urls:
+        raw_urls = [base_url]
+    urls = cluster_urls(raw_urls, max_variants=3)
+    if base_url not in urls:
+        urls.insert(0, base_url)
+    urls = list(dict.fromkeys(urls))[:max_urls]
+    await _recon_log(
+        log,
+        "[Recon] URL discovery: {} raw → {} usable URLs".format(
+            len(raw_urls), len(urls)
+        ),
+    )
 
-    # 1d. JS analysis
-    log("[Recon] 1d — JS file analysis")
-    js_findings = await analyze_js_files(urls[:max_urls], log)
-
-    # 1e. Runtime JavaScript endpoint extraction
+    # Analyze every discovered script URL. The crawler includes src attributes,
+    # including scripts on the initial page.
+    await _recon_log(log, "[Recon] 1d — JS file analysis")
+    js_findings, js_contents = await analyze_js_files(
+        urls[:max_urls], log, return_contents=True
+    )
     js_urls = [
         url for url in urls
         if urlparse(url).path.lower().endswith(".js")
         and not urlparse(url).path.lower().endswith(".min.js")
     ]
-    base_url = (
-        live_hosts[0].get("url", target)
-        if live_hosts else target
-    )
     async with httpx.AsyncClient(
         timeout=12,
         verify=False,
@@ -1387,10 +1609,15 @@ async def run_full_recon(
             scope_policy.filter_urls(urls + js_endpoints, action="scan"),
             max_variants=3,
         )
-    urls = urls[:max_urls]
-    log("JS endpoint extraction: found {} additional API endpoints".format(
-        len(js_endpoints)
-    ))
+    if base_url not in urls:
+        urls.insert(0, base_url)
+    urls = list(dict.fromkeys(urls))[:max_urls]
+    await _recon_log(
+        log,
+        "[Recon] JS endpoint extraction found {} additional API endpoints".format(
+            len(js_endpoints)
+        ),
+    )
 
     websocket_urls = []
     for candidate in raw_urls:
@@ -1418,16 +1645,17 @@ async def run_full_recon(
     ))
 
     result = {
-        "domain":      domain,
+        "domain":      hostname,
         "subdomains":  subdomains,
         "live_hosts":  live_hosts,
         "tech_stack":  tech_stack,
-        "urls":        urls,          # clustered — no arbitrary cap
+        "urls":        urls or [base_url],
         "content_discovery": content_discovery,
         "js_endpoints": js_endpoints,
         "js_urls": js_urls,
         "websocket_urls": websocket_urls,
         "js_findings": js_findings,
+        "js_contents": js_contents,
         "stats": {
             "subdomains":    len(subdomains),
             "live_hosts":    len(live_hosts),
@@ -1444,7 +1672,11 @@ async def run_full_recon(
         }
     }
 
-    log("[Recon] ━━━ Phase 1 complete: {} hosts | {} clustered URLs | {} content paths | {} JS findings ━━━".format(
-        len(live_hosts), len(urls), len(content_discovery), len(js_findings)
-    ))
+    await _recon_log(
+        log,
+        "[Recon] ━━━ Phase 1 complete: {} hosts | {} URLs | {} content paths | {} JS findings ━━━".format(
+            len(live_hosts), len(result["urls"]), len(content_discovery),
+            len(js_findings)
+        ),
+    )
     return result
