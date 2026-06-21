@@ -507,9 +507,9 @@ async def _dns_brute(
             except Exception:
                 pass
 
-    log("[Recon] DNS brute-force: {} prefixes concurrently".format(len(prefixes)))
+    await _recon_log(log, "[Recon] DNS brute-force: {} prefixes concurrently".format(len(prefixes)))
     await _aio.gather(*[resolve(p) for p in prefixes])
-    log("[Recon] DNS brute found {} live subdomains".format(len(valid)))
+    await _recon_log(log, "[Recon] DNS brute found {} live subdomains".format(len(valid)))
     return valid
 
 
@@ -521,7 +521,7 @@ async def enumerate_subdomains(
     subs = set()
 
     if tool_available("subfinder"):
-        log("[Recon] Running subfinder on {}".format(domain))
+        await _recon_log(log, "[Recon] Running subfinder on {}".format(domain))
         out = await run_cmd([
             "subfinder", "-d", domain, "-silent",
             "-t", str(max(1, int(concurrency))),
@@ -530,9 +530,9 @@ async def enumerate_subdomains(
             line = line.strip()
             if line and "." in line:
                 subs.add(line.lower())
-        log("[Recon] subfinder found {} subdomains".format(len(subs)))
+        await _recon_log(log, "[Recon] subfinder found {} subdomains".format(len(subs)))
     else:
-        log("[Recon] subfinder not installed — async DNS brute with {} prefixes".format(
+        await _recon_log(log, "[Recon] subfinder not installed — async DNS brute with {} prefixes".format(
             len(FALLBACK_SUBS)))
         # Fix 6: Use async concurrent DNS resolution instead of blind set-add
         brute_results = await _dns_brute(
@@ -561,7 +561,7 @@ async def probe_live_hosts(
     live = []
 
     if tool_available("httpx"):
-        log("[Recon] Running httpx on {} subdomains".format(len(subdomains)))
+        await _recon_log(log, "[Recon] Running httpx on {} subdomains".format(len(subdomains)))
         input_data = "\n".join(subdomains).encode()
         proc = await asyncio.create_subprocess_exec(
             "httpx", "-silent", "-status-code", "-title",
@@ -590,10 +590,10 @@ async def probe_live_hosts(
         except asyncio.TimeoutError:
             proc.kill()
     else:
-        log("[Recon] httpx not installed — using fallback HTTP prober")
+        await _recon_log(log, "[Recon] httpx not installed — using fallback HTTP prober")
         await _fallback_probe(subdomains, live, log, concurrency=concurrency)
 
-    log("[Recon] {} live hosts found".format(len(live)))
+    await _recon_log(log, "[Recon] {} live hosts found".format(len(live)))
     return live
 
 
@@ -697,7 +697,7 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
 
     # Try katana first
     if tool_available("katana") and base_urls:
-        log("[Recon] Running katana crawler on {} hosts".format(len(base_urls)))
+        await _recon_log(log, "[Recon] Running katana crawler on {} hosts".format(len(base_urls)))
         out = await run_cmd(
             ["katana", "-u"] + base_urls +
             ["-silent", "-d", "3", "-jc", "-kf", "all", "-timeout", "10"],
@@ -707,12 +707,12 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
             line = line.strip()
             if line.startswith("http"):
                 urls.add(line)
-        log("[Recon] katana found {} URLs".format(len(urls)))
+        await _recon_log(log, "[Recon] katana found {} URLs".format(len(urls)))
 
     # Try waybackurls / gau
     for tool in ("gau", "waybackurls"):
         if tool_available(tool) and base_urls:
-            log("[Recon] Running {} for historical URLs".format(tool))
+            await _recon_log(log, "[Recon] Running {} for historical URLs".format(tool))
             for base in base_urls[:5]:
                 domain = urlparse(base).netloc
                 out = await run_cmd([tool, domain], timeout=60)
@@ -722,12 +722,12 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
 
     # Fallback: crawl manually
     if not urls and base_urls:
-        log("[Recon] No crawler available — using built-in spider")
+        await _recon_log(log, "[Recon] No crawler available — using built-in spider")
         for base in base_urls[:5]:
             crawled = await _simple_crawl(base, depth=min(2, scope_policy.config.max_depth or 2))
             urls.update(crawled)
 
-    log("[Recon] Total URLs discovered: {}".format(len(urls)))
+    await _recon_log(log, "[Recon] Total URLs discovered: {}".format(len(urls)))
     return list(urls)
 
 
@@ -1126,7 +1126,7 @@ async def discover_content(
             for path in _content_paths_for_tech(host_tech):
                 url = urljoin(origin + "/", path.lstrip("/"))
                 probe_urls.append(url)
-        log("[Recon] Active content discovery probing {} scoped paths".format(
+        await _recon_log(log, "[Recon] Active content discovery probing {} scoped paths".format(
             len(probe_urls)
         ))
         batch_size = max(4, int(concurrency) * 4)
@@ -1141,7 +1141,7 @@ async def discover_content(
     protected = sum(
         1 for url in results if _CONTENT_DISCOVERY_STATUS.get(url) in (401, 403)
     )
-    log("[Recon] Active content discovery found {} path(s), {} protected".format(
+    await _recon_log(log, "[Recon] Active content discovery found {} path(s), {} protected".format(
         len(results), protected
     ))
     return results
@@ -1178,11 +1178,11 @@ async def analyze_js_files(
     js_urls  = [u for u in urls if u.endswith(".js") and ".min.js" not in u][:30]
     findings = []
 
-    log("[Recon] Analyzing {} JS files (regex + semgrep)".format(len(js_urls)))
+    await _recon_log(log, "[Recon] Analyzing {} JS files (regex + semgrep)".format(len(js_urls)))
 
     has_semgrep = semgrep_available()
     if not has_semgrep:
-        log("[Recon] semgrep not found — regex-only JS analysis (install: pip install semgrep)")
+        await _recon_log(log, "[Recon] semgrep not found — regex-only JS analysis (install: pip install semgrep)")
 
     # Download all JS files first
     js_contents = {}   # url → content
@@ -1233,9 +1233,9 @@ async def analyze_js_files(
             semgrep_findings = await _run_semgrep_on_js(js_contents, log)
             findings.extend(semgrep_findings)
         except Exception as exc:
-            log("[Recon] semgrep unavailable during analysis — continuing with regex only: {}".format(exc))
+            await _recon_log(log, "[Recon] semgrep unavailable during analysis — continuing with regex only: {}".format(exc))
 
-    log("[Recon] JS analysis complete: {} findings (regex={}, semgrep={})".format(
+    await _recon_log(log, "[Recon] JS analysis complete: {} findings (regex={}, semgrep={})".format(
         len(findings),
         sum(1 for f in findings if f.get("source") == "regex"),
         sum(1 for f in findings if f.get("source") == "semgrep"),
@@ -1269,7 +1269,7 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
                       for c in js_contents.values())
     total_mb    = total_bytes / (1024 * 1024)
 
-    log("[Recon] semgrep: {} JS files, {:.1f} MB total".format(
+    await _recon_log(log, "[Recon] semgrep: {} JS files, {:.1f} MB total".format(
         len(js_contents), total_mb))
 
     try:
@@ -1285,7 +1285,7 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
                     file_map[temp_path]   = js_url
                     file_sizes[temp_path] = len(content.encode("utf-8", errors="ignore")) / (1024*1024)
                 except Exception as we:
-                    log("[Recon] semgrep: write error {}: {}".format(safe_name, we))
+                    await _recon_log(log, "[Recon] semgrep: write error {}: {}".format(safe_name, we))
 
             if not file_map:
                 return []
@@ -1316,7 +1316,7 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
             if current_chunk:
                 chunks.append(current_chunk)
 
-            log("[Recon] semgrep: {} whole-file chunks (no mid-file splits)".format(
+            await _recon_log(log, "[Recon] semgrep: {} whole-file chunks (no mid-file splits)".format(
                 len(chunks)))
 
             for chunk_idx, chunk_paths in enumerate(chunks):
@@ -1327,7 +1327,7 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
                 timeout_secs   = SEMGREP_TIMEOUT_SECS * 2 if is_large_solo \
                                  else SEMGREP_TIMEOUT_SECS
 
-                log("[Recon] semgrep chunk {}/{}: {} file(s) (mem={}MB, timeout={}s)".format(
+                await _recon_log(log, "[Recon] semgrep chunk {}/{}: {} file(s) (mem={}MB, timeout={}s)".format(
                     chunk_idx + 1, len(chunks), len(chunk_paths),
                     mem_limit, timeout_secs))
 
@@ -1356,7 +1356,7 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
                         except Exception:
                             pass
                         gap_files = [file_map.get(p, p) for p in chunk_paths]
-                        log("[Recon] ⚠ PARTIAL_COVERAGE chunk {}: timeout {}s — {} file(s): {}".format(
+                        await _recon_log(log, "[Recon] ⚠ PARTIAL_COVERAGE chunk {}: timeout {}s — {} file(s): {}".format(
                             chunk_idx + 1, timeout_secs, len(gap_files),
                             [f.split("/")[-1] for f in gap_files[:3]]))
                         coverage_gaps.append({
@@ -1399,23 +1399,16 @@ async def _run_semgrep_on_js(js_contents: dict, log: Callable) -> list:
                         })
 
                 except FileNotFoundError:
-                    log("[Recon] semgrep binary gone mid-scan"); break
+                    await _recon_log(log, "[Recon] semgrep binary gone mid-scan"); break
                 except Exception as chunk_err:
-                    log("[Recon] semgrep chunk {} error: {}".format(chunk_idx+1, chunk_err))
+                    await _recon_log(log, "[Recon] semgrep chunk {} error: {}".format(chunk_idx+1, chunk_err))
                     continue
 
     except Exception as outer_err:
-        log("[Recon] semgrep outer error: {}".format(outer_err))
+        await _recon_log(log, "[Recon] semgrep outer error: {}".format(outer_err))
 
-    log("[Recon] semgrep: {} findings | {} chunks | {} coverage gaps".format(
+    await _recon_log(log, "[Recon] semgrep: {} findings | {} chunks | {} coverage gaps".format(
         len(findings), len(chunks) if 'chunks' in dir() else 0, len(coverage_gaps)))
-    return findings
-
-    log("[Recon] semgrep complete: {} finding(s) across {} chunk(s)".format(
-        len(findings), len(chunks) if 'chunks' in dir() else 1))
-    if coverage_gaps:
-        log("[Recon] ⚠ PARTIAL_COVERAGE: {}/{} chunks had timeouts — JS analysis incomplete".format(
-            len(coverage_gaps), len(chunks) if 'chunks' in dir() else 1))
     return findings
 
 
