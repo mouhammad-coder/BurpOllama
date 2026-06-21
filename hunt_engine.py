@@ -42,6 +42,8 @@ from security_hardening import redact_secrets
 from scope_policy import scope_policy
 from finding_model import normalize_finding
 from adaptive_scan import ResourceController
+from hunt_sqli_advanced import hunt_sqli_advanced
+from smart_idor_detector import detect_idor as detect_idor_smart
 
 # ── Shared config ─────────────────────────────────────────────────────────────
 BASE_HEADERS = {
@@ -144,6 +146,41 @@ async def tpost(client, url, **kwargs):
             return None
         except Exception:
             return None
+
+
+class _ScopedHuntClient:
+    """Adapter that keeps generated detector traffic inside BurpOllama controls."""
+
+    def __init__(self, client):
+        self._client = client
+
+    async def get(self, url, timeout=None, **kwargs):
+        kwargs.pop("timeout", None)
+        return await tget(self._client, url, **kwargs)
+
+
+def _advanced_sqli_finding(raw: dict, url: str) -> dict:
+    evidence = raw.get("evidence") or {}
+    parameter = evidence.get("parameter", "") if isinstance(evidence, dict) else ""
+    return normalize_finding({
+        **raw,
+        "source": "advanced-sqli-detector",
+        "title": raw.get("vuln_type", "SQL Injection"),
+        "url": url,
+        "method": "GET",
+        "parameter": parameter,
+        "technical_impact": (
+            "Confirmed database-query manipulation using differential, "
+            "engine-error, or timing evidence."
+        ),
+        "business_impact": (
+            "An attacker may read or modify database-backed application data."
+        ),
+        "exploitability_status": "confirmed",
+        "evidence_strength": "strong",
+        "false_positive_risk": "low",
+        "redaction_status": "redacted",
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,6 +543,12 @@ async def hunt_sqli(client, url: str, waf_info: dict = None):
     if not params:
         return []
 
+    advanced = await hunt_sqli_advanced(
+        _ScopedHuntClient(client), url, waf_info or {}
+    )
+    if advanced:
+        return [_advanced_sqli_finding(item, url) for item in advanced]
+
     # ── STAGE 1: Error-based (always runs) ───────────────────────────────────
     for param in list(params.keys())[:5]:
         for payload in SQLI_ERROR_PAYLOADS:
@@ -713,6 +756,76 @@ IDOR_URL_RE = [
 
 async def hunt_idor(client, url):
     results = []
+    session_a_headers, _session_b_headers = (
+        auth_matrix.session_headers() if auth_matrix.configured else ({}, {})
+    )
+
+    async def smart_fetch(candidate_url: str):
+        return await tget(
+            client,
+            candidate_url,
+            headers={**BASE_HEADERS, **session_a_headers},
+        )
+
+    smart_report = await detect_idor_smart(
+        fetch=smart_fetch,
+        url=url,
+        scope_policy={
+            "allowed_hosts": [urlparse(url).hostname or ""],
+            "denied_hosts": [],
+        },
+        attacker_cookies=session_a_headers.get("Cookie", ""),
+        headers={
+            key: value for key, value in session_a_headers.items()
+            if key.lower() != "cookie"
+        },
+        max_variants=8,
+    )
+    smart_strength = str(smart_report.get("best_proof", "")).lower()
+    if smart_strength in {"confirmed", "probable"}:
+        best_test = next(
+            (
+                item for item in smart_report.get("tests", [])
+                if str(item.get("result", {}).get("proof_strength", "")).lower()
+                == smart_strength
+            ),
+            {},
+        )
+        comparison = best_test.get("result", {})
+        poc = smart_report.get("poc") or {}
+        results.append(finding(
+            "IDOR/BOLA - Smart Differential Proof",
+            "CRITICAL" if smart_strength == "confirmed" else "HIGH",
+            int(comparison.get("confidence", 85) or 85),
+            url,
+            "GET",
+            "Smart object-reference analysis produced {} authorization proof.".format(
+                smart_strength
+            ),
+            json.dumps(best_test, ensure_ascii=True),
+            "Enforce server-side object ownership and tenant authorization on every request.",
+            "CWE-639",
+            9.1 if smart_strength == "confirmed" else 7.5,
+            {
+                "exploitability_status": smart_strength,
+                "evidence_strength": "strong" if smart_strength == "confirmed" else "moderate",
+                "false_positive_risk": "low" if smart_strength == "confirmed" else "medium",
+                "business_impact": "An attacker may access another user's object data.",
+                "technical_impact": "Object-level authorization is missing or inconsistently enforced.",
+                "reproduction_steps": [
+                    poc.get("explanation", "")
+                ],
+                "safe_manual_validation_steps": [
+                    "Repeat the generated request using controlled test accounts only.",
+                    "Confirm the returned object belongs to a different authorized test user.",
+                ],
+                "smart_idor_report": smart_report,
+                "poc_curl": poc.get("curl", ""),
+                "redaction_status": "redacted",
+            },
+        ))
+        return results
+
     if (
         auth_matrix.configured
         and scope_policy.config.authenticated_testing_enabled

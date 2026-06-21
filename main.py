@@ -66,6 +66,7 @@ from review_queue  import review_queue
 from delta_tracker import delta_tracker
 from attack_graph import build_attack_graph
 from exploit_chain_engine import build_exploit_chains
+from exploit_chain_analyzer import analyze_exploit_chains
 from impact_scoring_engine import score_finding as score_impact_finding
 from poc_generator import generate_safe_poc
 from ato_chain_detector import detect_ato_chains
@@ -94,6 +95,10 @@ from graphql_auth_tester import test_graphql_auth
 from jwt_attack_suite import test_jwt
 from oauth_tester import test_oauth_flow
 from report_quality_scorer import score_finding
+from h1_bugcrowd_reports import (
+    generate_bugcrowd_report,
+    generate_h1_report,
+)
 from js_endpoint_extractor import extract_js_endpoints
 from behavioral_anomaly_detector import detect_anomalies
 from prototype_pollution_tester import test_prototype_pollution
@@ -1339,13 +1344,16 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             ato_chains = detect_ato_chains(triaged, ato_recon)
             scan["ato_chains"] = ato_chains
             exploit_chains = build_exploit_chains(passable)
+            generated_exploit_chains = analyze_exploit_chains(passable)
             for finding in triaged:
                 finding.update(score_impact_finding(finding, exploit_chains))
             passable = [f for f in triaged if f.get("verdict") in ("PASS", "DOWNGRADE")]
             scan["triaged_findings"] = triaged
             scan["exploit_chains"] = exploit_chains
+            scan["generated_exploit_chains"] = generated_exploit_chains
             attack_graph = build_attack_graph(passable, ato_chains).to_dict()
             attack_graph["exploit_chains"] = exploit_chains
+            attack_graph["generated_exploit_chains"] = generated_exploit_chains
             coverage = compute_coverage(recon_data, passable, prioritized_urls[:200])
             coverage2 = compute_coverage_v2(
                 scan_id,
@@ -1358,13 +1366,20 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             await log("Coverage and attack graph error: {}".format(e), "error")
             ato_chains = []
             exploit_chains = {}
-            attack_graph = {"attack_paths": [], "path_count": 0, "exploit_chains": {}}
+            generated_exploit_chains = []
+            attack_graph = {
+                "attack_paths": [],
+                "path_count": 0,
+                "exploit_chains": {},
+                "generated_exploit_chains": [],
+            }
             coverage = {"coverage_percent": 0}
             coverage2 = {"coverage_percent": 0}
         attack_graph_data = attack_graph
         coverage_data = coverage2
         analysis["attack_graph"] = attack_graph
         analysis["exploit_chains"] = exploit_chains
+        analysis["generated_exploit_chains"] = generated_exploit_chains
         analysis["ato_chains"] = ato_chains
         analysis["coverage"] = coverage
         analysis["coverage_v2"] = coverage2
@@ -1404,6 +1419,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 "in the dashboard.\n\nError: {}\n"
             ).format(target, e)
         scan["report"] = report_md
+        scan["platform_reports"] = {
+            finding["id"]: {
+                "hackerone": generate_h1_report(finding),
+                "bugcrowd": generate_bugcrowd_report(finding),
+            }
+            for finding in triaged
+            if finding.get("verdict") in ("PASS", "DOWNGRADE")
+        }
         autopilot_state.output(scan_id, "reporter", "report", {"chars": len(report_md or "")})
         reportable = len([f for f in triaged if f.get("verdict") in ("PASS","DOWNGRADE")])
         await broadcast({"type": "report_ready", "scan_id": scan_id,
@@ -1767,6 +1790,7 @@ async def _resume_pipeline_from_checkpoint(
             ato_chains = detect_ato_chains(triaged, ato_recon)
             scan["ato_chains"] = ato_chains
             exploit_chains = build_exploit_chains(passable)
+            generated_exploit_chains = analyze_exploit_chains(passable)
             for finding in triaged:
                 finding.update(score_impact_finding(finding, exploit_chains))
             passable = [
@@ -1774,8 +1798,10 @@ async def _resume_pipeline_from_checkpoint(
             ]
             scan["triaged_findings"] = triaged
             scan["exploit_chains"] = exploit_chains
+            scan["generated_exploit_chains"] = generated_exploit_chains
             attack_graph = build_attack_graph(passable, ato_chains).to_dict()
             attack_graph["exploit_chains"] = exploit_chains
+            attack_graph["generated_exploit_chains"] = generated_exploit_chains
             coverage = compute_coverage(
                 recon_data,
                 passable,
@@ -1790,6 +1816,7 @@ async def _resume_pipeline_from_checkpoint(
             )
             analysis["attack_graph"] = attack_graph
             analysis["exploit_chains"] = exploit_chains
+            analysis["generated_exploit_chains"] = generated_exploit_chains
             analysis["ato_chains"] = ato_chains
             analysis["coverage"] = coverage
             analysis["coverage_v2"] = coverage2
@@ -1820,6 +1847,14 @@ async def _resume_pipeline_from_checkpoint(
                 review_items=review_queue.get_all(scan_id, limit=500),
             )
             scan["report"] = report_md
+            scan["platform_reports"] = {
+                finding["id"]: {
+                    "hackerone": generate_h1_report(finding),
+                    "bugcrowd": generate_bugcrowd_report(finding),
+                }
+                for finding in triaged
+                if finding.get("verdict") in ("PASS", "DOWNGRADE")
+            }
             reportable = len([
                 finding for finding in triaged
                 if finding.get("verdict") in ("PASS", "DOWNGRADE")
@@ -2711,10 +2746,16 @@ async def export_findings_csv():
                     headers={"Content-Disposition":"attachment; filename=burpollama_findings.csv"})
 
 @app.get("/findings/{finding_id}/submission")
-async def get_submission(finding_id: str):
+async def get_submission(finding_id: str, platform: str = "hackerone"):
     f = next((x for x in findings_store if x["id"]==finding_id), None)
     if not f: raise HTTPException(404,"Finding not found")
-    return PlainTextResponse(generate_submission(f), media_type="text/markdown")
+    if platform.lower() == "bugcrowd":
+        report = generate_bugcrowd_report(f)
+    elif platform.lower() == "hackerone":
+        report = generate_h1_report(f)
+    else:
+        report = generate_submission(f)
+    return PlainTextResponse(report, media_type="text/markdown")
 
 @app.delete("/findings")
 async def clear_findings():
@@ -3593,8 +3634,15 @@ async def get_scan_attack_graph(scan_id: str):
         or scans[scan_id].get("analysis", {}).get("exploit_chains")
         or build_exploit_chains(findings)
     )
+    generated_exploit_chains = (
+        scans[scan_id].get("generated_exploit_chains")
+        or scans[scan_id].get("analysis", {}).get("generated_exploit_chains")
+        or analyze_exploit_chains(findings)
+    )
     scans[scan_id]["exploit_chains"] = exploit_chains
+    scans[scan_id]["generated_exploit_chains"] = generated_exploit_chains
     graph["exploit_chains"] = exploit_chains
+    graph["generated_exploit_chains"] = generated_exploit_chains
     return graph
 
 
