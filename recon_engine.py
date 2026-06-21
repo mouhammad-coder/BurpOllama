@@ -690,7 +690,11 @@ def _detect_tech(response) -> list[str]:
 
 # ── Phase 1c: URL & Endpoint Discovery ───────────────────────────────────────
 
-async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
+async def discover_urls(
+    live_hosts: list[dict],
+    log: Callable,
+    max_urls: int = 200,
+) -> list[str]:
     live_hosts = [h for h in live_hosts if scope_policy.validate_target(h.get("url", ""), action="scan")[0]]
     urls = set()
     base_urls = [h["url"] for h in live_hosts if h.get("status", 0) < 400][:20]
@@ -724,7 +728,14 @@ async def discover_urls(live_hosts: list[dict], log: Callable) -> list[str]:
     if not urls and base_urls:
         await _recon_log(log, "[Recon] No crawler available — using built-in spider")
         for base in base_urls[:5]:
-            crawled = await _simple_crawl(base, depth=min(2, scope_policy.config.max_depth or 2))
+            remaining = max(0, int(max_urls) - len(urls))
+            if remaining <= 0:
+                break
+            crawled = await _simple_crawl(
+                base,
+                depth=min(2, scope_policy.config.max_depth or 2),
+                max_urls=remaining,
+            )
             urls.update(crawled)
 
     await _recon_log(log, "[Recon] Total URLs discovered: {}".format(len(urls)))
@@ -736,6 +747,7 @@ async def _python_crawl(
     client: httpx.AsyncClient,
     max_depth: int = 3,
     canonical_base_url: str | None = None,
+    max_urls: int = 200,
 ) -> list[str]:
     """Primary local crawler using only httpx and regular expressions."""
     canonical_base = canonical_base_url or base_url
@@ -754,6 +766,8 @@ async def _python_crawl(
     for _depth in range(max(1, int(max_depth))):
         next_visit = []
         for url in to_visit:
+            if len(found) >= max(1, int(max_urls)):
+                break
             if url in visited:
                 continue
             visited.add(url)
@@ -793,6 +807,7 @@ async def _python_crawl(
                         parsed_link.scheme in {"http", "https"}
                         and (parsed_link.hostname or "").lower() in allowed_hosts
                         and full not in visited
+                        and len(found) + len(next_visit) < max(1, int(max_urls))
                     ):
                         next_visit.append(full)
             except Exception:
@@ -820,6 +835,7 @@ async def discover_local_urls(
     target: str,
     log: Callable,
     reachable_url: str | None = None,
+    max_urls: int = 200,
 ) -> list[str]:
     """Crawl local targets in Python first, then optionally supplement with Katana."""
     target_url = _target_url(target)
@@ -848,6 +864,7 @@ async def discover_local_urls(
                 client,
                 max_depth=3,
                 canonical_base_url=target_url,
+                max_urls=max_urls,
             )
             urls.update(crawled)
             await _recon_log(
@@ -903,7 +920,11 @@ async def discover_local_urls(
     return list(dict.fromkeys(urls))
 
 
-async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
+async def _simple_crawl(
+    base_url: str,
+    depth: int = 3,
+    max_urls: int = 200,
+) -> set[str]:
     """Crawl href, src, and form action attributes on the same origin."""
     ok, _ = scope_policy.validate_target(base_url, action="scan")
     if not ok:
@@ -918,6 +939,8 @@ async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
         headers={"User-Agent": "Mozilla/5.0 (BugHunter)"}
     ) as client:
         while queue:
+            if len(found) >= max(1, int(max_urls)):
+                break
             url, d = queue.pop(0)
             if url in visited or d > depth:
                 continue
@@ -935,6 +958,8 @@ async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
                     response.text or "",
                 )
                 for link in links[:300]:
+                    if len(found) >= max(1, int(max_urls)):
+                        break
                     if link.lower().startswith((
                         "javascript:", "mailto:", "tel:", "data:", "blob:",
                     )):
@@ -947,7 +972,11 @@ async def _simple_crawl(base_url: str, depth: int = 3) -> set[str]:
                         and scope_policy.validate_target(absolute, action="scan")[0]
                     ):
                         found.add(absolute)
-                        if absolute not in visited and d < depth:
+                        if (
+                            absolute not in visited
+                            and d < depth
+                            and len(found) + len(queue) < max(1, int(max_urls))
+                        ):
                             queue.append((absolute, d + 1))
             except Exception:
                 pass
@@ -964,18 +993,22 @@ GENERIC_CONTENT_PATHS = [
 
 COMMON_PATHS = [
     "/admin", "/administrator", "/admin/login",
-    "/api", "/api/v1", "/api/v2", "/api/v3",
+    "/api", "/api/v1", "/api/v2",
     "/graphql", "/graphiql", "/api/graphql",
-    "/swagger", "/swagger-ui.html", "/api-docs",
+    "/swagger-ui.html", "/api-docs",
     "/openapi.json", "/.env", "/.git/HEAD",
     "/robots.txt", "/sitemap.xml",
     "/login", "/signin", "/signup", "/register",
-    "/logout", "/dashboard", "/profile", "/account",
-    "/password/reset", "/forgot-password",
-    "/upload", "/uploads", "/files",
-    "/backup", "/backup.zip", "/backup.sql",
-    "/config", "/settings",
-    "/health", "/status", "/metrics",
+    "/dashboard", "/account",
+    "/upload", "/backup.zip",
+    "/health", "/metrics",
+    "/actuator/env", "/wp-admin", "/wp-login.php", "/server-status",
+]
+FULL_COMMON_PATHS = list(dict.fromkeys(COMMON_PATHS + [
+    "/api/v3", "/swagger",
+    "/logout", "/profile", "/password/reset", "/forgot-password",
+    "/uploads", "/files", "/backup", "/backup.sql",
+    "/config", "/settings", "/status",
     "/actuator", "/actuator/env", "/actuator/beans",
     "/console", "/h2-console",
     "/phpinfo.php", "/info.php",
@@ -983,7 +1016,7 @@ COMMON_PATHS = [
     "/wp-admin", "/wp-login.php",
     "/rest", "/rest/user", "/rest/products",
     "/socket.io/", "/ftp/",
-]
+]))
 ADMIN_CONTENT_PATHS = [
     "/admin", "/administrator", "/manage", "/management", "/dashboard", "/portal",
 ]
@@ -1019,10 +1052,12 @@ async def _probe_common_paths(
     base_url: str,
     client: httpx.AsyncClient,
     log: Callable,
+    paths: list[str] | None = None,
 ) -> list[str]:
     found = []
     origin = base_url.rstrip("/")
-    sem = asyncio.Semaphore(10)
+    selected_paths = list(dict.fromkeys(paths or COMMON_PATHS))
+    sem = asyncio.Semaphore(15)
 
     async def probe(path: str):
         url = origin + path
@@ -1032,7 +1067,7 @@ async def _probe_common_paths(
         try:
             async with sem:
                 response = await client.get(
-                    url, timeout=5, follow_redirects=False
+                    url, timeout=3, follow_redirects=False
                 )
             if response is None:
                 return
@@ -1046,7 +1081,7 @@ async def _probe_common_paths(
         except Exception:
             pass
 
-    await asyncio.gather(*(probe(path) for path in COMMON_PATHS))
+    await asyncio.gather(*(probe(path) for path in selected_paths))
     return found
 
 
@@ -1065,12 +1100,30 @@ def _normalize_content_tech(tech: str) -> str:
     return ""
 
 
-def _content_paths_for_tech(tech_stack: list) -> list[str]:
+def _content_paths_for_tech(
+    tech_stack: list,
+    include_full: bool = False,
+) -> list[str]:
     paths = set(COMMON_CONTENT_PATHS)
+    if include_full:
+        paths.update(FULL_COMMON_PATHS)
+        for technology_paths in TECH_CONTENT_PATHS.values():
+            paths.update(technology_paths)
     for tech in tech_stack or []:
         normalized = _normalize_content_tech(str(tech))
         if normalized:
             paths.update(TECH_CONTENT_PATHS[normalized])
+    if include_full:
+        backup_candidates = [
+            "/.env", "/.git/HEAD", "/config", "/settings", "/backup",
+            "/backup.sql", "/api", "/api/v1", "/admin", "/administrator",
+            "/login", "/dashboard", "/openapi.json", "/swagger-ui.html",
+            "/wp-config.php", "/wp-login.php", "/server-status",
+            "/actuator/env", "/h2-console", "/phpinfo.php",
+        ]
+        for path in backup_candidates:
+            for extension in BACKUP_EXTENSIONS:
+                paths.add(path + extension)
     return sorted(paths)
 
 
@@ -1079,6 +1132,9 @@ async def discover_content(
     tech_stack: list,
     log: Callable,
     concurrency: int = 6,
+    max_probes: int | None = None,
+    excluded_paths: set[str] | None = None,
+    include_full_paths: bool = False,
 ) -> list[str]:
     """Actively probe scoped, technology-aware paths and return existing URLs."""
     hosts = [
@@ -1113,7 +1169,7 @@ async def discover_content(
             _CONTENT_DISCOVERY_STATUS[url] = response.status_code
 
     async with httpx.AsyncClient(
-        timeout=7,
+        timeout=httpx.Timeout(3.0),
         verify=False,
         headers={"User-Agent": "Mozilla/5.0 (BugHunter ContentDiscovery)"},
     ) as client:
@@ -1123,9 +1179,16 @@ async def discover_content(
             parsed_base = urlparse(base_url)
             origin = "{}://{}".format(parsed_base.scheme, parsed_base.netloc)
             host_tech = list(tech_stack or []) + list(host.get("tech") or [])
-            for path in _content_paths_for_tech(host_tech):
+            for path in _content_paths_for_tech(
+                host_tech, include_full=include_full_paths
+            ):
+                if path in (excluded_paths or set()):
+                    continue
                 url = urljoin(origin + "/", path.lstrip("/"))
                 probe_urls.append(url)
+        probe_urls = list(dict.fromkeys(probe_urls))
+        if max_probes is not None:
+            probe_urls = probe_urls[:max(0, int(max_probes))]
         await _recon_log(log, "[Recon] Active content discovery probing {} scoped paths".format(
             len(probe_urls)
         ))
@@ -1659,10 +1722,13 @@ async def run_full_recon(
     try:
         raw_urls = (
             await discover_local_urls(
-                base_url, log, reachable_url=transport_url
+                base_url,
+                log,
+                reachable_url=transport_url,
+                max_urls=max_urls,
             )
             if local_target
-            else await discover_urls(live_hosts, log)
+            else await discover_urls(live_hosts, log, max_urls=max_urls)
         )
     except Exception as exc:
         await _recon_log(
@@ -1674,7 +1740,7 @@ async def run_full_recon(
         raw_urls = []
     if not local_target and (not tool_available("katana") or not raw_urls):
         raw_urls = list(raw_urls or []) + list(
-            await _simple_crawl(base_url, depth=3)
+            await _simple_crawl(base_url, depth=3, max_urls=max_urls)
         )
     for script_src in re.findall(
         r"""(?i)<script\b[^>]*\bsrc\s*=\s*["']([^"'#]+)["']""",
@@ -1690,13 +1756,18 @@ async def run_full_recon(
 
     # Probe common application and administrative paths for every target.
     _CONTENT_DISCOVERY_STATUS.clear()
+    common_probe_paths = (
+        FULL_COMMON_PATHS if scan_level == "DEEP" else COMMON_PATHS
+    )
     async with httpx.AsyncClient(
         verify=False,
-        timeout=5,
+        timeout=httpx.Timeout(3.0),
         follow_redirects=False,
         headers={"User-Agent": "Mozilla/5.0 (BurpOllama Path Probe)"},
     ) as client:
-        common_urls = await _probe_common_paths(base_url, client, log)
+        common_urls = await _probe_common_paths(
+            base_url, client, log, paths=common_probe_paths
+        )
     raw_urls.extend(common_urls)
 
     tech_stack = sorted({
@@ -1710,8 +1781,19 @@ async def run_full_recon(
         if local_target else tech_stack
     )
     try:
+        remaining_path_budget = (
+            None
+            if scan_level == "DEEP"
+            else max(0, 50 - len(common_probe_paths))
+        )
         content_discovery = await discover_content(
-            live_hosts, content_tech_stack, log, concurrency=concurrency
+            live_hosts,
+            content_tech_stack,
+            log,
+            concurrency=concurrency,
+            max_probes=remaining_path_budget,
+            excluded_paths=set(common_probe_paths),
+            include_full_paths=scan_level == "DEEP",
         )
     except Exception as exc:
         await _recon_log(

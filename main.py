@@ -1117,6 +1117,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                     request_timeout=adaptive_plan.request_timeout,
                     batch_size=adaptive_plan.request_batch_size,
                     resource_controller=resources,
+                    scan_level=adaptive_plan.level,
                 )
             except Exception as e:
                 await log("Hunt error: {}".format(e), "error")
@@ -1619,6 +1620,7 @@ async def _resume_pipeline_from_checkpoint(
                     request_timeout=adaptive_plan.request_timeout,
                     batch_size=adaptive_plan.request_batch_size,
                     resource_controller=resources,
+                    scan_level=adaptive_plan.level,
                 )
             raw_findings = normalize_findings(raw_findings, scan_id=scan_id)
             classification_recon = dict(recon_data)

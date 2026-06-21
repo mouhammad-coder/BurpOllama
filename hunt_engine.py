@@ -4385,7 +4385,7 @@ PER_BASE_CLASSES = [
 ]
 
 
-async def run_hunt(
+async def _run_hunt_impl(
     urls:           list,
     live_hosts:     list,
     log:            Callable,
@@ -5426,6 +5426,84 @@ async def run_hunt(
     await log("[Hunt] ━━━ Phase 2 complete: {} raw findings | OOB payloads: {} ━━━".format(
         len(dedup), oob.payload_count))
     return dedup
+
+
+async def run_hunt(
+    urls:           list,
+    live_hosts:     list,
+    log:            Callable,
+    progress_cb:    Callable = None,
+    waf_info:       dict     = None,
+    schema_urls:    list     = None,
+    graphql_schemas:list     = None,
+    schema_endpoints:list    = None,
+    websocket_urls:list      = None,
+    js_urls:list             = None,
+    enabled_modules:list     = None,
+    enabled_classes:list     = None,
+    max_urls:       int      = 200,
+    concurrency_override:int = None,
+    request_timeout:float    = None,
+    batch_size:     int      = 0,
+    resource_controller:ResourceController = None,
+    scan_level:     str      = "BALANCED",
+) -> list:
+    """Apply mode-specific URL and wall-clock limits around the hunt engine."""
+    normalized_level = str(scan_level or "").strip().upper()
+    if normalized_level not in {"LIGHT", "BALANCED", "DEEP"}:
+        requested_urls = max(1, int(max_urls or 1))
+        if requested_urls <= 50:
+            normalized_level = "LIGHT"
+        elif requested_urls <= 150:
+            normalized_level = "BALANCED"
+        else:
+            normalized_level = "DEEP"
+
+    url_caps = {"LIGHT": 30, "BALANCED": 100, "DEEP": 300}
+    timeout_seconds = 900 if normalized_level == "DEEP" else 300
+    effective_max_urls = min(
+        max(1, int(max_urls or url_caps[normalized_level])),
+        url_caps[normalized_level],
+    )
+    await log(
+        "[Hunt] {} limits: {} URLs maximum | {} minute global timeout".format(
+            normalized_level,
+            effective_max_urls,
+            timeout_seconds // 60,
+        )
+    )
+
+    try:
+        return await asyncio.wait_for(
+            _run_hunt_impl(
+                urls,
+                live_hosts,
+                log,
+                progress_cb,
+                waf_info=waf_info,
+                schema_urls=schema_urls,
+                graphql_schemas=graphql_schemas,
+                schema_endpoints=schema_endpoints,
+                websocket_urls=websocket_urls,
+                js_urls=js_urls,
+                enabled_modules=enabled_modules,
+                enabled_classes=enabled_classes,
+                max_urls=effective_max_urls,
+                concurrency_override=concurrency_override,
+                request_timeout=request_timeout,
+                batch_size=batch_size,
+                resource_controller=resource_controller,
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        await log(
+            "[Hunt] {} global timeout reached after {} minutes; stopping remaining checks".format(
+                normalized_level, timeout_seconds // 60
+            ),
+            "warning",
+        )
+        return []
 
 
 async def _hunt_oob_sqli(client, urls: list, waf_info: dict, log: Callable) -> list:
