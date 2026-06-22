@@ -12,6 +12,9 @@ import httpx
 from urllib.parse import urlparse
 from typing import Callable, Optional
 from utils import structural_json_diff, prune_http_for_llm
+from auth_session import SessionProfile
+from request_safety import outbound_guard
+from scope_policy import scope_policy
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -34,16 +37,6 @@ SUCCESS_CODES = {200, 201, 206}
 MIN_CONTENT_DELTA = 50
 
 
-def _make_session_headers(cookie: str, token: str = "") -> dict:
-    """Build headers for a specific session."""
-    h = dict(HEADERS)
-    if cookie:
-        h["Cookie"] = cookie
-    if token:
-        h["Authorization"] = "Bearer {}".format(token) if not token.startswith("Bearer") else token
-    return h
-
-
 class DualSessionMatrix:
     """
     Runs the authorization matrix test.
@@ -53,10 +46,8 @@ class DualSessionMatrix:
     """
 
     def __init__(self):
-        self._session_a_cookie:  str  = ""
-        self._session_a_token:   str  = ""
-        self._session_b_cookie:  str  = ""
-        self._session_b_token:   str  = ""
+        self._session_a = SessionProfile.create("Attacker / lower privilege")
+        self._session_b = SessionProfile.create("Victim / higher privilege")
         self._configured:        bool = False
         self._allow_mutations:   bool = False   # v3.2: safe default — GET/HEAD only
         self.findings:           list = []
@@ -83,27 +74,45 @@ class DualSessionMatrix:
         session_b_token:       str  = "",
         allow_mutations:       bool = False,
         health_check_endpoint: str  = "",
+        session_a_role:        str  = "Attacker / lower privilege",
+        session_b_role:        str  = "Victim / higher privilege",
+        session_a_headers:     dict | None = None,
+        session_b_headers:     dict | None = None,
+        session_a_expires_at=None,
+        session_b_expires_at=None,
     ):
         """
         Set both sessions.
         health_check_endpoint: known-good URL for session liveness check
         (e.g. /api/me). If empty, auto-detected from first successful request.
         """
-        self._session_a_cookie     = session_a_cookie.strip()
-        self._session_a_token      = session_a_token.strip()
-        self._session_b_cookie     = session_b_cookie.strip()
-        self._session_b_token      = session_b_token.strip()
-        self._allow_mutations       = bool(allow_mutations)
-        self._health_check_endpoint = health_check_endpoint.strip()
-        self._configured = bool(
-            (session_a_cookie or session_a_token) and
-            (session_b_cookie or session_b_token)
+        self._session_a = SessionProfile.create(
+            session_a_role,
+            cookie=session_a_cookie,
+            token=session_a_token,
+            custom_headers=session_a_headers,
+            expires_at=session_a_expires_at,
         )
+        self._session_b = SessionProfile.create(
+            session_b_role,
+            cookie=session_b_cookie,
+            token=session_b_token,
+            custom_headers=session_b_headers,
+            expires_at=session_b_expires_at,
+        )
+        self._allow_mutations       = bool(allow_mutations)
+        self._health_check_endpoint = str(health_check_endpoint or "").strip()
+        if "\r" in self._health_check_endpoint or "\n" in self._health_check_endpoint:
+            raise ValueError("health_check_endpoint must be a single-line URL.")
+        self._configured = self._session_a.configured and self._session_b.configured
         self._consec_fails_a = 0
         self._consec_fails_b = 0
         self._session_a_dead = False
         self._session_b_dead = False
         self._auto_health_url = ""   # reset on every configure call
+        self._tested = 0
+        self._violations = 0
+        self.findings = []
 
     @property
     def configured(self) -> bool:
@@ -116,8 +125,8 @@ class DualSessionMatrix:
 
     def session_headers(self) -> tuple[dict, dict]:
         return (
-            _make_session_headers(self._session_a_cookie, self._session_a_token),
-            _make_session_headers(self._session_b_cookie, self._session_b_token),
+            self._session_a.headers(HEADERS),
+            self._session_b.headers(HEADERS),
         )
 
     # ── Cookie health checker ──────────────────────────────────────────────────
@@ -156,29 +165,50 @@ class DualSessionMatrix:
                               or self._auto_health_url)
 
                 if health_url and client:
-                    log("[AuthMatrix] {} consecutive {}s on Session {} — "
-                        "running health probe: {}".format(count, status_code,
-                                                          session, health_url))
+                    await log("[AuthMatrix] {} consecutive {}s on Session {} — "
+                              "running health probe: {}".format(
+                                  count, status_code, session, health_url
+                              ))
                     try:
-                        hdrs = (_make_session_headers(self._session_a_cookie,
-                                                      self._session_a_token)
-                                if session == "A"
-                                else _make_session_headers(self._session_b_cookie,
-                                                           self._session_b_token))
-                        r_health = await client.get(health_url, headers=hdrs,
-                                                    timeout=TIMEOUT)
+                        profile = self._session_a if session == "A" else self._session_b
+                        hdrs = profile.headers(HEADERS)
+                        decision = outbound_guard.authorize(
+                            scope_policy,
+                            health_url,
+                            method="GET",
+                            action="authenticated",
+                        )
+                        if not decision.allowed:
+                            return False
+                        started = time.perf_counter()
+                        r_health = await client.get(
+                            health_url, headers=hdrs, timeout=TIMEOUT
+                        )
+                        outbound_guard.record_result(
+                            health_url,
+                            method="GET",
+                            action="authenticated",
+                            status_code=r_health.status_code,
+                            elapsed_ms=(time.perf_counter() - started) * 1000,
+                        )
                         if r_health.status_code in SUCCESS_CODES:
                             # Session is alive — endpoint-specific block, not session death
-                            log("[AuthMatrix] Health probe OK (HTTP {}) — "
-                                "Session {} alive, resetting counter".format(
-                                    r_health.status_code, session))
+                            await log("[AuthMatrix] Health probe OK (HTTP {}) — "
+                                      "Session {} alive, resetting counter".format(
+                                          r_health.status_code, session))
                             if session == "A":
                                 self._consec_fails_a = 0
                             else:
                                 self._consec_fails_b = 0
                             return True   # continue matrix
                     except Exception as probe_err:
-                        log("[AuthMatrix] Health probe error: {}".format(probe_err))
+                        outbound_guard.record_result(
+                            health_url,
+                            method="GET",
+                            action="authenticated",
+                            error=type(probe_err).__name__,
+                        )
+                        await log("[AuthMatrix] Health probe error: {}".format(probe_err))
 
                 # Health probe failed or not configured — session truly dead
                 if session == "A":
@@ -191,7 +221,7 @@ class DualSessionMatrix:
                     "responses confirmed by failed health probe.".format(
                         session, count, status_code)
                 )
-                log(alert_msg, "error")
+                await log(alert_msg, "error")
                 if self._broadcast_fn:
                     try:
                         await self._broadcast_fn({
@@ -232,20 +262,23 @@ class DualSessionMatrix:
           - Session health monitored; matrix aborts on 3 consecutive 401/403
         """
         if not self._configured:
-            log("[AuthMatrix] Not configured — skipping dual-session testing")
+            await log("[AuthMatrix] Not configured — skipping dual-session testing")
             return []
 
         sensitive = [u for u in urls if SENSITIVE_PATH_PATTERNS.search(urlparse(u).path)]
         if not sensitive:
-            log("[AuthMatrix] No sensitive endpoints in URL list — skipping")
+            await log("[AuthMatrix] No sensitive endpoints in URL list — skipping")
             return []
 
         method_note = "GET/HEAD only" if not self._allow_mutations else "all methods"
-        log("[AuthMatrix] ━━━ Dual-Session Authorization Matrix ({}) ━━━".format(method_note))
-        log("[AuthMatrix] Testing {} sensitive endpoints".format(len(sensitive)))
+        await log("[AuthMatrix] ━━━ Dual-Session Authorization Matrix ({}) ━━━".format(method_note))
+        await log("[AuthMatrix] Testing {} sensitive endpoints".format(len(sensitive)))
 
-        hdrs_a = _make_session_headers(self._session_a_cookie, self._session_a_token)
-        hdrs_b = _make_session_headers(self._session_b_cookie, self._session_b_token)
+        if self._session_a.expired or self._session_b.expired:
+            await log("[AuthMatrix] One or both configured sessions are expired — skipping")
+            return []
+
+        hdrs_a, hdrs_b = self.session_headers()
 
         sem     = asyncio.Semaphore(6)
         results = []
@@ -258,7 +291,7 @@ class DualSessionMatrix:
                 # Check if any session died — abort immediately
                 if self._session_a_dead or self._session_b_dead:
                     dead = "A" if self._session_a_dead else "B"
-                    log("[AuthMatrix] Session {} dead — aborting matrix".format(dead))
+                    await log("[AuthMatrix] Session {} dead — aborting matrix".format(dead))
                     aborted = True
                     break
 
@@ -275,7 +308,7 @@ class DualSessionMatrix:
 
         self.findings = results
         status = "ABORTED — session expired" if aborted else "complete"
-        log("[AuthMatrix] {} | Tested: {} | Violations: {}".format(
+        await log("[AuthMatrix] {} | Tested: {} | Violations: {}".format(
             status, self._tested, self._violations))
         return results
 
@@ -297,7 +330,20 @@ class DualSessionMatrix:
         async with sem:
             try:
                 # Step 1: Session B baseline (victim / higher-privilege)
+                decision_b = outbound_guard.authorize(
+                    scope_policy, url, method="GET", action="authenticated"
+                )
+                if not decision_b.allowed:
+                    return []
+                started_b = time.perf_counter()
                 r_b = await client.get(url, headers=hdrs_b, timeout=TIMEOUT)
+                outbound_guard.record_result(
+                    url,
+                    method="GET",
+                    action="authenticated",
+                    status_code=r_b.status_code,
+                    elapsed_ms=(time.perf_counter() - started_b) * 1000,
+                )
                 if r_b.status_code not in SUCCESS_CODES:
                     return []
 
@@ -311,7 +357,20 @@ class DualSessionMatrix:
                     return None
 
                 # Step 2: Session A request
+                decision_a = outbound_guard.authorize(
+                    scope_policy, url, method="GET", action="authenticated"
+                )
+                if not decision_a.allowed:
+                    return []
+                started_a = time.perf_counter()
                 r_a = await client.get(url, headers=hdrs_a, timeout=TIMEOUT)
+                outbound_guard.record_result(
+                    url,
+                    method="GET",
+                    action="authenticated",
+                    status_code=r_a.status_code,
+                    elapsed_ms=(time.perf_counter() - started_a) * 1000,
+                )
 
                 a_ok = await self._record_session_response(
                     "A", r_a.status_code, r_b.status_code, log, client)
@@ -491,6 +550,9 @@ class DualSessionMatrix:
             "tested":     self._tested,
             "violations": self._violations,
             "configured": self._configured,
+            "mutations_allowed": self._allow_mutations,
+            "session_a": self._session_a.public_status(),
+            "session_b": self._session_b.public_status(),
         }
 
 

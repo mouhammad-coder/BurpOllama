@@ -777,7 +777,11 @@
         session_a_cookie: document.getElementById('session-a-cookie')?.value || '',
         session_a_token: document.getElementById('session-a-token')?.value || '',
         session_b_cookie: document.getElementById('session-b-cookie')?.value || '',
-        session_b_token: document.getElementById('session-b-token')?.value || ''
+        session_b_token: document.getElementById('session-b-token')?.value || '',
+        session_a_role: document.getElementById('session-a-role')?.value || 'Attacker / lower privilege',
+        session_b_role: document.getElementById('session-b-role')?.value || 'Victim / higher privilege',
+        health_check_endpoint: document.getElementById('session-health-url')?.value || '',
+        allow_mutations: document.getElementById('session-mutations')?.checked || false
       };
       const r = await fetch(endpoint('/config/sessions'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       alert(r.ok ? 'Sessions saved.' : await r.text());
@@ -1836,6 +1840,11 @@
       const confirmed = b.confirmed_bounty_findings || [];
       const candidates = b.candidate_bounty_findings || [];
       const endpoints = b.high_value_endpoints || [];
+      const sessionA = sessions.session_a || {};
+      const sessionB = sessions.session_b || {};
+      const sessionLabel = session => session.configured
+        ? `${session.role || 'Configured'} (${session.session_id || 'redacted'})`
+        : 'Not configured';
       const el = document.getElementById('route-bounty');
       if(!scan){ el.innerHTML = '<div class="empty">Select or start a scan to use Bounty Mode.</div>'; return; }
       el.innerHTML = `
@@ -1849,7 +1858,7 @@
         <div class="grid cols-4">
           ${metric('Selected scan', scan.status || '-', scan.target || scan.id)}
           ${metric('Scope mode', scope.scan_mode || 'conservative', scope.emergency_stop ? 'Emergency stop ON' : 'Policy active')}
-          ${metric('Sessions', sessions.configured ? 'A/B ready' : 'Not ready', `A ${sessions.session_a || '-'} / B ${sessions.session_b || '-'}`)}
+          ${metric('Sessions', sessions.configured ? 'A/B ready' : 'Not ready', `A ${sessionLabel(sessionA)} / B ${sessionLabel(sessionB)}`)}
           ${metric('Bounty findings', confirmed.length + candidates.length, `${confirmed.length} confirmed / ${candidates.length} candidates`)}
         </div>
         <div style="height:14px"></div>
@@ -1860,7 +1869,7 @@
           </div>
           <div class="card pad">
             <div class="card-head"><div><div class="card-title">Session A / Session B Setup</div><div class="card-sub">Required for IDOR, BOLA, GraphQL auth, and broken access control proof.</div></div><button class="btn" onclick="go('/ui/settings')">Configure</button></div>
-            <div class="kv"><div>Configured</div><div>${esc(sessions.configured ? 'yes' : 'no')}</div><div>Session A</div><div>${esc(sessions.session_a || 'unknown')}</div><div>Session B</div><div>${esc(sessions.session_b || 'unknown')}</div></div>
+            <div class="kv"><div>Configured</div><div>${esc(sessions.configured ? 'yes' : 'no')}</div><div>Session A</div><div>${esc(sessionLabel(sessionA))}</div><div>Session B</div><div>${esc(sessionLabel(sessionB))}</div><div>Mutations</div><div>${esc(sessions.stats?.mutations_allowed ? 'explicitly enabled' : 'disabled')}</div></div>
           </div>
         </div>
         <div style="height:14px"></div>
@@ -1989,7 +1998,7 @@
         <div class="toolbar"><button class="btn primary" onclick="saveWebSettings()">Save Settings</button><button class="btn" onclick="testOllama()">Test Ollama</button><button class="btn" onclick="testAIProviders()">Test AI Providers</button><button class="btn blue" onclick="pullMissingModels()">Pull Missing Models</button></div>
         ${providerRows.length ? `<div class="card pad"><div class="card-title">Provider test results</div><div style="height:12px"></div><div class="list">${providerRows.map(item => `<div class="row-card"><div><strong>${esc(item.provider)}</strong><div class="small muted">${esc(item.detail)}</div></div><span class="pill"><span class="dot ${item.ok ? 'ok' : 'warn'}"></span>${item.ok ? 'Working' : 'Needs attention'}</span></div>`).join('')}</div></div><div style="height:14px"></div>` : ''}
         <div class="grid cols-2">
-          <div class="card pad" style="grid-column:1/-1"><div class="card-title">Dual Session Authorization</div><div style="height:12px"></div><div class="grid cols-2"><textarea class="textarea" id="session-a-cookie" placeholder="Session A cookie"></textarea><textarea class="textarea" id="session-b-cookie" placeholder="Session B cookie"></textarea><input class="input" id="session-a-token" placeholder="Session A bearer token"><input class="input" id="session-b-token" placeholder="Session B bearer token"></div><div style="height:12px"></div><button class="btn primary" onclick="saveSessions()">Save sessions</button></div>
+          <div class="card pad" style="grid-column:1/-1"><div class="card-title">Dual Session Authorization</div><div class="muted small">Credentials remain in memory and are represented elsewhere only by redacted session fingerprints.</div><div style="height:12px"></div><div class="grid cols-2"><input class="input" id="session-a-role" value="Attacker / lower privilege" placeholder="Session A role"><input class="input" id="session-b-role" value="Victim / higher privilege" placeholder="Session B role"><textarea class="textarea" id="session-a-cookie" placeholder="Session A cookie"></textarea><textarea class="textarea" id="session-b-cookie" placeholder="Session B cookie"></textarea><input class="input" id="session-a-token" placeholder="Session A bearer token"><input class="input" id="session-b-token" placeholder="Session B bearer token"><input class="input" id="session-health-url" placeholder="Optional known-good health URL"><label class="authorization-box"><input type="checkbox" id="session-mutations"><span><strong>Allow authenticated mutations</strong><br><span class="muted small">Required for state-changing authorization tests. Leave off for GET/HEAD-only testing.</span></span></label></div><div style="height:12px"></div><button class="btn primary" onclick="saveSessions()">Save sessions</button></div>
           <div class="card pad" style="grid-column:1/-1"><div class="card-title">Advanced</div><div class="card-sub">These pages are still available, but hidden from the main sidebar.</div><div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div></div>
         </div>`;
     }

@@ -232,6 +232,14 @@ class SessionConfig(BaseModel):
     session_a_token:  Optional[str] = ""
     session_b_cookie: Optional[str] = ""
     session_b_token:  Optional[str] = ""
+    session_a_role: Optional[str] = "Attacker / lower privilege"
+    session_b_role: Optional[str] = "Victim / higher privilege"
+    session_a_headers: Optional[dict[str, str]] = None
+    session_b_headers: Optional[dict[str, str]] = None
+    session_a_expires_at: Optional[int] = None
+    session_b_expires_at: Optional[int] = None
+    health_check_endpoint: Optional[str] = ""
+    allow_mutations: bool = False
 
 class TargetValidationRequest(BaseModel):
     target: str
@@ -2226,17 +2234,30 @@ async def test_ai_providers():
 @app.post("/config/sessions")
 async def set_sessions(cfg: SessionConfig):
     """Configure dual-session authorization matrix."""
-    auth_matrix.configure(
-        session_a_cookie = cfg.session_a_cookie or "",
-        session_a_token  = cfg.session_a_token  or "",
-        session_b_cookie = cfg.session_b_cookie or "",
-        session_b_token  = cfg.session_b_token  or "",
+    try:
+        auth_matrix.configure(
+            session_a_cookie=cfg.session_a_cookie or "",
+            session_a_token=cfg.session_a_token or "",
+            session_b_cookie=cfg.session_b_cookie or "",
+            session_b_token=cfg.session_b_token or "",
+            session_a_role=cfg.session_a_role or "Attacker / lower privilege",
+            session_b_role=cfg.session_b_role or "Victim / higher privilege",
+            session_a_headers=cfg.session_a_headers,
+            session_b_headers=cfg.session_b_headers,
+            session_a_expires_at=cfg.session_a_expires_at,
+            session_b_expires_at=cfg.session_b_expires_at,
+            health_check_endpoint=cfg.health_check_endpoint or "",
+            allow_mutations=cfg.allow_mutations,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    event_store.audit(
+        "local-user",
+        "sessions.configure",
+        "dual-session-matrix",
+        auth_matrix.stats,
     )
-    return {
-        "configured":  auth_matrix.configured,
-        "session_a":   "set" if (cfg.session_a_cookie or cfg.session_a_token) else "empty",
-        "session_b":   "set" if (cfg.session_b_cookie or cfg.session_b_token) else "empty",
-    }
+    return auth_matrix.stats
 
 @app.get("/config/sessions")
 async def get_sessions():
