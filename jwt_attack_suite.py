@@ -97,7 +97,12 @@ async def _request(
         await throttle.record_request(url)
         try:
             response = await client.get(url, headers=headers, follow_redirects=False)
-            if throttle.is_block_response(response.status_code, response.text[:500]):
+            if throttle.is_block_response(
+                response.status_code,
+                response.text[:16000],
+                dict(response.headers),
+                url,
+            ):
                 await throttle.record_block(
                     response.status_code,
                     response.text[:200],

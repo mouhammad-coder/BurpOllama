@@ -122,7 +122,9 @@ async def tget(client, url, **kwargs):
                     error="HTTP client returned no response",
                 )
                 return None
-            if throttle.is_block_response(r.status_code, r.text[:500]):
+            if throttle.is_block_response(
+                r.status_code, r.text[:16000], dict(r.headers), url
+            ):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             outbound_guard.record_result(
                 url, method="GET", action="active",
@@ -175,7 +177,9 @@ async def tpost(client, url, **kwargs):
                     error="HTTP client returned no response",
                 )
                 return None
-            if throttle.is_block_response(r.status_code, r.text[:500]):
+            if throttle.is_block_response(
+                r.status_code, r.text[:16000], dict(r.headers), url
+            ):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
             outbound_guard.record_result(
                 url, method="POST", action="active",
@@ -2263,7 +2267,12 @@ async def _mass_assignment_request(client, method, url, headers, **kwargs):
                     error="HTTP client returned no response",
                 )
                 return None
-            if throttle.is_block_response(response.status_code, response.text[:500]):
+            if throttle.is_block_response(
+                response.status_code,
+                response.text[:16000],
+                dict(response.headers),
+                url,
+            ):
                 await throttle.record_block(
                     response.status_code, response.text[:200], url,
                     dict(response.headers),
@@ -2752,7 +2761,10 @@ async def _authenticated_request(client, method, url, **kwargs):
                 )
                 return None
             if throttle.is_block_response(
-                response.status_code, response.text[:500]
+                response.status_code,
+                response.text[:16000],
+                dict(response.headers),
+                url,
             ):
                 await throttle.record_block(
                     response.status_code,

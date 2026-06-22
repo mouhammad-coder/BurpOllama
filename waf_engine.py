@@ -13,6 +13,11 @@ from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 from urllib.parse import urlparse
 from scope_policy import scope_policy
+from waf_response_intelligence import (
+    ResponseBaseline,
+    ResponseFingerprint,
+    classify_response,
+)
 
 # ── WAF signature database ────────────────────────────────────────────────────
 
@@ -109,7 +114,7 @@ async def fingerprint_waf(base_url: str, log: Callable) -> dict:
     """
     ok, reason = scope_policy.validate_target(base_url, action="scan")
     if not ok:
-        log("[WAF] Skipped by ScopePolicy: {}".format(reason))
+        await log("[WAF] Skipped by ScopePolicy: {}".format(reason))
         return {"detected": False, "vendor": "ScopePolicy", "confidence": 0,
                 "strategy": "passive_only", "blocked": True}
     result = {
@@ -121,7 +126,7 @@ async def fingerprint_waf(base_url: str, log: Callable) -> dict:
         "confidence":   0,
     }
 
-    log("[WAF] Fingerprinting WAF on {}".format(base_url))
+    await log("[WAF] Fingerprinting WAF on {}".format(base_url))
 
     # First probe: completely non-existent endpoint (establishes 404 baseline)
     base = base_url.rstrip("/")
@@ -154,15 +159,15 @@ async def fingerprint_waf(base_url: str, log: Callable) -> dict:
                             "confidence":   confidence,
                             "strategy":     _pick_strategy(vendor),
                         })
-                        log("[WAF] ⚠ Detected: {} (confidence {}%) — using '{}' strategy".format(
+                        await log("[WAF] ⚠ Detected: {} (confidence {}%) — using '{}' strategy".format(
                             vendor, confidence, result["strategy"]
                         ))
                         return result
 
     except Exception as e:
-        log("[WAF] Probe error: {}".format(e))
+        await log("[WAF] Probe error: {}".format(e))
 
-    log("[WAF] No WAF detected — using normal strategy")
+    await log("[WAF] No WAF detected — using normal strategy")
     return result
 
 
@@ -267,6 +272,8 @@ class ThrottleManager:
         self._cooldown_until     = 0.0
         self._cooldown_reason    = ""
         self._smart_mode         = True
+        self._response_baselines: dict[str, ResponseBaseline] = {}
+        self._last_classification: dict[str, dict] = {}
 
     def set_broadcast(self, fn):
         self._broadcast_fn = fn
@@ -330,7 +337,9 @@ class ThrottleManager:
         recent = [x for x in self._global_window if now - x[0] <= 60]
         recent_blocks = [x for x in recent if x[2]]
         host_stats = {}
-        for host, data in self._host_counters.items():
+        known_hosts = set(self._host_counters) | set(self._last_classification)
+        for host in known_hosts:
+            data = self._host_counters[host]
             window = list(data["window"])
             recent_host = [x for x in window if now - x[0] <= 60]
             recent_host_blocks = [x for x in recent_host if x[1]]
@@ -341,6 +350,7 @@ class ThrottleManager:
                 "block_rate": round((len(recent_host_blocks) / max(1, len(recent_host))) * 100, 1),
                 "last_block_reason": data["last_block_reason"],
                 "cooldown_remaining_secs": max(0, round(data["cooldown_until"] - now, 1)),
+                "last_response_classification": self._last_classification.get(host, {}),
             }
         return {
             "smart_mode": self._smart_mode,
@@ -392,7 +402,16 @@ class ThrottleManager:
             self._last_block          = time.monotonic()
             self._backoff_mult        = min(self._max_mult, self._backoff_mult * 2)
             self._paused              = True
-            reason = self._reason_for_block(status, body, headers)
+            classification = self._last_classification.get(host, {})
+            if classification.get("is_block"):
+                reason = "{} (score {}): {}".format(
+                    str(classification.get("classification", "WAF block")).replace("_", " "),
+                    classification.get("score", 0),
+                    ", ".join(classification.get("reasons", [])[:3])
+                    or self._reason_for_block(status, body, headers),
+                )
+            else:
+                reason = self._reason_for_block(status, body, headers)
             self._last_block_reason = reason
             host_data["blocks"] += 1
             host_data["last_block_reason"] = reason
@@ -475,15 +494,57 @@ class ThrottleManager:
                 self._consecutive_blocks = 0   # reset on recovery
                 self._cooldown_reason    = ""
 
-    def is_block_response(self, status: int, body: str = "") -> bool:
-        """Determine if a response indicates a WAF block."""
-        if status == 429:
-            return True
-        if status == 403:
-            return True
-        if status in (503, 521, 522, 524):
-            return True
-        return False
+    def calibrate_responses(
+        self,
+        url: str,
+        *,
+        normal_status: int,
+        normal_body: str,
+        normal_headers: dict | None = None,
+        block_status: int | None = None,
+        block_body: str = "",
+        block_headers: dict | None = None,
+    ) -> None:
+        host = self._host(url)
+        self._response_baselines[host] = ResponseBaseline(
+            normal=ResponseFingerprint.build(
+                normal_status, normal_body[:16000], normal_headers
+            ),
+            blocked=(
+                ResponseFingerprint.build(
+                    int(block_status), block_body[:16000], block_headers
+                )
+                if block_status is not None
+                else None
+            ),
+        )
+
+    def classify_response(
+        self,
+        status: int,
+        body: str = "",
+        headers: dict | None = None,
+        url: str = "",
+    ) -> dict:
+        host = self._host(url)
+        result = classify_response(
+            ResponseFingerprint.build(status, body, headers),
+            self._response_baselines.get(host),
+        )
+        self._last_classification[host] = result
+        return result
+
+    def is_block_response(
+        self,
+        status: int,
+        body: str = "",
+        headers: dict | None = None,
+        url: str = "",
+    ) -> bool:
+        """Classify WAF blocks without treating every application 403 as one."""
+        return bool(
+            self.classify_response(status, body, headers, url).get("is_block")
+        )
 
     async def record_network_error(self, url: str = ""):
         async with self._lock:
@@ -613,7 +674,7 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
     """
     ok, reason = scope_policy.validate_target(base_url, action="scan")
     if not ok:
-        log("[WAF] Skipped by ScopePolicy: {}".format(reason))
+        await log("[WAF] Skipped by ScopePolicy: {}".format(reason))
         return {"detected": False, "vendor": "ScopePolicy", "confidence": 0,
                 "strategy": "passive_only", "blocked": True}
     result = {
@@ -627,7 +688,7 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
         "stage":              0,       # which stage confirmed the WAF
     }
 
-    log("[WAF] v3.3 fingerprinting — {}: benign probes first".format(base_url))
+    await log("[WAF] v3.3 fingerprinting — {}: benign probes first".format(base_url))
     base = base_url.rstrip("/")
 
     try:
@@ -642,6 +703,23 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
             )
             clean_status = r_baseline.status_code
             clean_body   = r_baseline.text[:300]
+            throttle.calibrate_responses(
+                base,
+                normal_status=r_baseline.status_code,
+                normal_body=r_baseline.text,
+                normal_headers=dict(r_baseline.headers),
+            )
+
+            def calibrate_block(response: httpx.Response) -> None:
+                throttle.calibrate_responses(
+                    base,
+                    normal_status=r_baseline.status_code,
+                    normal_body=r_baseline.text,
+                    normal_headers=dict(r_baseline.headers),
+                    block_status=response.status_code,
+                    block_body=response.text,
+                    block_headers=dict(response.headers),
+                )
 
             # ── Stage 1: Benign anomaly probes ────────────────────────────────
             for probe in BENIGN_ANOMALY_PROBES:
@@ -666,8 +744,9 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
                             "strategy":   _pick_strategy(vendor),
                             "block_body": r.text[:200],
                         })
-                        log("[WAF] Stage 1: Challenge page detected ({}) — {}".format(
+                        await log("[WAF] Stage 1: Challenge page detected ({}) — {}".format(
                             probe["method"], result["vendor"]))
+                        calibrate_block(r)
                         return result
 
                     # Response differs from clean baseline → WAF intercepted
@@ -683,15 +762,16 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
                                 "strategy":     _pick_strategy(vendor),
                                 "block_body":   r.text[:200],
                             })
-                            log("[WAF] Stage 1: {} detected ({}% conf, method={})".format(
+                            await log("[WAF] Stage 1: {} detected ({}% conf, method={})".format(
                                 vendor, conf, probe["method"]))
+                            calibrate_block(r)
                             return result
 
                 except httpx.RequestError:
                     pass
 
             # ── Stage 2: Malicious signature probes (only if Stage 1 missed) ─
-            log("[WAF] Stage 1 inconclusive — running Stage 2 signature probes")
+            await log("[WAF] Stage 1 inconclusive — running Stage 2 signature probes")
             for probe_path in WAF_PROBE_PAYLOADS:
                 try:
                     r = await client.get(base + probe_path, headers=HEADERS)
@@ -709,7 +789,8 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
                             "confidence": max(conf, 65),
                             "strategy":   _pick_strategy(vendor),
                         })
-                        log("[WAF] Stage 2: Challenge page on probe {}".format(probe_path[:30]))
+                        await log("[WAF] Stage 2: Challenge page on probe {}".format(probe_path[:30]))
+                        calibrate_block(r)
                         return result
 
                     if r.status_code != clean_status or r.text[:200] != clean_body[:200]:
@@ -724,52 +805,16 @@ async def fingerprint_waf_v2(base_url: str, log: Callable) -> dict:
                                 "strategy":     _pick_strategy(vendor),
                                 "block_body":   r.text[:300],
                             })
-                            log("[WAF] Stage 2: {} ({}%)".format(vendor, conf))
+                            await log("[WAF] Stage 2: {} ({}%)".format(vendor, conf))
+                            calibrate_block(r)
                             return result
 
                 except httpx.RequestError:
                     pass
 
     except Exception as e:
-        log("[WAF] Fingerprint error: {}".format(e))
+        await log("[WAF] Fingerprint error: {}".format(e))
 
     if not result["detected"]:
-        log("[WAF] No WAF detected — normal strategy")
+        await log("[WAF] No WAF detected — normal strategy")
     return result
-
-
-# ── Patch ThrottleManager to detect challenge pages ───────────────────────────
-# Monkey-patch the existing is_block_response to also flag challenge pages.
-_orig_is_block = ThrottleManager.is_block_response
-
-
-def _patched_is_block_response(self, status: int, body: str = "") -> bool:
-    """v3.3: Also flag JS challenge pages returned as HTTP 200."""
-    if _orig_is_block(self, status, body):
-        return True
-    # 200 responses with challenge indicators are effectively blocks
-    body_lower = body.lower()
-    challenge_clues = ["cf_chl_opt", "jschl_vc", "challenge-form",
-                       "_abck=", "recaptcha/api.js", "hcaptcha.com"]
-    if status == 200 and any(c in body_lower for c in challenge_clues):
-        return True
-    return False
-
-
-    async def record_network_error(self, url: str = ""):
-        """
-        Fix 1 (v3.4): Network-level failures (timeout, connection reset, DNS error)
-        use standard exponential retry WITHOUT advancing _consecutive_blocks.
-        Prevents local internet instability from falsely triggering HOST_DEAD_WAF.
-        """
-        async with self._lock:
-            import random as _rand
-            self._total_blocks += 1
-            wait = min(8.0, self._backoff * self._backoff_mult) + _rand.uniform(0, 0.5)
-            print("[Throttle] NETWORK_ERROR (not WAF) — retry in {:.1f}s | url={}".format(
-                wait, url[:60]))
-            # DO NOT increment _consecutive_blocks — this is NOT a WAF signal
-            await asyncio.sleep(wait)
-
-
-ThrottleManager.is_block_response = _patched_is_block_response

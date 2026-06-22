@@ -53,7 +53,12 @@ async def _safe_get(client: httpx.AsyncClient, url: str) -> httpx.Response | Non
         await throttle.record_request(url)
         try:
             response = await client.get(url)
-            if throttle.is_block_response(response.status_code, response.text[:500]):
+            if throttle.is_block_response(
+                response.status_code,
+                response.text[:16000],
+                dict(response.headers),
+                url,
+            ):
                 await throttle.record_block(
                     response.status_code,
                     response.text[:200],
