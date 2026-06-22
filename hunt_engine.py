@@ -247,27 +247,108 @@ async def hunt_security_headers(client, url):
 # ══════════════════════════════════════════════════════════════════════════════
 async def hunt_cors(client, url):
     results = []
-    for origin in ["https://evil.com", "null", "https://evil.{}".format(urlparse(url).netloc)]:
-        r = await tget(client, url, headers={**BASE_HEADERS, "Origin": origin})
-        if not r: continue
+    parsed = urlparse(url)
+    target_origin = "{}://{}".format(parsed.scheme, parsed.netloc)
+    origins = list(dict.fromkeys([
+        "https://evil.example",
+        "null",
+        "{}.evil.example".format(target_origin),
+        "https://evil-{}".format(parsed.netloc),
+        "https://{}".format(parsed.netloc.replace(".", "X", 1)),
+        "https://{}".format(parsed.netloc.replace(".", "-", 1)),
+        "http://{}".format(parsed.netloc),
+    ]))
+
+    async def probe(origin):
+        headers = {**BASE_HEADERS, "Origin": origin}
+        response = await tget(client, url, headers=headers)
+        if response is None:
+            return None, "GET"
+        if response.headers.get("access-control-allow-origin"):
+            return response, "GET"
+        body = (response.text or "")[:10000]
+        if re.search(
+            r"(?is)\.open\s*\(\s*['\"]POST['\"]|"
+            r"\bfetch\s*\([^)]*\{[^}]*method\s*:\s*['\"]POST['\"]",
+            body,
+        ):
+            post_response = await tpost(client, url, headers=headers, content=b"")
+            if post_response is not None:
+                return post_response, "POST"
+        return response, "GET"
+
+    for origin in origins:
+        r, method = await probe(origin)
+        if not r:
+            continue
         acao = r.headers.get("access-control-allow-origin","")
         acac = r.headers.get("access-control-allow-credentials","").lower()
         if acao == "*":
-            results.append(finding("CORS Wildcard","HIGH",95,url,"GET",
+            results.append(finding("CORS Wildcard","HIGH",95,url,method,
                 "Access-Control-Allow-Origin: * allows any origin.",
-                "ACAO: *",
+                "{} response | ACAO: * | ACAC: {}".format(method, acac or "absent"),
                 "Restrict CORS to specific trusted origins.",
                 "CWE-942",7.5)); break
-        if origin in acao or acao == origin:
-            sev = "CRITICAL" if acac == "true" else "HIGH"
-            cvss = 9.1 if acac == "true" else 7.1
+        if acao == origin:
+            body_sample = (r.text or "")[:20000].lower()
+            sensitive_response = bool(re.search(
+                r"(?i)(email|account|profile|user(?:name|_id)?|token|secret|"
+                r"balance|payment|invoice|address|phone|admin|private|session)",
+                body_sample,
+            ))
+            credentialed = acac == "true"
+            impact_confirmed = credentialed and sensitive_response
+            sev = "CRITICAL" if impact_confirmed else (
+                "MEDIUM" if credentialed else "LOW"
+            )
+            cvss = 9.1 if impact_confirmed else (6.5 if credentialed else 4.3)
             results.append(finding(
-                "CORS Origin Reflection" + (" + Credentials" if acac=="true" else ""),
-                sev, 92, url, "GET",
-                "Server reflects attacker Origin{}.".format(" with credentials" if acac=="true" else ""),
-                "ACAO: {} | ACAC: {}".format(acao, acac),
+                "CORS Origin Reflection" + (" + Credentials" if credentialed else ""),
+                sev, 96 if impact_confirmed else 84, url, method,
+                "Server reflects attacker Origin{}.".format(
+                    " with credentials" if credentialed else ""
+                ),
+                "{} response | Origin: {} | ACAO: {} | ACAC: {}".format(
+                    method, origin, acao, acac or "absent"
+                ),
                 "Validate Origin against strict server-side whitelist.",
-                "CWE-942", cvss)); break
+                "CWE-942", cvss,
+                {
+                    "exploitability_status": (
+                        "confirmed" if impact_confirmed
+                        else "needs_manual_validation"
+                    ),
+                    "evidence_strength": (
+                        "strong" if impact_confirmed else "moderate"
+                    ),
+                    "false_positive_risk": (
+                        "low" if impact_confirmed else "medium"
+                    ),
+                    "business_impact": (
+                        "An attacker-controlled origin can read sensitive cross-origin "
+                        "data using victim credentials."
+                        if impact_confirmed
+                        else (
+                            "Cross-origin access is technically permitted, but this "
+                            "response did not prove exposure of sensitive user data."
+                        )
+                    ),
+                    "technical_impact": (
+                        "The server authorizes an attacker-controlled Origin"
+                        + (" and permits credentials." if credentialed else ".")
+                    ),
+                    "reproduction_steps": [
+                        "Send an authorized {} request with Origin: {}.".format(
+                            method, origin
+                        ),
+                        "Observe Access-Control-Allow-Origin reflecting the attacker origin.",
+                        "Confirm Access-Control-Allow-Credentials is {}.".format(
+                            acac or "absent"
+                        ),
+                    ],
+                    "redaction_status": "redacted",
+                },
+            )); break
     return results
 
 
@@ -2759,16 +2840,35 @@ DOM_XSS_SOURCES = (
 
 async def hunt_dom_xss(client, discovered_urls):
     findings = []
-    js_urls = [
-        url for url in discovered_urls
-        if urlparse(url).path.lower().endswith(".js")
+    targets = [
+        url for url in list(dict.fromkeys(discovered_urls or []))
+        if urlparse(url).scheme in {"http", "https"}
         and ".min.js" not in urlparse(url).path.lower()
-    ][:40]
-    for js_url in js_urls:
-        response = await tget(client, js_url, follow_redirects=False)
+    ][:80]
+    seen_flows = set()
+    for source_url in targets:
+        response = await tget(client, source_url, follow_redirects=False)
         if response is None or response.status_code != 200:
             continue
-        lines = (response.text or "")[:3_000_000].splitlines()
+        content_type = response.headers.get("content-type", "").lower()
+        text = (response.text or "")[:3_000_000]
+        is_javascript = (
+            urlparse(source_url).path.lower().endswith(".js")
+            or "javascript" in content_type
+        )
+        if is_javascript:
+            analyzable = text
+        elif "html" in content_type or "<script" in text.lower():
+            scripts = re.findall(
+                r"(?is)<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>",
+                text,
+            )
+            analyzable = "\n\n".join(scripts)
+        else:
+            continue
+        if not analyzable.strip():
+            continue
+        lines = analyzable.splitlines()
         source_hits = []
         for line_number, line in enumerate(lines, start=1):
             for source_name, pattern in DOM_XSS_SOURCES:
@@ -2787,6 +2887,10 @@ async def hunt_dom_xss(client, discovered_urls):
                 source_line, source_name = min(
                     nearby, key=lambda hit: abs(hit[0] - sink_line)
                 )
+                flow_key = (source_url, source_name, sink_name)
+                if flow_key in seen_flows:
+                    continue
+                seen_flows.add(flow_key)
                 start = max(1, min(source_line, sink_line) - 2)
                 end = min(len(lines), max(source_line, sink_line) + 2)
                 snippet = "\n".join(
@@ -2799,14 +2903,14 @@ async def hunt_dom_xss(client, discovered_urls):
                     "vuln_type": "dom_xss_candidate",
                     "severity": "HIGH",
                     "confidence": 76,
-                    "url": js_url,
+                    "url": source_url,
                     "method": "GET",
                     "description": (
                         "A browser-controlled source appears within ten lines of "
                         "a dangerous DOM sink."
                     ),
                     "evidence": snippet,
-                    "js_file": js_url,
+                    "js_file": source_url,
                     "line_number": sink_line,
                     "source_name": source_name,
                     "sink_name": sink_name,
@@ -4188,6 +4292,9 @@ async def hunt_default_credentials(client, discovered_urls, schema_endpoints):
 SESSION_COOKIE_RE = re.compile(
     r"(?i)(session|sessid|sid$|auth|token|jwt|connect\.sid|phpsessid|jsessionid)"
 )
+SENSITIVE_COOKIE_RE = re.compile(
+    r"(?i)(session|sessid|sid$|auth|token|jwt|secret|connect\.sid|phpsessid|jsessionid)"
+)
 PREDICTABLE_COOKIE_RE = re.compile(r"^(?:\d{6,}|1[6-9]\d{8,12}|20\d{8,12})$")
 SENSITIVE_HTML_RE = re.compile(
     r"(?is)(<input[^>]+type=[\"']?(?:password|email)|"
@@ -4239,10 +4346,67 @@ async def hunt_session_security(client, urls: list[str]) -> list[dict]:
             continue
         for header in _set_cookie_headers(response):
             name, value, attributes = _cookie_parts(header)
-            if not name or not SESSION_COOKIE_RE.search(name):
+            if not name:
                 continue
             lower_attributes = [attribute.lower() for attribute in attributes]
             evidence = _redacted_cookie_header(header)
+            if value and "httponly" in lower_attributes:
+                leak_location = ""
+                if value in (response.text or ""):
+                    leak_location = "response body"
+                else:
+                    for src in re.findall(
+                        r"(?is)<script\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)['\"]",
+                        (response.text or "")[:500000],
+                    )[:8]:
+                        resource_url = urljoin(url, src)
+                        if urlparse(resource_url).netloc != urlparse(url).netloc:
+                            continue
+                        resource = await tget(client, resource_url)
+                        if resource is not None and value in (resource.text or ""):
+                            leak_location = "same-origin script resource"
+                            break
+                if leak_location:
+                    sensitive = bool(SENSITIVE_COOKIE_RE.search(name))
+                    results.append(finding(
+                        "HttpOnly Cookie Value Exposed in Page Content",
+                        "HIGH" if sensitive else "MEDIUM",
+                        98,
+                        url,
+                        "GET",
+                        (
+                            "The exact value of an HttpOnly cookie is exposed in "
+                            "the {}, defeating the confidentiality benefit of HttpOnly."
+                        ).format(leak_location),
+                        "Set-Cookie: {} | Exact value reappears in {} [REDACTED]".format(
+                            evidence, leak_location
+                        ),
+                        (
+                            "Never render cookie or session values into HTML, JavaScript, "
+                            "JSON, URLs, or static resources."
+                        ),
+                        cwe="CWE-200",
+                        cvss=7.5 if sensitive else 6.5,
+                        extra={
+                            "exploitability_status": "confirmed",
+                            "evidence_strength": "strong",
+                            "false_positive_risk": "low",
+                            "business_impact": (
+                                "An attacker who can read page content may recover a "
+                                "supposedly HttpOnly secret and reuse it outside the browser."
+                            ),
+                            "reproduction_steps": [
+                                "Request the affected page in an authorized test session.",
+                                "Record the redacted HttpOnly cookie name and attributes.",
+                                "Confirm its exact value appears in the reported content location.",
+                            ],
+                            "leak_location": leak_location,
+                            "cookie_name": name,
+                            "redaction_status": "redacted",
+                        },
+                    ))
+            if not SESSION_COOKIE_RE.search(name):
+                continue
             observed.append((url, name, value, evidence))
             issues: list[tuple[str, str, str, str, str]] = []
             if "httponly" not in lower_attributes:
@@ -4344,7 +4508,7 @@ async def hunt_session_security(client, urls: list[str]) -> list[dict]:
 
 
 async def hunt_clickjacking(client, urls: list[str]) -> list[dict]:
-    """Class 37: sensitive HTML pages lacking both frame defenses."""
+    """Class 37: identify frameable pages and prioritize sensitive actions."""
     results: list[dict] = []
     for url in list(dict.fromkeys(urls or []))[:100]:
         try:
@@ -4361,28 +4525,55 @@ async def hunt_clickjacking(client, urls: list[str]) -> list[dict]:
         csp = response.headers.get("content-security-policy", "").lower()
         if xfo in {"DENY", "SAMEORIGIN"} or "frame-ancestors" in csp:
             continue
-        if not SENSITIVE_HTML_RE.search(body):
-            continue
+        sensitive = bool(SENSITIVE_HTML_RE.search(body))
+        invalid_xfo = bool(xfo and xfo not in {"DENY", "SAMEORIGIN"})
         poc = (
             '<iframe src="{}" width="800" height="600" '
             'style="opacity:0.1;position:absolute;top:0;left:0;z-index:999">'
             "</iframe>\n<p>Click here to win a prize</p>"
         ).format(html.escape(url, quote=True))
         results.append(finding(
-            "clickjacking_candidate", "MEDIUM", 80, url, "GET",
-            "A sensitive page can be framed because neither X-Frame-Options nor CSP frame-ancestors is present.",
-            "X-Frame-Options: missing\nCSP frame-ancestors: missing\nPoC:\n{}".format(poc),
+            (
+                "clickjacking_candidate"
+                if sensitive
+                else "frameable_page_candidate"
+            ),
+            "MEDIUM" if sensitive else "LOW",
+            82 if sensitive else 72,
+            url,
+            "GET",
+            (
+                "A sensitive page can be framed because no effective anti-framing "
+                "policy is present."
+                if sensitive
+                else "The page is frameable because no effective anti-framing policy is present."
+            ),
+            "X-Frame-Options: {}\nCSP frame-ancestors: missing\nPoC:\n{}".format(
+                xfo or "missing", poc
+            ),
             "Set Content-Security-Policy: frame-ancestors 'none' or a strict allowlist; retain X-Frame-Options for legacy clients.",
             cwe="CWE-1021",
             extra={
-                "exploitability_status": "probable",
-                "evidence_strength": "moderate",
-                "false_positive_risk": "low",
-                "business_impact": "An attacker may visually overlay a sensitive action and trick a user into clicking it.",
+                "exploitability_status": "probable" if sensitive else "candidate",
+                "evidence_strength": "moderate" if sensitive else "weak",
+                "false_positive_risk": "low" if sensitive else "medium",
+                "business_impact": (
+                    "An attacker may visually overlay a sensitive action and trick a user into clicking it."
+                    if sensitive
+                    else "No sensitive action was identified automatically; manual impact confirmation is required."
+                ),
+                "technical_impact": (
+                    "The page can be embedded by an attacker-controlled origin."
+                    + (" X-Frame-Options uses an unsupported value." if invalid_xfo else "")
+                ),
                 "reproduction_steps": [
                     "Save the generated iframe PoC locally.",
                     "Open it while authenticated with a controlled test account.",
-                    "Confirm whether the sensitive page renders inside the frame.",
+                    (
+                        "Confirm whether the sensitive page renders and exposes a meaningful action."
+                        if sensitive
+                        else "Confirm the page renders, then identify whether any meaningful user action is exposed."
+                    ),
                 ],
                 "poc": poc,
                 "redaction_status": "redacted",
@@ -5112,16 +5303,15 @@ async def _run_hunt_impl(
 
         # ── Class 26: DOM XSS ────────────────────────────────────────────────
         class_idx += 1
-        js_urls = [
-            url for url in all_urls
-            if urlparse(url).path.lower().endswith(".js")
-            and ".min.js" not in urlparse(url).path.lower()
-        ]
+        dom_targets = list(dict.fromkeys(
+            list(all_urls)
+            + list(js_urls or [])
+        ))
         allowed_class, class_reason = _activation_allowed(
             "DOM XSS"
         )
-        if not js_urls:
-            await log("[Hunt] Class 26 DOM XSS skipped: no non-minified JavaScript discovered")
+        if not dom_targets:
+            await log("[Hunt] Class 26 DOM XSS skipped: no HTML or JavaScript discovered")
         elif not allowed_class:
             await log("[Hunt] Class 26 DOM XSS skipped — {}".format(class_reason))
         elif not scope_policy.config.active_testing_enabled:
@@ -5134,7 +5324,7 @@ async def _run_hunt_impl(
             ))
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, "DOM XSS")
-            dom_findings = await hunt_dom_xss(client, js_urls)
+            dom_findings = await hunt_dom_xss(client, dom_targets)
             all_findings.extend(dom_findings)
             await log("[Hunt] DOM XSS: {} candidate(s)".format(
                 len(dom_findings)
