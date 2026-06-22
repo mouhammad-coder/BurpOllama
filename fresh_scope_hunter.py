@@ -264,7 +264,11 @@ def parse_scope_feed(platform: str, payload: Any, source_url: str = "") -> list[
     for program in programs:
         if not isinstance(program, dict):
             continue
-        status = _safe_text(program.get("status")).lower()
+        status = _safe_text(
+            program.get("status")
+            or program.get("submission_state")
+            or program.get("state")
+        ).lower()
         confidentiality = _safe_text(
             program.get("confidentiality_level")
             or program.get("visibility")
@@ -804,7 +808,24 @@ class FreshScopeHunter:
             fresh_records = fresh_records[: self.config.max_new_assets_per_run]
             scans_started = 0
             if self.config.auto_launch and scan_launcher:
-                for record in fresh_records:
+                retryable_statuses = {
+                    "queued",
+                    "awaiting_authorization",
+                    "blocked_by_scope",
+                    "needs_specific_host",
+                    "launch_failed",
+                }
+                launch_queue = []
+                queued_fingerprints = set()
+                for record in fresh_records + self.candidates(limit=1000):
+                    if record.get("status", "queued") not in retryable_statuses:
+                        continue
+                    fingerprint = record.get("fingerprint", "")
+                    if not fingerprint or fingerprint in queued_fingerprints:
+                        continue
+                    queued_fingerprints.add(fingerprint)
+                    launch_queue.append(record)
+                for record in launch_queue:
                     if scans_started >= self.config.max_scans_per_run:
                         break
                     authorization = self._authorization_for(record)

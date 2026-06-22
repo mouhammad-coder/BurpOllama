@@ -48,6 +48,27 @@ class FreshScopeHunterTests(unittest.TestCase):
             {"app.example.test", "*.api.example.test"},
         )
 
+    def test_parse_scope_feed_ignores_closed_programs(self):
+        records = parse_scope_feed(
+            "hackerone",
+            [
+                {
+                    "handle": "closed-program",
+                    "submission_state": "closed",
+                    "targets": {
+                        "in_scope": [
+                            {
+                                "asset_type": "URL",
+                                "asset_identifier": "closed.example.test",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "feed",
+        )
+        self.assertEqual(records, [])
+
     def test_asset_to_target_refuses_wildcard_inference(self):
         self.assertEqual(
             asset_to_target("app.example.test"),
@@ -246,6 +267,66 @@ class FreshScopeHunterTests(unittest.TestCase):
                         "https://api.example.test",
                         "https://app.example.test",
                     ],
+                )
+
+        asyncio.run(run())
+
+    def test_pending_candidate_launches_after_later_authorization(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                hunter = FreshScopeHunter(
+                    str(Path(directory) / "fresh.db"),
+                    str(Path(directory) / "fresh.json"),
+                )
+                hunter.update_config({"auto_launch": True}, persist=False)
+
+                async def fake_fetch(_client, platform, source_url):
+                    return [
+                        _record(
+                            "later.example.test",
+                            "{}|example-program|later".format(platform),
+                        )
+                    ], {
+                        "platform": platform,
+                        "records": 1,
+                        "baseline": False,
+                    }
+
+                launched = []
+
+                async def launcher(_record_value, target):
+                    launched.append(target)
+                    return "scan-later"
+
+                original_feeds = module.DEFAULT_FEEDS
+                module.DEFAULT_FEEDS = {
+                    "hackerone": "https://example.invalid/feed.json"
+                }
+                hunter._fetch_feed = fake_fetch
+                try:
+                    first = await hunter.check_now(launcher)
+                    self.assertEqual(first["new_assets"], 1)
+                    self.assertEqual(first["scans_started"], 0)
+                    self.assertEqual(
+                        hunter.candidates()[0]["status"],
+                        "awaiting_authorization",
+                    )
+
+                    hunter.authorize(
+                        "hackerone",
+                        "example-program",
+                        ["later.example.test"],
+                    )
+                    second = await hunter.check_now(launcher)
+                finally:
+                    module.DEFAULT_FEEDS = original_feeds
+
+                self.assertEqual(second["new_assets"], 0)
+                self.assertEqual(second["scans_started"], 1)
+                self.assertEqual(launched, ["https://later.example.test"])
+                self.assertEqual(
+                    hunter.candidates()[0]["status"],
+                    "scan_started",
                 )
 
         asyncio.run(run())
