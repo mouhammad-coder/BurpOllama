@@ -10,6 +10,7 @@ import httpx
 from scope_policy import scope_policy
 from utils import structural_json_diff
 from waf_engine import throttle
+from request_safety import execute_guarded_request
 
 
 TARGET_HINTS = ("user", "account", "order", "payment")
@@ -139,17 +140,20 @@ async def _post(
     body: Any,
     headers: dict,
 ) -> httpx.Response | None:
-    allowed, _reason = scope_policy.record_request(graphql_url, action="authenticated")
-    if not allowed or throttle.host_dead:
+    if throttle.host_dead:
         return None
     async with await throttle.gate():
         await throttle.record_request(graphql_url)
-        try:
-            response = await client.post(
-                graphql_url,
-                json=body,
-                headers={"Content-Type": "application/json", **(headers or {})},
-            )
+        response = await execute_guarded_request(
+            client,
+            scope_policy,
+            "POST",
+            graphql_url,
+            action="authenticated",
+            json=body,
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        if response is not None:
             if throttle.is_block_response(
                 response.status_code,
                 response.text[:16000],
@@ -163,9 +167,7 @@ async def _post(
                     dict(response.headers),
                 )
             return response
-        except httpx.HTTPError:
-            await throttle.record_network_error(graphql_url)
-            return None
+        return None
 
 
 def _finding(

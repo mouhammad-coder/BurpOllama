@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
+from request_safety import execute_guarded_request
 
 from finding_model import normalize_finding
 
@@ -60,17 +61,15 @@ def _response_data(response: httpx.Response | None) -> dict:
 
 
 async def _get(client: httpx.AsyncClient, policy, url: str) -> httpx.Response | None:
-    allowed, _reason = policy.record_request(url, action="active")
-    if not allowed:
-        return None
-    try:
-        return await client.get(
-            url,
-            follow_redirects=False,
-            timeout=TIMEOUT,
-        )
-    except httpx.HTTPError:
-        return None
+    return await execute_guarded_request(
+        client,
+        policy,
+        "GET",
+        url,
+        action="active",
+        follow_redirects=False,
+        timeout=TIMEOUT,
+    )
 
 
 def _version_candidates(url: str) -> list[str]:

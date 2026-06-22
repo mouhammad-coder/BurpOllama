@@ -19,6 +19,7 @@ import httpx
 
 from scope_policy import scope_policy
 from waf_engine import throttle
+from request_safety import execute_guarded_request
 
 
 OAUTH_HINTS = (
@@ -175,19 +176,21 @@ async def _request(
     url: str,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    allowed, _reason = scope_policy.record_request(url, action="active")
-    if not allowed or throttle.host_dead:
+    if throttle.host_dead:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
-        try:
-            response = await client.request(
-                method,
-                url,
-                follow_redirects=False,
-                timeout=httpx.Timeout(12.0),
-                **kwargs,
-            )
+        response = await execute_guarded_request(
+            client,
+            scope_policy,
+            method,
+            url,
+            action="active",
+            follow_redirects=False,
+            timeout=httpx.Timeout(12.0),
+            **kwargs,
+        )
+        if response is not None:
             if throttle.is_block_response(
                 response.status_code,
                 response.text[:16000],
@@ -201,9 +204,7 @@ async def _request(
                     dict(response.headers),
                 )
             return response
-        except httpx.HTTPError:
-            await throttle.record_network_error(url)
-            return None
+        return None
 
 
 def _query_url(url: str, params: dict[str, str]) -> str:

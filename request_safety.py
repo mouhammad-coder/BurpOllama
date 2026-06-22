@@ -274,3 +274,59 @@ class OutboundRequestGuard:
 
 
 outbound_guard = OutboundRequestGuard()
+
+
+async def execute_guarded_request(
+    client,
+    policy,
+    method: str,
+    url: str,
+    *,
+    action: str,
+    mutation: bool = False,
+    explicitly_approved: bool = False,
+    guard: OutboundRequestGuard | None = None,
+    **kwargs,
+):
+    """Execute one audited HTTP request, returning None on policy/network failure."""
+    active_guard = guard or outbound_guard
+    normalized = str(method or "GET").upper()
+    decision = active_guard.authorize(
+        policy,
+        url,
+        method=normalized,
+        action=action,
+        mutation=mutation,
+        explicitly_approved=explicitly_approved,
+    )
+    if not decision.allowed:
+        return None
+    started = time.perf_counter()
+    try:
+        response = await client.request(normalized, url, **kwargs)
+    except Exception as exc:
+        active_guard.record_result(
+            url,
+            method=normalized,
+            action=action,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            error=type(exc).__name__,
+        )
+        return None
+    if response is None:
+        active_guard.record_result(
+            url,
+            method=normalized,
+            action=action,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            error="HTTP client returned no response",
+        )
+        return None
+    active_guard.record_result(
+        url,
+        method=normalized,
+        action=action,
+        status_code=getattr(response, "status_code", None),
+        elapsed_ms=(time.perf_counter() - started) * 1000,
+    )
+    return response

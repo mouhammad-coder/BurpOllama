@@ -12,6 +12,7 @@ import httpx
 
 from scope_policy import scope_policy
 from waf_engine import throttle
+from request_safety import execute_guarded_request
 
 
 COMMON_JWT_SECRETS = [
@@ -90,13 +91,20 @@ async def _request(
     url: str,
     headers: dict,
 ) -> httpx.Response | None:
-    allowed, _reason = scope_policy.record_request(url, action="authenticated")
-    if not allowed or throttle.host_dead:
+    if throttle.host_dead:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
-        try:
-            response = await client.get(url, headers=headers, follow_redirects=False)
+        response = await execute_guarded_request(
+            client,
+            scope_policy,
+            "GET",
+            url,
+            action="authenticated",
+            headers=headers,
+            follow_redirects=False,
+        )
+        if response is not None:
             if throttle.is_block_response(
                 response.status_code,
                 response.text[:16000],
@@ -110,9 +118,7 @@ async def _request(
                     dict(response.headers),
                 )
             return response
-        except httpx.HTTPError:
-            await throttle.record_network_error(url)
-            return None
+        return None
 
 
 async def _accepted(client: httpx.AsyncClient, target_url: str, token: str) -> bool:

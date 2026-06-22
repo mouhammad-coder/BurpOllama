@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import httpx
 
 from finding_model import normalize_finding
+from request_safety import execute_guarded_request
 
 
 PROBE_TIMEOUT = 12.0
@@ -27,17 +28,17 @@ async def _baseline_request(
     client: httpx.AsyncClient,
     policy,
 ) -> dict:
-    allowed, _reason = policy.record_request(base_url, action="active")
-    if not allowed:
-        return {}
     started = time.monotonic()
-    try:
-        response = await client.get(
-            base_url,
-            follow_redirects=False,
-            timeout=httpx.Timeout(10.0),
-        )
-    except httpx.HTTPError:
+    response = await execute_guarded_request(
+        client,
+        policy,
+        "GET",
+        base_url,
+        action="active",
+        follow_redirects=False,
+        timeout=httpx.Timeout(10.0),
+    )
+    if response is None:
         return {}
     return {
         "elapsed_ms": round((time.monotonic() - started) * 1000, 2),

@@ -9,6 +9,7 @@ import httpx
 from scope_policy import scope_policy
 from utils import extract_xss_context
 from waf_engine import throttle
+from request_safety import execute_guarded_request
 
 
 EXECUTABLE_CONTEXTS = {"SCRIPT_TAG_CONTEXT", "EVENT_HANDLER_ATTRIBUTE"}
@@ -46,13 +47,16 @@ def _with_param(url: str, param: str, value: str) -> str:
 
 
 async def _safe_get(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
-    allowed, _reason = scope_policy.record_request(url, action="active")
-    if not allowed:
-        return None
     async with await throttle.gate():
         await throttle.record_request(url)
-        try:
-            response = await client.get(url)
+        response = await execute_guarded_request(
+            client,
+            scope_policy,
+            "GET",
+            url,
+            action="active",
+        )
+        if response is not None:
             if throttle.is_block_response(
                 response.status_code,
                 response.text[:16000],
@@ -66,15 +70,7 @@ async def _safe_get(client: httpx.AsyncClient, url: str) -> httpx.Response | Non
                     dict(response.headers),
                 )
             return response
-        except (
-            httpx.TimeoutException,
-            httpx.ConnectError,
-            httpx.RemoteProtocolError,
-            httpx.ReadError,
-            httpx.WriteError,
-        ):
-            await throttle.record_network_error(url)
-            return None
+        return None
 
 
 def _surrounding_quote(body: str, marker: str, context: str) -> str:

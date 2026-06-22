@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
+from request_safety import execute_guarded_request
 
 from finding_model import normalize_finding
 
@@ -67,19 +68,20 @@ async def _request(
     url: str,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    allowed, _reason = policy.record_request(url, action="authenticated")
-    if not allowed:
-        return None
-    try:
-        return await client.request(
-            method,
-            url,
-            timeout=TIMEOUT,
-            follow_redirects=False,
-            **kwargs,
-        )
-    except httpx.HTTPError:
-        return None
+    return await execute_guarded_request(
+        client,
+        policy,
+        method,
+        url,
+        action="authenticated",
+        mutation=str(method or "").upper() in {"PUT", "PATCH", "DELETE"},
+        explicitly_approved=bool(
+            getattr(policy.config, "authenticated_testing_enabled", False)
+        ),
+        timeout=TIMEOUT,
+        follow_redirects=False,
+        **kwargs,
+    )
 
 
 def _query_url(url: str, key: str, value: str) -> str:

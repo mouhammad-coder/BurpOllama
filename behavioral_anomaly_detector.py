@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
+from request_safety import execute_guarded_request
 
 from finding_model import normalize_finding
 
@@ -107,20 +108,19 @@ async def _request(
     headers: dict | None = None,
     content: bytes | str | None = None,
 ) -> tuple[httpx.Response | None, dict | None]:
-    allowed, _reason = policy.record_request(url, action="active")
-    if not allowed:
-        return None, None
     started = time.monotonic()
-    try:
-        response = await client.request(
-            method,
-            url,
-            headers=headers,
-            content=content,
-            follow_redirects=False,
-            timeout=TIMEOUT,
-        )
-    except httpx.HTTPError:
+    response = await execute_guarded_request(
+        client,
+        policy,
+        method,
+        url,
+        action="active",
+        headers=headers,
+        content=content,
+        follow_redirects=False,
+        timeout=TIMEOUT,
+    )
+    if response is None:
         return None, None
     return response, _response_metrics(response, time.monotonic() - started)
 

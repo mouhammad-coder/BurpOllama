@@ -1,8 +1,10 @@
 import json
 import sys
 import tempfile
+import asyncio
 from pathlib import Path
 
+import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from request_safety import (
@@ -10,6 +12,7 @@ from request_safety import (
     OutboundAuditLog,
     OutboundRequestGuard,
     SafeMethodPolicy,
+    execute_guarded_request,
     redact_url,
 )
 from scope_policy import ScopePolicy
@@ -92,5 +95,42 @@ def run_tests():
     print("REQUEST SAFETY TESTS: PASS")
 
 
+async def run_async_tests():
+    policy = ScopePolicy()
+    policy.update({
+        "allowed_domains": ["example.test"],
+        "active_testing_enabled": True,
+        "authenticated_testing_enabled": True,
+        "max_requests_per_minute": 100,
+        "max_total_requests": 100,
+    }, persist=False)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "guarded.jsonl"
+        guard = OutboundRequestGuard(
+            audit_log=OutboundAuditLog(path),
+            circuit_breaker=CircuitBreaker(failure_threshold=2),
+        )
+
+        def handler(request):
+            return httpx.Response(200, json={"ok": True})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            response = await execute_guarded_request(
+                client,
+                policy,
+                "GET",
+                "https://example.test/api?token=secret",
+                action="active",
+                guard=guard,
+            )
+        assert response is not None and response.status_code == 200
+        content = path.read_text(encoding="utf-8")
+        assert "completed" in content
+        assert "secret" not in content
+
+
 if __name__ == "__main__":
     run_tests()
+    asyncio.run(run_async_tests())
