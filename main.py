@@ -94,6 +94,10 @@ from zero_fp_gate import apply_zero_fp_gate
 from secret_validator import validate_secret
 from business_logic_classifier import classify_business_logic_candidates
 from idor_proof_engine import prove_idor
+from agent_registry import list_agents
+from external_tools import tool_status
+from technique_memory import TechniqueMemory
+from web3_scanner import audit_solidity_path
 
 STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
 _startup_banner_printed = False
@@ -129,6 +133,26 @@ stats:          dict            = defaultdict(int)
 burp_queue:     asyncio.Queue   = asyncio.Queue()
 response_deduper = ResponseDeduplicator()
 target_profile_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _remember_hunt_outcomes(raw_findings: list[dict], tech_stack: list[str]) -> None:
+    """Persist aggregate detector outcomes without storing response bodies."""
+    try:
+        memory = TechniqueMemory()
+        grouped: dict[str, int] = defaultdict(int)
+        for finding in raw_findings:
+            grouped[str(finding.get("vuln_type") or "unknown")] += 1
+        for vuln_class, count in grouped.items():
+            memory.record(
+                "hunt-class",
+                "findings" if count else "complete",
+                vuln_class=vuln_class,
+                tech_stack=tech_stack,
+                findings_count=count,
+            )
+    except Exception:
+        # Learning persistence must never make a scan fail.
+        return
 
 # ── Burp passive patterns ─────────────────────────────────────────────────────
 PATTERNS = [
@@ -1258,6 +1282,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         nuclei_findings = normalize_findings(nuclei_findings, scan_id=scan_id)
         raw_findings.extend(nuclei_findings)
         scan["nuclei_findings"] = nuclei_findings
+        _remember_hunt_outcomes(raw_findings, recon_data.get("tech_stack", []))
         if nuclei_findings:
             await log(
                 "Nuclei supplement: {} finding(s) added before triage.".format(
@@ -1784,6 +1809,7 @@ async def _resume_pipeline_from_checkpoint(
                     scan_id=scan_id,
                 ))
             scan["raw_findings"] = raw_findings
+            _remember_hunt_outcomes(raw_findings, recon_data.get("tech_stack", []))
             existing_ids = {
                 finding.get("id")
                 for finding in findings_store
@@ -3077,6 +3103,41 @@ async def ready():
         "database_ok": _database_is_ready(),
         "startup_time": STARTUP_TIME,
     }
+
+
+@app.get("/ecosystem/agents")
+async def ecosystem_agents():
+    return {"agents": list_agents(), "count": len(list_agents())}
+
+
+@app.get("/ecosystem/tools")
+async def ecosystem_tools():
+    tools = tool_status()
+    return {
+        "tools": tools,
+        "available": sum(1 for tool in tools if tool["available"]),
+        "total": len(tools),
+    }
+
+
+@app.get("/ecosystem/memory")
+async def ecosystem_memory(limit: int = 20):
+    memory = TechniqueMemory()
+    return {
+        "stats": memory.stats(),
+        "recent": memory.recent(max(1, min(limit, 100))),
+    }
+
+
+@app.get("/ecosystem/web3/audit")
+async def ecosystem_web3_audit(path: str):
+    candidate = Path(path).expanduser().resolve()
+    project_root = Path(__file__).resolve().parent
+    if project_root not in candidate.parents and candidate != project_root:
+        raise HTTPException(403, "Web3 audit paths must be inside the BurpOllama workspace.")
+    if not candidate.exists():
+        raise HTTPException(404, "Solidity path not found.")
+    return audit_solidity_path(candidate)
 
 def _smart_throttle_recommendation(backoff_multiplier: float, host_dead: bool) -> str:
     if backoff_multiplier >= 16 or host_dead:

@@ -12,8 +12,11 @@ from pathlib import Path
 import httpx
 
 from agent_registry import list_agents
+from discovery_workflows import aggregate_scope_documents, run_discovery_workflow
 from external_tools import tool_status
 from technique_memory import TechniqueMemory
+from waf_bypass import analyze_waf_differentials
+from web3_scanner import audit_solidity_path
 
 
 VERSION = "3.2"
@@ -77,6 +80,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tools", help="Show optional external-tool availability.")
     memory = sub.add_parser("memory", help="Inspect persistent technique memory.")
     memory.add_argument("--limit", type=int, default=20)
+    scope = sub.add_parser("scope-import", help="Aggregate exported JSON/CSV scope files.")
+    scope.add_argument("files", nargs="+")
+    discover = sub.add_parser("discover", help="Run a guarded optional-tool discovery workflow.")
+    discover.add_argument("workflow", choices=("cloud", "takeover", "secrets", "parameters"))
+    discover.add_argument("target")
+    discover.add_argument("--authorized", action="store_true")
+    discover.add_argument("--intensive", action="store_true")
+    web3 = sub.add_parser("web3-audit", help="Run static Solidity candidate checks.")
+    web3.add_argument("path")
+    waf = sub.add_parser("waf-check", help="Run safe WAF differential checks.")
+    waf.add_argument("target")
+    waf.add_argument("--authorized", action="store_true")
+    waf.add_argument("--intensive", action="store_true")
     return parser
 
 
@@ -93,6 +109,38 @@ def main(argv: list[str] | None = None) -> int:
         memory = TechniqueMemory()
         _print_json({"stats": memory.stats(), "recent": memory.recent(args.limit)})
         return 0
+    if args.command == "scope-import":
+        documents = [
+            (path, Path(path).read_text(encoding="utf-8", errors="replace"))
+            for path in args.files
+        ]
+        _print_json(aggregate_scope_documents(documents))
+        return 0
+    if args.command == "discover":
+        if not args.authorized:
+            print("Refusing discovery: pass --authorized only for assets you may test.", file=sys.stderr)
+            return 2
+        results = asyncio.run(
+            run_discovery_workflow(
+                args.workflow, args.target, authorized=True,
+                intensive_authorized=args.intensive,
+            )
+        )
+        _print_json([result.to_dict() for result in results])
+        return 0
+    if args.command == "web3-audit":
+        _print_json(audit_solidity_path(args.path))
+        return 0
+    if args.command == "waf-check":
+        result = asyncio.run(
+            analyze_waf_differentials(
+                args.target,
+                authorized=args.authorized,
+                intensive_authorized=args.intensive,
+            )
+        )
+        _print_json(result)
+        return 0 if result.get("ran") else 2
     if args.command == "serve":
         import uvicorn
         uvicorn.run("main:app", host=args.host, port=args.port, reload=args.reload)
@@ -107,4 +155,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

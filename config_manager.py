@@ -15,6 +15,17 @@ SETTING_DEFAULTS: dict[str, str] = {
     "GEMINI_API_KEY": "",
     "OPENAI_API_KEY": "",
     "ANTHROPIC_API_KEY": "",
+    "GROQ_API_KEY": "",
+    "MISTRAL_API_KEY": "",
+    "DEEPSEEK_API_KEY": "",
+    "TOGETHER_API_KEY": "",
+    "CUSTOM_AI_API_KEY": "",
+    "GROQ_MODEL": "llama-3.1-8b-instant",
+    "MISTRAL_MODEL": "mistral-small-latest",
+    "DEEPSEEK_MODEL": "deepseek-chat",
+    "TOGETHER_MODEL": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "CUSTOM_AI_MODEL": "custom-model",
+    "CUSTOM_AI_BASE_URL": "http://127.0.0.1:1234/v1/chat/completions",
     "CLOUD_AI_ENABLED": "0",
     "OLLAMA_ENABLED": "0",
     "OLLAMA_MODEL": "mistral",
@@ -39,6 +50,11 @@ SECRET_KEYS = {
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "TOGETHER_API_KEY",
+    "CUSTOM_AI_API_KEY",
     "BURPOLLAMA_DATABASE_URL",
     "BURPOLLAMA_OOB_SIGNING_KEY",
 }
@@ -58,6 +74,11 @@ API_KEY_PATTERNS = {
     "GEMINI_API_KEY": re.compile(r"^AIza[A-Za-z0-9_-]{20,}$"),
     "OPENAI_API_KEY": re.compile(r"^sk-[A-Za-z0-9_-]{20,}$"),
     "ANTHROPIC_API_KEY": re.compile(r"^sk-ant-[A-Za-z0-9_-]{20,}$"),
+    "GROQ_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
+    "MISTRAL_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
+    "DEEPSEEK_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
+    "TOGETHER_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
+    "CUSTOM_AI_API_KEY": re.compile(r"^.{8,}$"),
 }
 
 
@@ -154,11 +175,17 @@ def _clean_value(key: str, value: Any) -> str:
         if not 0 <= number <= 2:
             raise ValueError(f"{key} must be between 0 and 2.")
         return str(number)
-    if key in {"OLLAMA_MODEL", "OLLAMA_FAST_MODEL", "OLLAMA_REASONING_MODEL"}:
+    if key in {
+        "OLLAMA_MODEL", "OLLAMA_FAST_MODEL", "OLLAMA_REASONING_MODEL",
+        "GROQ_MODEL", "MISTRAL_MODEL", "DEEPSEEK_MODEL", "TOGETHER_MODEL",
+        "CUSTOM_AI_MODEL",
+    }:
         if not text or not MODEL_RE.fullmatch(text):
             raise ValueError(f"{key} contains an invalid model name.")
     if key == "OLLAMA_KEEP_ALIVE" and not KEEP_ALIVE_RE.fullmatch(text):
         raise ValueError("OLLAMA_KEEP_ALIVE must look like 10m, 30s, 1h, 0, or -1.")
+    if key == "CUSTOM_AI_BASE_URL" and text and not re.match(r"^https?://", text):
+        raise ValueError("CUSTOM_AI_BASE_URL must be an HTTP(S) URL.")
     return text
 
 

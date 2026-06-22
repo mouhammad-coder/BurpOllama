@@ -128,6 +128,21 @@ class AIRouter:
             AIProvider("anthropic", os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest"),
                        "https://api.anthropic.com/v1/messages",
                        "ANTHROPIC_API_KEY", 0.0008, 50, True, "anthropic"),
+            AIProvider("groq", os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+                       "https://api.groq.com/openai/v1/chat/completions",
+                       "GROQ_API_KEY", 0.0001, 30, True, "openai-compatible"),
+            AIProvider("mistral", os.getenv("MISTRAL_MODEL", "mistral-small-latest"),
+                       "https://api.mistral.ai/v1/chat/completions",
+                       "MISTRAL_API_KEY", 0.0002, 30, True, "openai-compatible"),
+            AIProvider("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                       "https://api.deepseek.com/chat/completions",
+                       "DEEPSEEK_API_KEY", 0.0002, 30, True, "openai-compatible"),
+            AIProvider("together", os.getenv("TOGETHER_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"),
+                       "https://api.together.xyz/v1/chat/completions",
+                       "TOGETHER_API_KEY", 0.0002, 30, True, "openai-compatible"),
+            AIProvider("custom", os.getenv("CUSTOM_AI_MODEL", "custom-model"),
+                       os.getenv("CUSTOM_AI_BASE_URL", "http://127.0.0.1:1234/v1/chat/completions"),
+                       "CUSTOM_AI_API_KEY", 0.0, 60, True, "openai-compatible"),
         ]
         self._lock = asyncio.Lock()
         self._local_lock = asyncio.Lock()
@@ -147,6 +162,11 @@ class AIRouter:
             "gemini": "GEMINI_API_KEY",
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
+            "groq": "GROQ_API_KEY",
+            "mistral": "MISTRAL_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "together": "TOGETHER_API_KEY",
+            "custom": "CUSTOM_AI_API_KEY",
         }.get(provider.lower())
         if env_name:
             os.environ[env_name] = key
@@ -183,6 +203,22 @@ class AIRouter:
         if local:
             local.model = self.ollama_fast_model
             local.enabled = os.getenv("OLLAMA_ENABLED", "0") != "0"
+        model_envs = {
+            "gemini": "GEMINI_MODEL",
+            "openai": "OPENAI_MODEL",
+            "anthropic": "ANTHROPIC_MODEL",
+            "groq": "GROQ_MODEL",
+            "mistral": "MISTRAL_MODEL",
+            "deepseek": "DEEPSEEK_MODEL",
+            "together": "TOGETHER_MODEL",
+            "custom": "CUSTOM_AI_MODEL",
+        }
+        for provider in self.providers:
+            model_env = model_envs.get(provider.name)
+            if model_env:
+                provider.model = os.getenv(model_env, provider.model)
+            if provider.name == "custom":
+                provider.base_url = os.getenv("CUSTOM_AI_BASE_URL", provider.base_url)
         self.last_routing_reason = "configuration_reloaded"
 
     def _estimate_tokens(self, prompt: str, system: str, max_tokens: int) -> int:
@@ -245,7 +281,11 @@ class AIRouter:
                 p for p in candidates
                 if (estimated_tokens / 1000.0) * p.cost_per_1k_tokens <= max_estimated_cost
             ]
-        priority = {"local": 0, "gemini": 1, "openai": 2, "anthropic": 3}
+        priority = {
+            "local": 0, "gemini": 1, "groq": 2, "mistral": 3,
+            "deepseek": 4, "openai": 5, "anthropic": 6,
+            "together": 7, "custom": 8,
+        }
         return sorted(
             candidates,
             key=lambda p: (
@@ -281,9 +321,20 @@ class AIRouter:
             "gemini": bool(os.getenv("GEMINI_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
             "openai": bool(os.getenv("OPENAI_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
             "anthropic": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "groq": bool(os.getenv("GROQ_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "mistral": bool(os.getenv("MISTRAL_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "deepseek": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "together": bool(os.getenv("TOGETHER_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
+            "custom": bool(os.getenv("CUSTOM_AI_API_KEY", "").strip()) and ai_privacy_guard.is_cloud_allowed(),
         }
         active = next(
-            (name for name in ("ollama", "gemini", "openai", "anthropic") if providers[name]),
+            (
+                name for name in (
+                    "ollama", "gemini", "groq", "mistral", "deepseek",
+                    "openai", "anthropic", "together", "custom",
+                )
+                if providers[name]
+            ),
             "none",
         )
         models = ollama.get("models", [])
@@ -292,6 +343,11 @@ class AIRouter:
             "gemini": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
             "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest"),
+            "groq": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            "mistral": os.getenv("MISTRAL_MODEL", "mistral-small-latest"),
+            "deepseek": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            "together": os.getenv("TOGETHER_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"),
+            "custom": os.getenv("CUSTOM_AI_MODEL", "custom-model"),
             "none": "none",
         }[active]
         return {

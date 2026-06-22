@@ -5,11 +5,11 @@
   <img src="https://img.shields.io/badge/License-Private-red?style=for-the-badge" alt="Private License">
   <img src="https://img.shields.io/badge/Platform-Kali%20Linux-black?style=for-the-badge&logo=linux" alt="Kali Linux">
   <img src="https://img.shields.io/badge/AI-Local%20%2B%20Cloud-green?style=for-the-badge" alt="Local and Cloud AI">
-  <img src="https://img.shields.io/badge/Classes-38%20Vuln%20Classes-orange?style=for-the-badge" alt="38 Vulnerability Classes">
+  <img src="https://img.shields.io/badge/Classes-39%20Vuln%20Classes-orange?style=for-the-badge" alt="39 Vulnerability Classes">
 </p>
 
 <p align="center">
-<b>Local autonomous bug bounty platform with AI triage, 38 vulnerability classes,
+<b>Local autonomous bug bounty platform with AI triage, 39 vulnerability classes,
 Zero FP mode, exploit chain builder, and bounty-ready report export.</b>
 </p>
 
@@ -21,7 +21,7 @@ BurpOllama is a local web-based security platform that runs on your machine.
 You open the dashboard, enter an authorized target, and it:
 
 - Discovers attack surface automatically
-- Tests 38 vulnerability classes
+- Tests 39 vulnerability classes
 - Confirms findings with actual proof (not just detection)
 - Scores everything with CVSS++ business-aware impact scoring
 - Builds exploit chains connecting related vulnerabilities
@@ -41,7 +41,7 @@ Guided step-by-step wizard — no command line knowledge needed.
 
 ---
 
-## Vulnerability Classes (38 Total)
+## Vulnerability Classes (39 Total)
 
 | Category | Classes |
 |----------|---------|
@@ -97,8 +97,24 @@ Secrets, tokens, and cookies are redacted before any AI analysis.
 
 ### Provider-Agnostic AI
 
-Gemini, OpenAI, Anthropic, and local Ollama with automatic failover.
+Local Ollama, Gemini, Groq, Mistral, DeepSeek, OpenAI, Anthropic, Together,
+and custom OpenAI-compatible endpoints with automatic failover.
 Includes cost-aware routing, while local models remain free to run.
+
+### Hunter Ecosystem
+
+- Polished `burpollama` terminal CLI
+- Nine bounded specialist agent profiles
+- Safe optional-tool adapters for recon, validation, discovery, secrets,
+  takeover, cloud, WAF, and Web3 tooling
+- Advisory JSON/CSV scope aggregation
+- Persistent SQLite technique and outcome memory
+- Static Solidity candidate analysis
+- Harness guidance for Claude Code, Codex, and OpenCode
+- Community issue templates, contribution guidance, and security policy
+
+See [CLI](docs/CLI.md), [agents](docs/AGENTS.md),
+[external tools](docs/EXTERNAL_TOOLS.md), and [Web3](docs/WEB3.md).
 
 ---
 
@@ -109,10 +125,12 @@ git clone https://github.com/mouhammad-coder/BurpOllama.git
 cd BurpOllama
 cp .env.example .env
 bash setup.sh
-bash start.sh
 ```
 
 Open: [http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui)
+
+The setup script starts the dashboard automatically and installs the
+`burpollama` launcher under `~/.local/bin`.
 
 ---
 
@@ -148,7 +166,7 @@ Phase 1: Reconnaissance
 (subfinder, httpx, katana, gau, JS extraction)
     ↓
 Phase 2: Hunt
-(38 vulnerability classes, OOB confirmation)
+(39 vulnerability classes, OOB confirmation)
     ↓
 Phase 3: AI Triage
 (3-tier: auto → batch → full CoT)
