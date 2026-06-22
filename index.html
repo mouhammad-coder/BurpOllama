@@ -253,6 +253,7 @@
       advancedCoverage: {},
       graph: {},
       autopilot: {},
+      programIntelligence: {},
       bounty: {},
       scope: {},
       aiPrivacy: {},
@@ -786,6 +787,15 @@
       const r = await fetch(endpoint('/config/sessions'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       alert(r.ok ? 'Sessions saved.' : await r.text());
       refreshAll();
+    }
+    async function loadProgramIntelligence(){
+      const slug = document.getElementById('program-intelligence-slug')?.value.trim();
+      const tech = document.getElementById('program-intelligence-tech')?.value.trim();
+      const results = {};
+      if(slug) results.program = await json(`/intelligence/program?slug=${encodeURIComponent(slug)}`, {});
+      if(tech) results.cves = await json(`/intelligence/cve?tech=${encodeURIComponent(tech)}`, {});
+      state.programIntelligence = results;
+      render();
     }
     async function resolveReview(id, verdict){
       const note = prompt('Reviewer note', verdict === 'PASS' ? 'Valid finding' : 'False positive / not reportable') || '';
@@ -1782,6 +1792,10 @@
         return '<div class="card pad"><div class="empty">Analyst Intelligence Briefing is generated after Phase 5 completes.</div></div>';
       }
       const targets = intelligence.top_manual_targets || [];
+      const publicIntel = state.programIntelligence || {};
+      const program = publicIntel.program || {};
+      const attractiveness = program.attractiveness || {};
+      const cves = publicIntel.cves?.cves || [];
       return `<details class="card pad step-card">
         <summary class="card-title" style="cursor:pointer">Analyst Intelligence Briefing</summary>
         <div style="height:12px"></div>
@@ -1799,6 +1813,16 @@
         <div style="height:14px"></div>
         <div class="card-title">Top manual targets</div>
         <div class="list" style="margin-top:10px">${targets.map(target => `<div class="row-card" style="align-items:flex-start"><div style="min-width:0"><strong class="mono small">${esc(target.url)}</strong><div class="small" style="margin-top:6px">${esc(target.reason)}</div><div class="small muted" style="margin-top:6px"><strong>Test:</strong> ${esc(target.what_to_test)}</div></div><span class="tag">${esc(target.estimated_bounty_value || 'Medium')} value</span></div>`).join('') || '<div class="empty">No manual targets were identified.</div>'}</div>
+        <div style="height:14px"></div>
+        <div class="card pad">
+          <div class="card-title">Public Program Intelligence</div>
+          <div class="card-sub">Optional HackerOne policy and NVD lookups. Imported scope remains advisory until you confirm it.</div>
+          <div style="height:10px"></div>
+          <div class="grid cols-2"><input class="input" id="program-intelligence-slug" placeholder="HackerOne program slug"><input class="input" id="program-intelligence-tech" placeholder="Technology, e.g. WordPress"></div>
+          <div style="height:10px"></div><button class="btn" onclick="loadProgramIntelligence()">Load public intelligence</button>
+          ${program.slug ? `<div class="notice" style="margin-top:12px"><strong>${esc(program.slug)}</strong> — score ${esc(attractiveness.score ?? 0)}/100<br>${esc(attractiveness.recommendation || '')}<br><span class="small">${esc((attractiveness.best_assets || []).join(', ') || 'No public assets returned')}</span></div>` : ''}
+          ${cves.length ? `<div class="list" style="margin-top:12px">${cves.slice(0,10).map(cve => `<div class="row-card"><div><strong>${esc(cve.cve_id)}</strong><div class="small muted">${esc(cve.description)}</div></div><span class="pill">${esc(cve.severity)}</span></div>`).join('')}</div>` : ''}
+        </div>
       </details>`;
     }
     function autopilotStateStrip(active){

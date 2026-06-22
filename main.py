@@ -36,6 +36,11 @@ from recon_engine  import (
     probe_target_connection,
 )
 from recon_intelligence import advanced_recon_intelligence
+from program_intelligence import (
+    fetch_hackerone_scope,
+    lookup_nvd_cve,
+    score_program_attractiveness,
+)
 from hunt_engine   import (
     run_hunt,
     hunt_stored_xss,
@@ -2643,6 +2648,23 @@ async def get_scan_intelligence(scan_id: str):
     return JSONResponse(
         scans[scan_id].get("recon", {}).get("intelligence", {})
     )
+
+@app.get("/intelligence/program")
+async def get_program_intelligence(slug: str):
+    policy = await fetch_hackerone_scope(slug)
+    return {
+        "slug": slug,
+        "available": bool(policy),
+        "program": policy,
+        "attractiveness": score_program_attractiveness(policy),
+    }
+
+@app.get("/intelligence/cve")
+async def get_cve_intelligence(tech: str):
+    return {
+        "technology": tech,
+        "cves": await lookup_nvd_cve(tech),
+    }
 
 @app.get("/scan/{scan_id}/autopilot/report")
 async def get_autopilot_report(scan_id: str):
