@@ -254,6 +254,7 @@
       graph: {},
       autopilot: {},
       programIntelligence: {},
+      freshScope: {},
       bounty: {},
       scope: {},
       aiPrivacy: {},
@@ -455,7 +456,7 @@
     }
 
     async function refreshAll(){
-      const [health, ready, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage, config, ollamaModels] = await Promise.all([
+      const [health, ready, scans, findings, review, ai, stats, scope, aiPrivacy, aiAudit, throttleStatus, storage, config, ollamaModels, freshScope] = await Promise.all([
         json('/health', {}),
         json('/ready', {}),
         json('/scans', []),
@@ -469,7 +470,8 @@
         json('/throttle/status', {}),
         json('/storage', {}),
         json('/config', {settings:{},configured:{}}),
-        json('/ollama/models', {installed:[],missing:[],required:[]})
+        json('/ollama/models', {installed:[],missing:[],required:[]}),
+        json('/fresh-scope/status', {})
       ]);
       state.health = health || {};
       state.ready = ready || {};
@@ -485,6 +487,7 @@
       state.storage = storage || {};
       state.config = config || state.config;
       state.ollamaModels = ollamaModels || state.ollamaModels;
+      state.freshScope = freshScope || state.freshScope;
       const latestCompleted = state.scans.find(scan => ['complete','completed'].includes(String(scan.status || '').toLowerCase()));
       state.advancedCoverage = latestCompleted
         ? await json(`/scan/${latestCompleted.id}/coverage`, {})
@@ -707,7 +710,8 @@
         'OLLAMA_REASONING_NUM_CTX','OLLAMA_REASONING_TIMEOUT',
         'OLLAMA_REASONING_TEMPERATURE','OLLAMA_KEEP_ALIVE',
         'BURPOLLAMA_DATABASE_URL','BURPOLLAMA_RETENTION_DAYS',
-        'BURPOLLAMA_OOB_SIGNING_KEY','BURPOLLAMA_OOB_PROVIDER'
+        'BURPOLLAMA_OOB_SIGNING_KEY','BURPOLLAMA_OOB_PROVIDER','PDCP_API_KEY',
+        'BBRADAR_FEED_URL'
       ];
       const body = Object.fromEntries(ids.flatMap(id => {
         const el = document.getElementById(`cfg-${id}`);
@@ -796,6 +800,49 @@
       if(tech) results.cves = await json(`/intelligence/cve?tech=${encodeURIComponent(tech)}`, {});
       state.programIntelligence = results;
       render();
+    }
+    async function configureFreshScope(enabled, autoLaunch){
+      if(autoLaunch && !confirm('Automatic scans will run only for programs you separately authorize and targets allowed by ScopePolicy. Continue?')) return;
+      const r = await fetch(endpoint('/fresh-scope/config'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({enabled, auto_launch:autoLaunch})
+      });
+      if(!r.ok){ alert(await r.text()); return; }
+      state.freshScope = await r.json();
+      render();
+    }
+    async function checkFreshScopes(){
+      const r = await fetch(endpoint('/fresh-scope/check'), {method:'POST'});
+      if(!r.ok){ alert(await r.text()); return; }
+      const result = await r.json();
+      alert(`Fresh-scope check complete: ${result.new_assets || 0} new asset(s), ${result.scans_started || 0} scan(s) started.`);
+      await refreshAll();
+    }
+    async function authorizeFreshScope(platformValue, programIdValue, assetValue){
+      const platform = decodeURIComponent(platformValue || '');
+      const programId = decodeURIComponent(programIdValue || '');
+      const asset = decodeURIComponent(assetValue || '');
+      const patternsText = prompt(
+        'Exact authorized asset patterns (comma separated). Wildcards are allowed only when the program policy explicitly authorizes them.',
+        asset || ''
+      );
+      if(!patternsText) return;
+      if(!confirm('Confirm that you have written authorization to test every entered asset pattern.')) return;
+      const assetPatterns = patternsText.split(',').map(value => value.trim()).filter(Boolean);
+      const r = await fetch(endpoint('/fresh-scope/authorize'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          platform,
+          program_id:programId,
+          asset_patterns:assetPatterns,
+          authorization_confirmed:true
+        })
+      });
+      if(!r.ok){ alert(await r.text()); return; }
+      alert('Program authorization saved. Also add the exact domains to ScopePolicy before enabling automatic scans.');
+      await refreshAll();
     }
     async function resolveReview(id, verdict){
       const note = prompt('Reviewer note', verdict === 'PASS' ? 'Valid finding' : 'False positive / not reportable') || '';
@@ -1728,10 +1775,12 @@
       const logs = a.live_logs || [];
       const intelligence = a.intelligence || {};
       const throttle = state.throttleStatus || {};
+      const freshScope = state.freshScope || {};
       const progressState = a.progress_state || (scan ? String(scan.status || 'queued') : 'queued');
       const el = document.getElementById('route-autopilot');
       el.innerHTML = `
         <div class="simple-section">
+        ${freshScopePanel(freshScope)}
         <div class="card pad step-card">
           <div class="card-head"><div><div class="card-title">Step 1: Choose target</div><div class="card-sub">Enter only a system you own or are authorized to test.</div></div><span class="status ${esc(progressState)}">${esc(progressState)}</span></div>
           <div class="toolbar">
@@ -1786,6 +1835,35 @@
           <div class="grid cols-2"><div class="card pad"><div class="card-title">High-Value Endpoints</div><div style="height:12px"></div>${autopilotEndpointTable(endpoints)}</div><div class="card pad"><div class="card-title">Coverage Gaps</div><div style="height:12px"></div>${coverageGapList(c)}</div></div>
         </div>
         </div>`;
+    }
+    function freshScopePanel(data){
+      const config = data.config || {};
+      const counts = data.candidate_counts || {};
+      const candidates = data.recent_candidates || [];
+      const feeds = data.feeds || [];
+      const chaos = data.chaos || {};
+      return `<details class="card pad step-card" open>
+        <summary class="card-title" style="cursor:pointer">Fresh Scope Hunter · daily first-mover monitor</summary>
+        <div class="card-sub" style="margin-top:8px">Tracks newly observed public bounty scope additions. The first fetch is baseline-only. Public scope remains advisory until you confirm the live program policy and written authorization.</div>
+        <div style="height:12px"></div>
+        <div class="grid cols-4">
+          ${metric('Monitor', config.enabled ? 'ON' : 'OFF', `Every ${Math.round((config.interval_seconds || 86400)/3600)} hours`)}
+          ${metric('Auto launch', config.auto_launch ? 'ON' : 'OFF', 'Requires saved authorization + ScopePolicy')}
+          ${metric('Queued assets', counts.queued || 0, 'Newly observed')}
+          ${metric('Awaiting authorization', counts.awaiting_authorization || 0, 'Not scanned')}
+        </div>
+        <div style="height:12px"></div>
+        <div class="toolbar">
+          <button class="btn ${config.enabled ? '' : 'primary'}" onclick="configureFreshScope(true, ${config.auto_launch ? 'true' : 'false'})">Enable daily checks</button>
+          <button class="btn" onclick="configureFreshScope(false, false)">Disable</button>
+          <button class="btn blue" onclick="configureFreshScope(true, true)">Enable authorized auto-launch</button>
+          <button class="btn" onclick="checkFreshScopes()">Check now</button>
+        </div>
+        <div class="notice" style="margin-top:12px"><strong>Safety gates:</strong> a target launches only when its program authorization matches and the same domain is allowed in ScopePolicy. Active testing still follows your selected scan mode. Chaos enrichment: ${chaos.installed && chaos.api_key_configured ? 'ready' : 'optional — install chaos and set PDCP_API_KEY'}.</div>
+        <div style="height:12px"></div>
+        <div class="small muted">Feeds: ${feeds.map(feed => `${feed.platform}: ${feed.asset_count || 0}`).join(' · ') || 'No baseline fetched yet'}</div>
+        <div class="list" style="margin-top:10px">${candidates.slice(0,10).map(item => `<div class="row-card"><div style="min-width:0"><strong>${esc(item.program_name || item.program_id)}</strong><div class="small muted">${esc(item.platform)} · ${esc(item.status)}</div><div class="mono small" style="margin-top:5px">${esc(item.asset)}</div></div><button class="btn" onclick="authorizeFreshScope('${encodeURIComponent(item.platform || '')}','${encodeURIComponent(item.program_id || '')}','${encodeURIComponent(item.asset || '')}')">Authorize</button></div>`).join('') || '<div class="empty">Run Check now to create a baseline. Only additions observed after that baseline are queued.</div>'}</div>
+      </details><div style="height:14px"></div>`;
     }
     function analystIntelligencePanel(intelligence){
       if(!intelligence || !intelligence.executive_summary){
@@ -2017,6 +2095,8 @@
           <div class="wizard-field"><label>Retention days</label><input class="input" type="number" id="cfg-BURPOLLAMA_RETENTION_DAYS" value="${esc(configValue('BURPOLLAMA_RETENTION_DAYS','90'))}"></div>
           <div class="wizard-field"><label>Callback signing key</label><input class="input" type="password" id="cfg-BURPOLLAMA_OOB_SIGNING_KEY" value="${esc(configValue('BURPOLLAMA_OOB_SIGNING_KEY'))}" placeholder="Optional secret"></div>
           <div class="wizard-field"><label>Callback provider</label><input class="input" id="cfg-BURPOLLAMA_OOB_PROVIDER" value="${esc(configValue('BURPOLLAMA_OOB_PROVIDER','oast.fun'))}"></div>
+          <div class="wizard-field"><label>ProjectDiscovery API key</label><input class="input" type="password" id="cfg-PDCP_API_KEY" value="${esc(configValue('PDCP_API_KEY'))}" placeholder="Optional Chaos enrichment key"></div>
+          <div class="wizard-field"><label>BBRadar feed URL</label><input class="input" id="cfg-BBRADAR_FEED_URL" value="${esc(configValue('BBRADAR_FEED_URL'))}" placeholder="Optional JSON scope feed"></div>
         </div></div>
         <div style="height:14px"></div>
         <div class="toolbar"><button class="btn primary" onclick="saveWebSettings()">Save Settings</button><button class="btn" onclick="testOllama()">Test Ollama</button><button class="btn" onclick="testAIProviders()">Test AI Providers</button><button class="btn blue" onclick="pullMissingModels()">Pull Missing Models</button></div>

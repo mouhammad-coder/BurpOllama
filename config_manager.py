@@ -20,6 +20,8 @@ SETTING_DEFAULTS: dict[str, str] = {
     "DEEPSEEK_API_KEY": "",
     "TOGETHER_API_KEY": "",
     "CUSTOM_AI_API_KEY": "",
+    "PDCP_API_KEY": "",
+    "BBRADAR_FEED_URL": "",
     "GROQ_MODEL": "llama-3.1-8b-instant",
     "MISTRAL_MODEL": "mistral-small-latest",
     "DEEPSEEK_MODEL": "deepseek-chat",
@@ -55,6 +57,7 @@ SECRET_KEYS = {
     "DEEPSEEK_API_KEY",
     "TOGETHER_API_KEY",
     "CUSTOM_AI_API_KEY",
+    "PDCP_API_KEY",
     "BURPOLLAMA_DATABASE_URL",
     "BURPOLLAMA_OOB_SIGNING_KEY",
 }
@@ -79,6 +82,7 @@ API_KEY_PATTERNS = {
     "DEEPSEEK_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
     "TOGETHER_API_KEY": re.compile(r"^[A-Za-z0-9_-]{20,}$"),
     "CUSTOM_AI_API_KEY": re.compile(r"^.{8,}$"),
+    "PDCP_API_KEY": re.compile(r"^[A-Za-z0-9._-]{8,}$"),
 }
 
 
@@ -186,6 +190,8 @@ def _clean_value(key: str, value: Any) -> str:
         raise ValueError("OLLAMA_KEEP_ALIVE must look like 10m, 30s, 1h, 0, or -1.")
     if key == "CUSTOM_AI_BASE_URL" and text and not re.match(r"^https?://", text):
         raise ValueError("CUSTOM_AI_BASE_URL must be an HTTP(S) URL.")
+    if key == "BBRADAR_FEED_URL" and text and not re.match(r"^https?://", text):
+        raise ValueError("BBRADAR_FEED_URL must be an HTTP(S) URL.")
     return text
 
 

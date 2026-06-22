@@ -108,6 +108,8 @@ Includes cost-aware routing, while local models remain free to run.
 - Safe optional-tool adapters for recon, validation, discovery, secrets,
   takeover, cloud, WAF, and Web3 tooling
 - Advisory JSON/CSV scope aggregation
+- Daily fresh-scope monitoring across public HackerOne, Bugcrowd, Intigriti,
+  YesWeHack, and Federacy data, with optional ProjectDiscovery Chaos enrichment
 - Persistent SQLite technique and outcome memory
 - Evidence-driven WSTG / API / bug-bounty playbook planning with next-best
   test recommendations and coverage gaps
@@ -224,6 +226,22 @@ covered yet,” which is critical for real bounty work.
 - Keep `.env`, API keys, authentication cookies, and exported evidence private.
 - Respect program scope, request limits, and prohibited-testing rules.
 - Review candidate findings manually before submitting a bounty report.
+
+### Fresh Scope Hunter
+
+The Autopilot page includes a daily first-mover monitor for newly observed
+public bounty scope additions. Its first successful fetch creates a baseline;
+only later additions are queued. Public feed data is advisory, so automatic
+scans require two independent gates:
+
+1. Save an explicit program authorization rule in Fresh Scope Hunter.
+2. Add the same exact domains to BurpOllama ScopePolicy.
+
+Automatic launch is off by default. Active testing is never enabled by the
+monitor itself and continues to follow the selected scan mode. An optional
+BBRadar-compatible JSON endpoint can be set with `BBRADAR_FEED_URL`. Chaos DNS
+enrichment for authorized wildcard additions requires the `chaos` client and
+`PDCP_API_KEY`; missing either does not interrupt monitoring.
 
 ---
 

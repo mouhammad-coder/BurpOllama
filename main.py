@@ -41,6 +41,7 @@ from program_intelligence import (
     lookup_nvd_cve,
     score_program_attractiveness,
 )
+from fresh_scope_hunter import fresh_scope_hunter
 from hunt_engine   import (
     run_hunt,
     hunt_stored_xss,
@@ -280,6 +281,12 @@ class TargetValidationRequest(BaseModel):
 class AutopilotResumeRequest(BaseModel):
     scan_id: str
     resume_token: Optional[str] = ""
+
+class FreshScopeAuthorizationRequest(BaseModel):
+    platform: str
+    program_id: str
+    asset_patterns: list[str]
+    authorization_confirmed: bool = False
 
 class ReviewNoteRequest(BaseModel):
     note: str
@@ -2173,11 +2180,81 @@ async def _show_startup_banner():
     print("")
 
 
+async def _launch_fresh_scope_scan(record: dict, target: str) -> Optional[str]:
+    """Launch a feed-discovered target only after both authorization gates pass."""
+    if not scope_policy.config.allowed_domains:
+        return None
+    ok, _ = scope_policy.validate_target(target, action="scan")
+    if not ok:
+        return None
+    scan_id = str(uuid.uuid4())[:12]
+    scans[scan_id] = {
+        "id": scan_id,
+        "target": target,
+        "status": "queued",
+        "phase": "queued",
+        "control": "run",
+        "requested_scan_mode": scope_policy.config.scan_mode,
+        "authorization_warning": "",
+        "started": datetime.utcnow().isoformat(),
+        "logs": [],
+        "fresh_scope_source": {
+            "platform": record.get("platform", ""),
+            "program_id": record.get("program_id", ""),
+            "program_name": record.get("program_name", ""),
+            "program_url": record.get("program_url", ""),
+            "asset": record.get("asset", ""),
+            "discovered_at": datetime.utcnow().isoformat(),
+        },
+    }
+    resume_token = autopilot_state.create_run(
+        scan_id, target, status="queued", phase="queued"
+    )
+    task_id = scheduler.enqueue(
+        scan_id,
+        "fresh_scope_pipeline",
+        {
+            "target": target,
+            "platform": record.get("platform", ""),
+            "program_id": record.get("program_id", ""),
+        },
+        priority=20,
+    )
+    scans[scan_id]["scheduler_task_id"] = task_id
+    scans[scan_id]["autopilot_resume_token"] = resume_token
+    autopilot_state.upsert_task(
+        scan_id,
+        "fresh_scope_pipeline",
+        "queued",
+        {"scheduler_task_id": task_id},
+    )
+    event_store.audit(
+        "fresh-scope-agent",
+        "scan.start",
+        scan_id,
+        scans[scan_id]["fresh_scope_source"],
+    )
+    asyncio.create_task(run_pipeline(scan_id, target, _gc.GEMINI_API_KEY))
+    await broadcast(
+        {
+            "type": "fresh_scope_scan_started",
+            "scan_id": scan_id,
+            "target": target,
+            "program": record.get("program_name", ""),
+        }
+    )
+    return scan_id
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     workers = [asyncio.create_task(burp_worker()) for _ in range(3)]
+    fresh_scope_task = asyncio.create_task(
+        fresh_scope_hunter.run_forever(_launch_fresh_scope_scan)
+    )
     await _show_startup_banner()
     yield
+    fresh_scope_task.cancel()
     for w in workers: w.cancel()
 
 app = FastAPI(title="BurpOllama", version="3.1.0", lifespan=lifespan)
@@ -3783,6 +3860,72 @@ async def get_scheduler():
 @app.get("/autopilot/state")
 async def get_autopilot_state():
     return autopilot_state.status()
+
+@app.get("/fresh-scope/status")
+async def get_fresh_scope_status():
+    return fresh_scope_hunter.status()
+
+@app.get("/fresh-scope/candidates")
+async def get_fresh_scope_candidates(limit: int = 100, status: str = ""):
+    return {
+        "candidates": fresh_scope_hunter.candidates(limit=limit, status=status),
+    }
+
+@app.post("/fresh-scope/config")
+async def set_fresh_scope_config(cfg: dict):
+    updated = fresh_scope_hunter.update_config(cfg)
+    event_store.audit(
+        "local-user",
+        "fresh_scope.config",
+        "fresh-scope-agent",
+        updated.get("config", {}),
+    )
+    return updated
+
+@app.post("/fresh-scope/authorize")
+async def authorize_fresh_scope_program(req: FreshScopeAuthorizationRequest):
+    if not req.authorization_confirmed:
+        raise HTTPException(
+            403,
+            "Confirm that you have written authorization for these exact assets.",
+        )
+    try:
+        authorization = fresh_scope_hunter.authorize(
+            req.platform,
+            req.program_id,
+            req.asset_patterns,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event_store.audit(
+        "local-user",
+        "fresh_scope.authorize",
+        "{}:{}".format(req.platform, req.program_id),
+        {"asset_patterns": req.asset_patterns},
+    )
+    return authorization
+
+@app.delete("/fresh-scope/authorize")
+async def revoke_fresh_scope_program(platform: str, program_id: str):
+    revoked = fresh_scope_hunter.revoke(platform, program_id)
+    event_store.audit(
+        "local-user",
+        "fresh_scope.revoke",
+        "{}:{}".format(platform, program_id),
+        {"revoked": revoked},
+    )
+    return {"revoked": revoked}
+
+@app.post("/fresh-scope/check")
+async def check_fresh_scope_now():
+    result = await fresh_scope_hunter.check_now(_launch_fresh_scope_scan)
+    event_store.audit(
+        "local-user",
+        "fresh_scope.check",
+        "fresh-scope-agent",
+        result,
+    )
+    return result
 
 @app.get("/storage")
 async def get_storage():
