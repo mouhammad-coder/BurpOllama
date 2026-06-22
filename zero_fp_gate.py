@@ -9,6 +9,12 @@ from fp_eliminator import eliminate_false_positives
 from report_quality_scorer import score_finding as score_quality
 from impact_scoring_engine import score_finding as score_impact
 from scope_policy import ScopePolicy, scope_policy
+from validation_enhancements import (
+    calculate_cvss_40,
+    keep_best_similar,
+    rejection_reason_codes,
+    report_readiness,
+)
 
 
 READY_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
@@ -157,10 +163,18 @@ def apply_zero_fp_gate(
         finding["cvss_plus_plus"] = impact["cvss_plus_plus"]
         finding["classification"] = impact["classification"]
         finding["impact_scoring"] = impact
+        cvss_40 = calculate_cvss_40(finding)
+        finding["cvss_40_score"] = cvss_40["score"]
+        finding["cvss_40_vector"] = cvss_40["vector"]
+        scope_ok, _scope_reason = _active_scope_allowed(affected_url, policy)
+        finding["report_readiness"] = report_readiness(finding, scope_ok)
+        finding["rejection_reason_codes"] = rejection_reason_codes(
+            finding,
+            in_scope=scope_ok,
+        )
         failed = _failed_ready_checks(finding, policy)
         if quality["score"] < 70:
             failed.append("quality_score_below_70")
-        scope_ok, _scope_reason = _active_scope_allowed(affected_url, policy)
         severity = _text(finding.get("severity")).upper()
         exploitability = _lower(finding.get("exploitability_status"))
         evidence_strength = _lower(finding.get("evidence_strength"))
@@ -177,7 +191,11 @@ def apply_zero_fp_gate(
         elif exploitability == "false_positive" or false_positive_risk == "high":
             result["false_positives_removed"].append(_with_gate(finding, "REMOVED", failed))
         elif not failed:
-            label = "READY" if quality["score"] >= 85 else "VALID"
+            label = (
+                "READY"
+                if finding["report_readiness"]["ready"]
+                else "VALID"
+            )
             result["valid_bugs"].append(_with_gate(finding, label, []))
         elif severity in {"INFO", "INFORMATIONAL"} or not _text(finding.get("business_impact")):
             result["informational"].append(_with_gate(finding, "INFO", failed))
@@ -192,9 +210,44 @@ def apply_zero_fp_gate(
         else:
             result["candidates"].append(_with_gate(finding, "CANDIDATE", failed))
 
+    kept, duplicates = keep_best_similar(result["valid_bugs"])
+    result["valid_bugs"] = kept
+    result["false_positives_removed"].extend(
+        _with_gate(
+            duplicate,
+            "REMOVED",
+            ["duplicate_of:{}".format(duplicate.get("duplicate_of", ""))],
+        )
+        for duplicate in duplicates
+    )
+
     for bucket in result.values():
+        for finding in bucket:
+            affected_url = _text(
+                finding.get("affected_url") or finding.get("url")
+            )
+            scope_ok = _active_scope_allowed(affected_url, policy)[0]
+            if "cvss_40_score" not in finding:
+                cvss_40 = calculate_cvss_40(finding)
+                finding["cvss_40_score"] = cvss_40["score"]
+                finding["cvss_40_vector"] = cvss_40["vector"]
+            finding.setdefault(
+                "report_readiness",
+                report_readiness(finding, scope_ok),
+            )
+            finding.setdefault(
+                "rejection_reason_codes",
+                rejection_reason_codes(
+                    finding,
+                    in_scope=scope_ok,
+                    duplicate=bool(finding.get("duplicate_of")),
+                ),
+            )
         bucket.sort(
-            key=lambda item: float(item.get("cvss_plus_plus", 0) or 0),
+            key=lambda item: (
+                float(item.get("cvss_plus_plus", 0) or 0),
+                float(item.get("cvss_40_score", 0) or 0),
+            ),
             reverse=True,
         )
     return result

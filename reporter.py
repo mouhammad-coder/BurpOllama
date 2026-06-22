@@ -12,6 +12,7 @@ from gemini_client import ask_gemini
 from security_hardening import escape_markdown_table, safe_code_block
 from finding_model import normalize_finding, normalize_findings
 from impact_scoring_engine import score_finding as score_impact_finding
+from validation_enhancements import calculate_cvss_40, report_readiness
 
 
 SEVERITY_EMOJI = {
@@ -48,7 +49,20 @@ async def generate_full_report(
         impact_score = score_impact_finding(finding, chain_data)
         finding.setdefault("cvss_plus_plus", impact_score["cvss_plus_plus"])
         finding.setdefault("classification", impact_score["classification"])
-    reportable.sort(key=lambda x: SEVERITY_ORDER.get(x.get("severity", "INFO"), 5))
+        cvss_40 = calculate_cvss_40(finding)
+        finding.setdefault("cvss_40_score", cvss_40["score"])
+        finding.setdefault("cvss_40_vector", cvss_40["vector"])
+        finding.setdefault(
+            "report_readiness",
+            report_readiness(finding, bool(finding.get("_scope_match", True))),
+        )
+    reportable.sort(
+        key=lambda item: (
+            float(item.get("cvss_40_score", 0) or 0),
+            float(item.get("cvss_plus_plus", 0) or 0),
+        ),
+        reverse=True,
+    )
 
     # Counts
     counts = {}
@@ -148,21 +162,24 @@ async def generate_full_report(
             lines.append("**Steps:** {}".format(" → ".join(chain.get("steps", []))))
             lines.append("")
 
-    # CVSS++ impact ranking
-    lines.append("## Impact Ranking (CVSS++)")
+    # CVSS 4.0 / CVSS++ impact ranking
+    lines.append("## Impact Ranking (CVSS 4.0 and CVSS++)")
     lines.append("")
-    lines.append("| Finding | CVSS++ | Classification |")
-    lines.append("|---------|--------|----------------|")
+    lines.append("| Finding | CVSS 4.0 | CVSS++ | Readiness |")
+    lines.append("|---------|----------|--------|-----------|")
     for finding in sorted(
         reportable,
-        key=lambda item: float(item.get("cvss_plus_plus", 0) or 0),
+        key=lambda item: float(item.get("cvss_40_score", 0) or 0),
         reverse=True,
     ):
         title = finding.get("title") or finding.get("vuln_type") or "Finding"
-        lines.append("| {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} |".format(
             escape_markdown_table(title),
+            escape_markdown_table(finding.get("cvss_40_score", 0)),
             escape_markdown_table(finding.get("cvss_plus_plus", 0)),
-            escape_markdown_table(finding.get("classification", "Low")),
+            escape_markdown_table(
+                finding.get("report_readiness", {}).get("status", "NOT_READY")
+            ),
         ))
     lines.append("")
 
@@ -188,6 +205,10 @@ async def generate_full_report(
         lines.append("| **Confidence** | {}% |".format(f.get("confidence", 0)))
         lines.append("| **CWE** | {} |".format(f.get("cwe", "N/A")))
         lines.append("| **CVSS** | {} |".format(f.get("cvss", 0)))
+        lines.append("| **CVSS 4.0** | {} |".format(f.get("cvss_40_score", 0)))
+        lines.append("| **CVSS 4.0 Vector** | `{}` |".format(
+            escape_markdown_table(f.get("cvss_40_vector", ""))
+        ))
         lines.append("| **CVSS++** | {} ({}) |".format(
             f.get("cvss_plus_plus", 0),
             f.get("classification", "Low"),
@@ -195,6 +216,15 @@ async def generate_full_report(
         lines.append("| **URL** | `{}` |".format(escape_markdown_table(f.get("url", ""))))
         lines.append("| **Method** | `{}` |".format(escape_markdown_table(f.get("method", ""))))
         lines.append("| **Source** | {} |".format(escape_markdown_table(f.get("source", "auto"))))
+        lines.append("| **Report Readiness** | {} |".format(
+            escape_markdown_table(
+                f.get("report_readiness", {}).get("status", "NOT_READY")
+            )
+        ))
+        if f.get("rejection_reason_codes"):
+            lines.append("| **Rejection Codes** | {} |".format(
+                escape_markdown_table(", ".join(f.get("rejection_reason_codes", [])))
+            ))
         lines.append("")
 
         lines.append("**Description:**")
