@@ -79,6 +79,7 @@ from ato_chain_detector import detect_ato_chains
 from ai_provider import ai_router
 from coverage_intelligence import compute_coverage, prioritize_urls
 from coverage_v2 import compute_coverage_v2
+from playbook_engine import build_program_playbook, build_scan_playbook
 from distributed_scheduler import scheduler
 from observability import metrics
 from request_fingerprint import ResponseDeduplicator, fingerprint_http
@@ -1474,6 +1475,12 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 prioritized_urls[:200],
                 scan.get("logs", []),
             )
+            playbook = build_scan_playbook(
+                recon_data,
+                passable,
+                coverage2,
+                scan.get("planner", {}),
+            )
         except Exception as e:
             await log("Coverage and attack graph error: {}".format(e), "error")
             ato_chains = []
@@ -1487,6 +1494,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             }
             coverage = {"coverage_percent": 0}
             coverage2 = {"coverage_percent": 0}
+            playbook = build_scan_playbook(recon_data, passable, coverage2, scan.get("planner", {}))
         attack_graph_data = attack_graph
         coverage_data = coverage2
         analysis["attack_graph"] = attack_graph
@@ -1495,11 +1503,14 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         analysis["ato_chains"] = ato_chains
         analysis["coverage"] = coverage
         analysis["coverage_v2"] = coverage2
+        analysis["playbook"] = playbook
+        scan["playbook"] = playbook
         scan["analysis"] = analysis
         scan["resource_control"] = resources.status()
         autopilot_state.output(scan_id, "analysis", "coverage_attack_graph", {
             "coverage_v2": coverage2,
             "attack_graph": attack_graph,
+            "playbook": playbook,
         })
         chains   = analysis.get("chains",        [])
         priority = analysis.get("high_priority", [])
@@ -1509,6 +1520,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await broadcast({"type": "attack_graph", "scan_id": scan_id, "data": attack_graph})
         await broadcast({"type": "coverage", "scan_id": scan_id, "data": coverage})
         await broadcast({"type": "coverage_v2", "scan_id": scan_id, "data": coverage2})
+        await broadcast({"type": "playbook", "scan_id": scan_id, "data": playbook})
         await log("Analysis: {} LLM chains | {} graph paths | {}% coverage".format(
             len(chains), attack_graph.get("path_count", 0), coverage.get("coverage_percent", 0)), "success")
         _save_phase_checkpoint(scan_id, "analysis")
@@ -1961,6 +1973,14 @@ async def _resume_pipeline_from_checkpoint(
             analysis["ato_chains"] = ato_chains
             analysis["coverage"] = coverage
             analysis["coverage_v2"] = coverage2
+            playbook = build_scan_playbook(
+                recon_data,
+                passable,
+                coverage2,
+                scan.get("planner", {}),
+            )
+            analysis["playbook"] = playbook
+            scan["playbook"] = playbook
             scan["analysis"] = analysis
             await broadcast({
                 "type": "analysis_complete",
@@ -1969,6 +1989,7 @@ async def _resume_pipeline_from_checkpoint(
                 "high_priority": analysis.get("high_priority", []),
                 "ato_chains": ato_chains,
             })
+            await broadcast({"type": "playbook", "scan_id": scan_id, "data": playbook})
             _save_phase_checkpoint(scan_id, "analysis")
             planner.record_step(
                 "Deep Analysis",
@@ -2780,6 +2801,27 @@ async def get_scan_planner(scan_id: str):
         "summary": scans[scan_id].get("planner_summary", ""),
     })
 
+@app.get("/scan/{scan_id}/playbook")
+async def get_scan_playbook(scan_id: str):
+    if scan_id not in scans:
+        raise HTTPException(404, "Scan not found")
+    scan = scans[scan_id]
+    existing = scan.get("playbook") or scan.get("analysis", {}).get("playbook")
+    if existing:
+        return JSONResponse(existing)
+    findings = [
+        finding for finding in findings_store
+        if finding.get("scan_id") == scan_id
+    ]
+    playbook = build_scan_playbook(
+        scan.get("recon", {}),
+        findings,
+        _coverage_v2_for_scan(scan_id),
+        scan.get("planner", {}),
+    )
+    scan["playbook"] = playbook
+    return JSONResponse(playbook)
+
 @app.get("/intelligence/program")
 async def get_program_intelligence(slug: str):
     policy = await fetch_hackerone_scope(slug)
@@ -2788,6 +2830,16 @@ async def get_program_intelligence(slug: str):
         "available": bool(policy),
         "program": policy,
         "attractiveness": score_program_attractiveness(policy),
+    }
+
+@app.get("/intelligence/program/playbook")
+async def get_program_playbook(slug: str, tech: str = ""):
+    policy = await fetch_hackerone_scope(slug)
+    tech_stack = [item.strip() for item in tech.split(",") if item.strip()]
+    return {
+        "slug": slug,
+        "available": bool(policy),
+        "playbook": build_program_playbook(policy, tech_stack),
     }
 
 @app.get("/intelligence/cve")

@@ -109,6 +109,8 @@ Includes cost-aware routing, while local models remain free to run.
   takeover, cloud, WAF, and Web3 tooling
 - Advisory JSON/CSV scope aggregation
 - Persistent SQLite technique and outcome memory
+- Evidence-driven WSTG / API / bug-bounty playbook planning with next-best
+  test recommendations and coverage gaps
 - Static Solidity candidate analysis
 - Harness guidance for Claude Code, Codex, and OpenCode
 - Community issue templates, contribution guidance, and security policy
@@ -194,6 +196,20 @@ network and DNS access and uses only local mock data:
 ```bash
 python tests/offline_test_suite.py
 ```
+
+## Playbook and Coverage Brain
+
+BurpOllama now generates a deterministic analyst playbook for each scan:
+
+- `GET /scan/{scan_id}/playbook` returns ranked OWASP WSTG/API/bug-bounty
+  test classes, gaps, and next-best manual validation steps.
+- `GET /intelligence/program/playbook?slug=<h1-slug>` creates an advisory
+  pre-scan playbook from public program scope.
+- `burpollama playbook --recon-json recon.json --findings-json findings.json`
+  builds the same playbook offline from exported artifacts.
+
+This helps distinguish “no findings found” from “high-risk areas were not
+covered yet,” which is critical for real bounty work.
 
 ---
 

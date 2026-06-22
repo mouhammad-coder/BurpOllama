@@ -14,6 +14,7 @@ import httpx
 from agent_registry import list_agents
 from discovery_workflows import aggregate_scope_documents, run_discovery_workflow
 from external_tools import tool_status
+from playbook_engine import build_scan_playbook
 from technique_memory import TechniqueMemory
 from waf_bypass import analyze_waf_differentials
 from web3_scanner import audit_solidity_path
@@ -93,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     waf.add_argument("target")
     waf.add_argument("--authorized", action="store_true")
     waf.add_argument("--intensive", action="store_true")
+    playbook = sub.add_parser("playbook", help="Build an offline testing playbook from scan JSON artifacts.")
+    playbook.add_argument("--recon-json", required=True, help="Path to recon JSON artifact.")
+    playbook.add_argument("--findings-json", help="Optional path to findings JSON artifact.")
+    playbook.add_argument("--coverage-json", help="Optional path to coverage JSON artifact.")
     return parser
 
 
@@ -141,6 +146,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         _print_json(result)
         return 0 if result.get("ran") else 2
+    if args.command == "playbook":
+        recon = json.loads(Path(args.recon_json).read_text(encoding="utf-8"))
+        findings = []
+        if args.findings_json:
+            loaded = json.loads(Path(args.findings_json).read_text(encoding="utf-8"))
+            findings = loaded if isinstance(loaded, list) else loaded.get("findings", [])
+        coverage = {}
+        if args.coverage_json:
+            coverage = json.loads(Path(args.coverage_json).read_text(encoding="utf-8"))
+        _print_json(build_scan_playbook(recon, findings, coverage, {}))
+        return 0
     if args.command == "serve":
         import uvicorn
         uvicorn.run("main:app", host=args.host, port=args.port, reload=args.reload)
