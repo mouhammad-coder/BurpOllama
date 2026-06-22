@@ -11,6 +11,7 @@ from reporter import (
     generate_csv_report,
     generate_full_report,
     generate_json_report,
+    generate_sarif_report,
 )
 from validation_enhancements import calculate_cvss_40, report_readiness
 
@@ -98,6 +99,13 @@ def run_tests():
     assert rows[0]["cvss_40_vector"].startswith("CVSS:4.0/")
     assert rows[0]["cvss_40_official"] == "True"
     assert rows[0]["ready_to_submit"] == "True"
+
+    sarif = generate_sarif_report("https://example.test", [finding])
+    assert sarif["version"] == "2.1.0"
+    assert sarif["runs"][0]["results"][0]["level"] == "error"
+    assert sarif["runs"][0]["results"][0]["locations"][0][
+        "physicalLocation"
+    ]["artifactLocation"]["uri"].startswith("https://example.test/")
 
     print("REPORT SNAPSHOT TESTS: PASS")
 

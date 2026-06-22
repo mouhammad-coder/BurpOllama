@@ -5,6 +5,7 @@ from pathlib import Path
 from discovery_workflows import aggregate_scope_documents
 from ai_provider import AIRouter
 from config_manager import SETTING_DEFAULTS
+from external_tools import TOOL_REGISTRY
 from waf_bypass import _path_variants
 from web3_scanner import audit_solidity_path, scan_solidity_source
 
@@ -16,6 +17,19 @@ class ScopeAggregationTests(unittest.TestCase):
         ])
         self.assertEqual(result["allowed_assets"], ["*.example.com"])
         self.assertFalse(result["confirmed"])
+
+
+class ToolExpansionTests(unittest.TestCase):
+    def test_network_tls_cms_and_kubernetes_tools_are_registered(self):
+        self.assertTrue({
+            "naabu",
+            "nmap",
+            "testssl.sh",
+            "droopescan",
+            "kube-hunter",
+            "trivy",
+            "crlfuzz",
+        } <= set(TOOL_REGISTRY))
 
 
 class WafWorkflowTests(unittest.TestCase):

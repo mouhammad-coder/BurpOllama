@@ -252,6 +252,7 @@
       coverageV2: {},
       advancedCoverage: {},
       graph: {},
+      swarm: {},
       autopilot: {},
       programIntelligence: {},
       freshScope: {},
@@ -498,10 +499,11 @@
     }
     async function refreshSelectedArtifacts(){
       if(!state.selectedScanId) return;
-      const [coverage, coverageV2, graph, bounty, autopilot, findingBuckets, throttleStatus, scanData] = await Promise.all([
+      const [coverage, coverageV2, graph, swarm, bounty, autopilot, findingBuckets, throttleStatus, scanData] = await Promise.all([
         json(`/scan/${state.selectedScanId}/coverage`, {}),
         json(`/scan/${state.selectedScanId}/coverage/v2`, {}),
         json(`/scan/${state.selectedScanId}/attack-graph`, {}),
+        json(`/scan/${state.selectedScanId}/swarm?minimum_pheromone=0.1`, {}),
         json(`/scan/${state.selectedScanId}/bounty`, {}),
         json(`/scan/${state.selectedScanId}/autopilot`, {}),
         json(`/findings/${state.selectedScanId}/buckets`, {}),
@@ -511,6 +513,7 @@
       state.coverage = coverage || {};
       state.coverageV2 = coverageV2 || {};
       state.graph = graph || {};
+      state.swarm = swarm || {};
       state.bounty = bounty || {};
       state.autopilot = autopilot || {};
       state.findingBuckets = findingBuckets || {};
@@ -1776,6 +1779,7 @@
       const intelligence = a.intelligence || {};
       const throttle = state.throttleStatus || {};
       const freshScope = state.freshScope || {};
+      const swarm = state.swarm || {};
       const progressState = a.progress_state || (scan ? String(scan.status || 'queued') : 'queued');
       const el = document.getElementById('route-autopilot');
       el.innerHTML = `
@@ -1828,13 +1832,20 @@
         <div class="card pad step-card">
           <div class="card-title">Step 7: Export report</div><div class="card-sub">Export once proof is ready.</div><div style="height:12px"></div>
           <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
-          <div class="toolbar">${scan ? `<a class="btn primary" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a>` : ''}<button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
+          <div class="toolbar">${scan ? `<a class="btn primary" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(scan.id)}/report/sarif" target="_blank">Download SARIF</a>` : ''}<button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
         </div>
         ${['complete','completed'].includes(String(scan?.status || '').toLowerCase()) ? analystIntelligencePanel(intelligence) : ''}
         <div class="${state.advancedMode ? '' : 'hidden'}">
+          ${swarmPanel(swarm)}
+          <div style="height:14px"></div>
           <div class="grid cols-2"><div class="card pad"><div class="card-title">High-Value Endpoints</div><div style="height:12px"></div>${autopilotEndpointTable(endpoints)}</div><div class="card pad"><div class="card-title">Coverage Gaps</div><div style="height:12px"></div>${coverageGapList(c)}</div></div>
         </div>
         </div>`;
+    }
+    function swarmPanel(swarm){
+      const hot = swarm.hot_items || [];
+      const ready = swarm.ready_agents || [];
+      return `<div class="card pad"><div class="card-head"><div><div class="card-title">Swarm Blackboard</div><div class="card-sub">Independent agent observations ranked by decaying pheromone weight.</div></div><span class="pill">${esc(swarm.total_items || 0)} items</span></div><div style="height:12px"></div><div class="grid cols-4">${metric('Active agents', Object.keys(swarm.items_by_agent || {}).length, 'Blackboard writers')}${metric('Ready agents', ready.length, ready.map(item=>item.agent_name).join(', ') || 'No trigger fired')}${metric('Signal types', Object.keys(swarm.items_by_type || {}).length, 'Observation classes')}${metric('Hot frontier', hot.length, 'Pheromone ≥ 0.1')}</div><div class="list" style="margin-top:12px">${hot.slice(0,12).map(item => `<div class="row-card"><div><strong>${esc(item.finding_type)}</strong><div class="small muted">${esc(item.agent_name)} · ${esc(item.target)}</div></div><span class="tag">${Number(item.pheromone || 0).toFixed(3)}</span></div>`).join('') || '<div class="empty">Swarm signals appear as agents publish scan observations.</div>'}</div></div>`;
     }
     function freshScopePanel(data){
       const config = data.config || {};
@@ -2038,7 +2049,7 @@
         <div class="card pad">
           <div class="card-head"><div><div class="card-title">Selected report</div><div class="card-sub">${s ? esc(s.target) : 'No scan selected yet.'}</div></div>${s ? `<span class="status ${esc(s.status)}">${esc(s.status)}</span>` : ''}</div>
           <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
-          ${s ? `<div class="toolbar"><button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(s.id)}/report" target="_blank">Download Markdown</a><a class="btn" href="/findings/export" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(s.id)}/report/csv" target="_blank">Download CSV</a></div>` : '<div class="empty">Start or select a scan before exporting.</div>'}
+          ${s ? `<div class="toolbar"><button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(s.id)}/report" target="_blank">Download Markdown</a><a class="btn" href="/findings/export" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(s.id)}/report/csv" target="_blank">Download CSV</a><a class="btn" href="/scan/${esc(s.id)}/report/sarif" target="_blank">Download SARIF</a></div>` : '<div class="empty">Start or select a scan before exporting.</div>'}
         </div>
         <div style="height:14px"></div>
         <details class="${state.advancedMode ? '' : 'hidden'}"><summary class="btn">Advanced exports</summary><div style="height:12px"></div><div class="table-wrap"><table><thead><tr><th>Scan</th><th>Target</th><th>Status</th><th>Full</th><th>Executive</th><th>Technical</th><th>Raw JSON</th></tr></thead><tbody>

@@ -110,6 +110,10 @@ Includes cost-aware routing, while local models remain free to run.
 - Advisory JSON/CSV scope aggregation
 - Daily fresh-scope monitoring across public HackerOne, Bugcrowd, Intigriti,
   YesWeHack, and Federacy data, with optional ProjectDiscovery Chaos enrichment
+- Pheromone-weighted swarm blackboard with decaying signals, independent agent
+  trigger predicates, and a live campaign frontier
+- Scope-drift enforcement that revalidates authorization between scan phases
+- SARIF 2.1 export for GitHub code scanning and CI security dashboards
 - Persistent SQLite technique and outcome memory
 - Evidence-driven WSTG / API / bug-bounty playbook planning with next-best
   test recommendations and coverage gaps

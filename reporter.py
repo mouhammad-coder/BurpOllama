@@ -24,6 +24,13 @@ SEVERITY_EMOJI = {
 }
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+SARIF_LEVELS = {
+    "CRITICAL": "error",
+    "HIGH": "error",
+    "MEDIUM": "warning",
+    "LOW": "note",
+    "INFO": "none",
+}
 
 
 async def generate_full_report(
@@ -578,6 +585,114 @@ def generate_csv_report(findings: list[dict]) -> str:
         )
         writer.writerow(export_row)
     return output.getvalue()
+
+
+def generate_sarif_report(
+    target: str,
+    findings: list[dict],
+    *,
+    tool_version: str = "3.2",
+) -> dict:
+    """Generate a SARIF 2.1.0 report for CI and GitHub code scanning."""
+    rows = normalize_findings(findings)
+    reportable = [
+        row for row in rows
+        if row.get("verdict", "PASS") in ("PASS", "DOWNGRADE", "CONFIRMED")
+        and row.get("severity", "INFO") != "INFO"
+    ]
+    rules = {}
+    results = []
+    for finding in reportable:
+        rule_id = str(
+            finding.get("cwe")
+            or finding.get("vulnerability_class")
+            or finding.get("vuln_type")
+            or "BURPOLLAMA-FINDING"
+        ).strip().replace(" ", "-").upper()
+        title = finding.get("title") or finding.get("vuln_type") or rule_id
+        rules.setdefault(rule_id, {
+            "id": rule_id,
+            "name": str(title)[:200],
+            "shortDescription": {"text": str(title)[:500]},
+            "fullDescription": {
+                "text": str(
+                    finding.get("description")
+                    or finding.get("technical_impact")
+                    or title
+                )[:2000]
+            },
+            "help": {
+                "text": str(finding.get("remediation") or "Review and remediate the validated security finding.")[:4000],
+            },
+            "properties": {
+                "tags": list(filter(None, [
+                    "security",
+                    str(finding.get("cwe", "")),
+                    str(finding.get("owasp_top_10", "")),
+                ])),
+                "security-severity": str(
+                    finding.get("cvss_40_score")
+                    or finding.get("cvss")
+                    or 0
+                ),
+            },
+        })
+        affected = finding.get("affected_url") or finding.get("url") or target
+        result = {
+            "ruleId": rule_id,
+            "level": SARIF_LEVELS.get(
+                str(finding.get("severity", "INFO")).upper(),
+                "warning",
+            ),
+            "message": {
+                "text": "{}: {}".format(
+                    title,
+                    finding.get("business_impact")
+                    or finding.get("technical_impact")
+                    or finding.get("description")
+                    or "Validated security finding.",
+                )[:4000],
+            },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": str(affected)},
+                },
+                "logicalLocations": [{
+                    "name": str(finding.get("parameter") or finding.get("method") or "request"),
+                    "kind": "web-request",
+                }],
+            }],
+            "partialFingerprints": {
+                "burpollamaFindingId": str(finding.get("id", "")),
+                "burpollamaEvidenceId": str(finding.get("raw_evidence_id", "")),
+            },
+            "properties": {
+                "severity": finding.get("severity", "INFO"),
+                "confidence": finding.get("confidence", 0),
+                "exploitability_status": finding.get("exploitability_status", ""),
+                "evidence_strength": finding.get("evidence_strength", ""),
+                "report_readiness": finding.get("report_readiness", {}).get(
+                    "status", "NOT_READY"
+                ),
+            },
+        }
+        results.append(result)
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "BurpOllama",
+                    "version": tool_version,
+                    "informationUri": "https://github.com/mouhammad-coder/BurpOllama",
+                    "rules": list(rules.values()),
+                }
+            },
+            "automationDetails": {"id": "BurpOllama/{}".format(target)},
+            "results": results,
+        }],
+    }
 
 
 def generate_submission(finding: dict) -> str:

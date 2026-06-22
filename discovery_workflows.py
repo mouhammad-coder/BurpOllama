@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from external_tools import ToolResult, run_tool
+from scope_policy import scope_policy
 
 
 @dataclass
@@ -99,6 +100,17 @@ async def run_discovery_workflow(
     domain = _domain_from_target(target)
     if not domain:
         return [ToolResult(workflow, [], None, skipped=True, reason="Invalid target.")]
+    allowed, reason = scope_policy.validate_target(target, action="active")
+    if not allowed:
+        return [
+            ToolResult(
+                workflow,
+                [],
+                None,
+                skipped=True,
+                reason="ScopePolicy blocked discovery: {}".format(reason),
+            )
+        ]
     plans = {
         "cloud": [
             ("cloud_enum", ["-k", domain], 300),
@@ -116,12 +128,32 @@ async def run_discovery_workflow(
             ("paramspider", ["-d", domain], 180),
             ("arjun", ["-u", target, "--stable"], 300),
         ],
+        "ports": [
+            ("naabu", ["-host", domain, "-silent", "-rate", "100"], 180),
+            (
+                "nmap",
+                ["-sV", "--version-light", "-T3", "--top-ports", "100", domain],
+                300,
+            ),
+        ],
+        "tls": [
+            ("testssl.sh", ["--quiet", "--warnings", "off", target], 300),
+        ],
+        "cms": [
+            ("droopescan", ["scan", "-u", target], 300),
+        ],
+        "kubernetes": [
+            ("kube-hunter", ["--remote", domain, "--report", "json"], 300),
+        ],
     }
     results = []
     for name, arguments, timeout in plans.get(workflow, []):
         results.append(
             await run_tool(
-                name, arguments, timeout=timeout, authorized=authorized,
+                name,
+                arguments,
+                timeout=timeout,
+                authorized=authorized,
                 intensive_authorized=intensive_authorized,
             )
         )
@@ -130,4 +162,3 @@ async def run_discovery_workflow(
             ToolResult(workflow, [], None, skipped=True, reason="Unknown discovery workflow.")
         )
     return results
-

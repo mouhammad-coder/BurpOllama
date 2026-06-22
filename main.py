@@ -42,6 +42,8 @@ from program_intelligence import (
     score_program_attractiveness,
 )
 from fresh_scope_hunter import fresh_scope_hunter
+from scope_drift_guard import scope_drift, scope_snapshot
+from swarm_blackboard import TriggerPredicate, swarm_blackboard
 from hunt_engine   import (
     run_hunt,
     hunt_stored_xss,
@@ -62,6 +64,7 @@ from triage_gate   import batch_triage, run_deep_analysis
 from reporter      import (
     generate_full_report, generate_submission, generate_executive_report,
     generate_technical_report, generate_json_report, generate_csv_report,
+    generate_sarif_report,
 )
 from waf_engine    import fingerprint_waf, fingerprint_waf_v2, throttle
 from utils         import prune_http_for_llm
@@ -880,6 +883,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     )
     scan_logs = scan.setdefault("logs", scan_logs)
     scan["status"] = "running"
+    scan["scope_snapshot"] = scope_snapshot(scope_policy.to_dict())
     task_id = scan.get("scheduler_task_id", "")
     autopilot_state.update_run(scan_id, status="running", phase=scan.get("phase", "queued"))
     autopilot_state.upsert_task(scan_id, "full_pipeline", "running", {"target": target})
@@ -887,7 +891,52 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     async def log(msg, level="info"):
         await log_broadcast(scan_id, msg, level)
 
+    def swarm_write(
+        agent_name: str,
+        finding_type: str,
+        item_target: str,
+        data: dict,
+        pheromone: float,
+    ):
+        try:
+            return swarm_blackboard.write(
+                scan_id,
+                agent_name,
+                finding_type,
+                item_target,
+                data,
+                pheromone_base=pheromone,
+            )
+        except Exception as exc:
+            event_store.append(
+                scan_id,
+                "swarm.write_error",
+                {"agent": agent_name, "type": finding_type, "error": str(exc)},
+            )
+            return ""
+
     async def planner_checkpoint(phase_name: str):
+        drift = scope_drift(scan.get("scope_snapshot"), scope_policy.to_dict())
+        if drift["changed"]:
+            scan["scope_drift"] = drift
+            allowed, reason = scope_policy.validate_target(target, action="scan")
+            await log(
+                "Scope policy changed during scan before {}: {}".format(
+                    phase_name,
+                    ", ".join(sorted(drift["changes"])),
+                ),
+                "warning",
+            )
+            if not allowed:
+                swarm_write(
+                    "scope-guard",
+                    "AGENT_ERROR",
+                    target,
+                    {"reason": reason, "changes": drift["changes"]},
+                    1.0,
+                )
+                raise ScanStopped("Scope drift blocked target: {}".format(reason))
+            scan["scope_snapshot"] = drift["snapshot"]
         scan["planner"] = planner.to_dict()
         autopilot_state.update_run(
             scan_id,
@@ -933,6 +982,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
     try:
         event_store.append(scan_id, "scan.started", {"target": target})
+        swarm_write(
+            "autopilot",
+            "TARGET_REGISTERED",
+            target,
+            {"scan_mode": scope_policy.config.scan_mode},
+            1.0,
+        )
         if scan.get("authorization_warning"):
             await log(scan["authorization_warning"], "warning")
         await enforce_scan_control(scan_id)
@@ -1062,6 +1118,32 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             "stats": recon_data.get("stats", {}),
             "content_discovery_count": len(recon_data.get("content_discovery", [])),
         })
+        for host in recon_data.get("live_hosts", [])[:100]:
+            if not isinstance(host, dict):
+                continue
+            swarm_write(
+                "recon-agent",
+                "HTTP_ENDPOINT",
+                host.get("url", target),
+                {
+                    "status": host.get("status"),
+                    "title": host.get("title", ""),
+                    "tech": host.get("tech", []),
+                },
+                0.65,
+            )
+        for technology in (
+            recon_data.get("tech_stack")
+            or recon_data.get("technologies")
+            or []
+        )[:100]:
+            swarm_write(
+                "recon-agent",
+                "TECHNOLOGY",
+                target,
+                {"technology": technology},
+                0.5,
+            )
         await enforce_scan_control(scan_id)
         await broadcast({"type": "recon_complete", "scan_id": scan_id,
                          "data": {"stats": recon_data.get("stats", {}),
@@ -1304,6 +1386,25 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             f["timestamp"] = datetime.utcnow().isoformat()
             findings_store.append(f)
             stats[f["severity"]] += 1; stats["total"] += 1
+            swarm_write(
+                "hunt-agent",
+                "RAW_FINDING",
+                f.get("affected_url") or f.get("url") or target,
+                {
+                    "finding_id": f.get("id", ""),
+                    "vulnerability_class": f.get("vulnerability_class")
+                    or f.get("vuln_type", ""),
+                    "severity": f.get("severity", "INFO"),
+                    "confidence": f.get("confidence", 0),
+                },
+                {
+                    "CRITICAL": 1.0,
+                    "HIGH": 0.85,
+                    "MEDIUM": 0.6,
+                    "LOW": 0.35,
+                    "INFO": 0.15,
+                }.get(str(f.get("severity", "INFO")).upper(), 0.3),
+            )
             await broadcast({"type": "finding", "data": f})
         await broadcast({"type": "stats", "data": dict(stats)})
         scan["raw_findings"] = raw_findings
@@ -1423,6 +1524,27 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         triaged = normalize_findings(triaged, scan_id=scan_id)
         triaged_findings = triaged
         scan["triaged_findings"] = triaged
+        for finding in triaged:
+            if finding.get("verdict") not in ("PASS", "DOWNGRADE", "CONFIRMED"):
+                continue
+            swarm_write(
+                "validator",
+                "VALIDATED_FINDING",
+                finding.get("affected_url") or finding.get("url") or target,
+                {
+                    "finding_id": finding.get("id", ""),
+                    "vulnerability_class": finding.get("vulnerability_class")
+                    or finding.get("vuln_type", ""),
+                    "severity": finding.get("severity", "INFO"),
+                    "exploitability_status": finding.get(
+                        "exploitability_status", ""
+                    ),
+                    "evidence_strength": finding.get("evidence_strength", ""),
+                },
+                1.0
+                if finding.get("exploitability_status") == "confirmed"
+                else 0.75,
+            )
         triaged_map = {f["id"]: f for f in triaged}
         for i, f in enumerate(findings_store):
             if f["id"] in triaged_map:
@@ -1439,11 +1561,28 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await _save_scan_transition(scan_id, "analysis")
         await log("P4: DEEP ANALYSIS", "phase")
         passable = [f for f in triaged if f.get("verdict") in ("PASS","DOWNGRADE")]
+        swarm_frontier = swarm_blackboard.query(
+            scan_id,
+            TriggerPredicate(
+                finding_types=("VALIDATED_FINDING",),
+                minimum_pheromone=0.65,
+                limit=100,
+            ),
+        )
+        scan["swarm_frontier"] = swarm_frontier
+        swarm_promoted_analysis = bool(swarm_frontier)
+        if swarm_promoted_analysis and not adaptive_plan.run_deep_analysis:
+            await log(
+                "Swarm frontier promoted deep analysis for {} hot validated signal(s).".format(
+                    len(swarm_frontier)
+                ),
+                "adaptive",
+            )
         await resources.gate()
         try:
             analysis = (
                 await run_deep_analysis(passable, recon_data, api_key)
-                if adaptive_plan.run_deep_analysis
+                if adaptive_plan.run_deep_analysis or swarm_promoted_analysis
                 else {
                     "chains": [],
                     "high_priority": passable[:10],
@@ -1520,6 +1659,20 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         analysis["coverage_v2"] = coverage2
         analysis["playbook"] = playbook
         analysis["auth_coverage"] = auth_coverage
+        for path in attack_graph.get("attack_paths", [])[:20]:
+            swarm_write(
+                "chain-builder",
+                "EXPLOIT_CHAIN",
+                target,
+                {
+                    "summary": path.get("summary", ""),
+                    "score": path.get("score", 0),
+                    "impact": path.get("impact", ""),
+                    "chain_label": path.get("chain_label", ""),
+                    "steps": path.get("steps", 0),
+                },
+                min(1.0, max(0.2, float(path.get("score", 0) or 0) / 10.0)),
+            )
         scan["playbook"] = playbook
         scan["auth_coverage"] = auth_coverage
         scan["analysis"] = analysis
@@ -1642,6 +1795,18 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             "reportable": reportable,
             "coverage": scan.get("analysis", {}).get("coverage", {}),
         })
+        swarm_write(
+            "report-writer",
+            "CAMPAIGN_COMPLETE",
+            target,
+            {
+                "reportable": reportable,
+                "coverage_percent": coverage2.get("coverage_percent", 0),
+                "attack_paths": attack_graph.get("path_count", 0),
+            },
+            1.0,
+        )
+        scan["swarm"] = swarm_blackboard.status(scan_id)
         if task_id:
             scheduler.complete(task_id)
         await broadcast({"type": "scan_complete", "scan_id": scan_id,
@@ -1649,6 +1814,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await log("SCAN COMPLETE", "success")
 
     except ScanStopped as e:
+        swarm_write(
+            "autopilot",
+            "AGENT_ERROR",
+            target,
+            {"status": "stopped", "reason": str(e)},
+            0.8,
+        )
         scan["planner"] = planner.to_dict()
         scan["planner_summary"] = planner.summarize_progress()
         scan.update({"status": "stopped", "phase": "stopped", "error": str(e)})
@@ -1659,6 +1831,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await broadcast({"type": "scan_stopped", "scan_id": scan_id, "reason": str(e)})
         event_store.append(scan_id, "scan.stopped", {"reason": str(e)})
     except Exception as e:
+        swarm_write(
+            "autopilot",
+            "AGENT_ERROR",
+            target,
+            {"status": "failed", "reason": str(e)},
+            1.0,
+        )
         scan["planner"] = planner.to_dict()
         scan["planner_summary"] = planner.summarize_progress()
         scan.update({"status": "failed", "phase": "failed", "error": str(e)})
@@ -2647,6 +2826,26 @@ async def get_csv_report(scan_id: str):
     return Response(csv_text, media_type="text/csv",
                     headers={"Content-Disposition":"attachment; filename=burpollama_{}_findings.csv".format(scan_id)})
 
+@app.get("/scan/{scan_id}/report/sarif")
+async def get_sarif_report(scan_id: str):
+    if scan_id not in scans:
+        raise HTTPException(404, "Scan not found")
+    scan = scans[scan_id]
+    sarif = generate_sarif_report(
+        scan.get("target", ""),
+        scan.get("triaged_findings", []),
+        tool_version=app.version,
+    )
+    return JSONResponse(
+        sarif,
+        media_type="application/sarif+json",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=burpollama_{}.sarif".format(scan_id)
+            )
+        },
+    )
+
 @app.get("/scan/{scan_id}/report/download")
 async def download_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
@@ -2898,6 +3097,21 @@ async def get_scan_planner(scan_id: str):
         "planner": scans[scan_id].get("planner", {}),
         "summary": scans[scan_id].get("planner_summary", ""),
     })
+
+@app.get("/scan/{scan_id}/swarm")
+async def get_scan_swarm(scan_id: str, minimum_pheromone: float = 0.0):
+    if scan_id not in scans and not autopilot_state.get_run(scan_id):
+        raise HTTPException(404, "Scan not found")
+    status = swarm_blackboard.status(scan_id)
+    status["hot_items"] = swarm_blackboard.query(
+        scan_id,
+        TriggerPredicate(
+            minimum_pheromone=max(0.0, float(minimum_pheromone)),
+            limit=100,
+        ),
+    )
+    status["ready_agents"] = swarm_blackboard.ready_agents(scan_id)
+    return JSONResponse(status)
 
 @app.get("/scan/{scan_id}/playbook")
 async def get_scan_playbook(scan_id: str):
@@ -3407,6 +3621,9 @@ def _system_check_results() -> dict:
         "class_36_session_security": callable(hunt_session_security),
         "class_37_clickjacking": callable(hunt_clickjacking),
         "class_38_browser_storage": callable(hunt_browser_storage),
+        "swarm_blackboard": callable(swarm_blackboard.write),
+        "scope_drift_guard": callable(scope_drift),
+        "sarif_export": callable(generate_sarif_report),
     }
     checks = {
         "backend": _check_status("ok", "FastAPI backend is running."),

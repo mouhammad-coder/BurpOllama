@@ -48,6 +48,18 @@ async def _run_api_command(args) -> int:
     if args.command == "scans":
         _print_json(await _api("GET", "/scans", base=args.api))
         return 0
+    if args.command == "swarm":
+        _print_json(
+            await _api(
+                "GET",
+                "/scan/{}/swarm?minimum_pheromone={}".format(
+                    args.scan_id,
+                    args.minimum_pheromone,
+                ),
+                base=args.api,
+            )
+        )
+        return 0
     if args.command == "scan":
         if not args.authorized:
             print("Refusing to scan: pass --authorized only when you own the target or have written permission.", file=sys.stderr)
@@ -70,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="Show backend, AI, database, and scan readiness.")
     sub.add_parser("scans", help="List scans known to the running backend.")
+    swarm = sub.add_parser(
+        "swarm",
+        help="Inspect the pheromone-weighted blackboard for a scan.",
+    )
+    swarm.add_argument("scan_id")
+    swarm.add_argument("--minimum-pheromone", type=float, default=0.0)
     scan = sub.add_parser("scan", help="Start an authorized scan through the local API.")
     scan.add_argument("target")
     scan.add_argument("--mode", choices=("LIGHT", "BALANCED", "DEEP"), default="BALANCED")
@@ -85,7 +103,19 @@ def build_parser() -> argparse.ArgumentParser:
     scope = sub.add_parser("scope-import", help="Aggregate exported JSON/CSV scope files.")
     scope.add_argument("files", nargs="+")
     discover = sub.add_parser("discover", help="Run a guarded optional-tool discovery workflow.")
-    discover.add_argument("workflow", choices=("cloud", "takeover", "secrets", "parameters"))
+    discover.add_argument(
+        "workflow",
+        choices=(
+            "cloud",
+            "takeover",
+            "secrets",
+            "parameters",
+            "ports",
+            "tls",
+            "cms",
+            "kubernetes",
+        ),
+    )
     discover.add_argument("target")
     discover.add_argument("--authorized", action="store_true")
     discover.add_argument("--intensive", action="store_true")
