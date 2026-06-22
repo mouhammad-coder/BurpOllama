@@ -88,6 +88,7 @@ from ai_privacy import ai_privacy_guard
 from finding_model import normalize_finding, normalize_findings
 from bounty_mode import build_bounty_mode, build_bounty_report, build_single_bounty_report
 from autopilot_state import autopilot_state
+from autonomous_planner import WorkingMemory
 from finding_quality import evaluate_findings
 from zero_fp_gate import apply_zero_fp_gate
 from secret_validator import validate_secret
@@ -829,6 +830,10 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     coverage_data = {}
     attack_graph_data = {}
     intel_data = {}
+    planner = WorkingMemory(
+        step_budget=int(os.getenv("BURPOLLAMA_PLANNER_STEP_BUDGET", "100")),
+        time_budget=int(os.getenv("BURPOLLAMA_PLANNER_TIME_BUDGET", "1800")),
+    )
 
     scan = scans[scan_id]
     scan_logs = scan.setdefault("logs", scan_logs)
@@ -839,6 +844,19 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
     async def log(msg, level="info"):
         await log_broadcast(scan_id, msg, level)
+
+    async def planner_checkpoint(phase_name: str):
+        scan["planner"] = planner.to_dict()
+        if planner.should_continue():
+            return
+        scan["planner_summary"] = planner.summarize_progress()
+        await log(
+            "Planner budget reached before {}. Remaining work stopped safely.".format(
+                phase_name
+            ),
+            "warning",
+        )
+        raise ScanStopped("Planner budget exceeded")
 
     async def progress(phase, current, total, label=""):
         scan["phase"]    = phase
@@ -922,6 +940,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             await log(message, "adaptive")
         await resources.gate()
         # PHASE 1: RECON
+        await planner_checkpoint("recon")
         await _save_scan_transition(scan_id, "recon")
         await log("P1: RECON", "phase")
         def recon_log(msg, level="info"):
@@ -1026,8 +1045,15 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             recon_stats.get("live_hosts", 0),
             recon_stats.get("urls_clustered", recon_stats.get("urls", 0)),
             recon_stats.get("js_findings", 0)), "success")
+        planner.record_step(
+            "Recon",
+            "completed",
+            len(recon_data.get("js_findings", [])),
+        )
+        scan["planner"] = planner.to_dict()
 
         # PHASE 1.5a: OOB REGISTRATION
+        await planner_checkpoint("OOB registration")
         await enforce_scan_control(scan_id)
         await log("P1.5a: OOB ENGINE", "phase")
         oob_started = False
@@ -1051,6 +1077,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             await broadcast({"type": "oob_ready", "scan_id": scan_id, "domain": oob.domain})
 
         # PHASE 1.5b: WAF FINGERPRINTING
+        await planner_checkpoint("WAF fingerprinting")
         waf_info = {}
         allowed_live_hosts = [
             h for h in recon_data.get("live_hosts", [])
@@ -1075,6 +1102,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 await log("WAF: None detected", "success")
 
         # PHASE 1.5c: API SCHEMA INGESTION
+        await planner_checkpoint("API schema ingestion")
         await enforce_scan_control(scan_id)
         await resources.gate()
         await log("P1.5c: API SCHEMA INGESTION", "phase")
@@ -1131,11 +1159,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         _save_phase_checkpoint(scan_id, "recon")
 
         # PHASE 2: HUNT
+        await planner_checkpoint("hunt")
         await enforce_scan_control(scan_id)
         await _save_scan_transition(scan_id, "hunt")
         await log("P2: HUNT", "phase")
 
         async def hunt_progress(phase, cur, total, label):
+            scan["planner"] = planner.to_dict()
             await progress(phase, cur, total, label)
 
         prioritized_urls = prioritize_urls(recon_data.get("urls", []), recon_data.get("live_hosts", []))
@@ -1161,6 +1191,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                     batch_size=adaptive_plan.request_batch_size,
                     resource_controller=resources,
                     scan_level=adaptive_plan.level,
+                    planner=planner,
                 )
             except Exception as e:
                 await log("Hunt error: {}".format(e), "error")
@@ -1265,6 +1296,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             # poller keeps the process alive. It stops itself after the window expires.
 
         # PHASE 3: TRIAGE
+        await planner_checkpoint("triage")
         await enforce_scan_control(scan_id)
         await _save_scan_transition(scan_id, "triage")
         await log("P3: CoT TRIAGE", "phase")
@@ -1352,6 +1384,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         _save_phase_checkpoint(scan_id, "triage")
 
         # PHASE 4: DEEP ANALYSIS
+        await planner_checkpoint("deep analysis")
         await enforce_scan_control(scan_id)
         await _save_scan_transition(scan_id, "analysis")
         await log("P4: DEEP ANALYSIS", "phase")
@@ -1440,6 +1473,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         _save_phase_checkpoint(scan_id, "analysis")
 
         # PHASE 5: REPORT
+        await planner_checkpoint("reporting")
         await enforce_scan_control(scan_id)
         await _save_scan_transition(scan_id, "report")
         await log("P5: GENERATING REPORT", "phase")
@@ -1473,6 +1507,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         _save_phase_checkpoint(scan_id, "report")
 
         # PHASE 6: ANALYST INTELLIGENCE
+        await planner_checkpoint("analyst intelligence")
         await enforce_scan_control(scan_id)
         await resources.gate()
         await _save_scan_transition(scan_id, "intelligence")
@@ -1505,6 +1540,9 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             )
             intelligence["generation_error"] = str(e)
         scan["intelligence"] = intelligence
+        planner.complete()
+        scan["planner"] = planner.to_dict()
+        scan["planner_summary"] = planner.summarize_progress()
         autopilot_state.output(
             scan_id,
             "analyst",
@@ -1539,6 +1577,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await log("SCAN COMPLETE", "success")
 
     except ScanStopped as e:
+        scan["planner"] = planner.to_dict()
+        scan["planner_summary"] = planner.summarize_progress()
         scan.update({"status": "stopped", "phase": "stopped", "error": str(e)})
         autopilot_state.update_run(scan_id, status="stopped", phase="stopped",
                                    checkpoint={"error": str(e)}, finished=True)
@@ -1547,6 +1587,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await broadcast({"type": "scan_stopped", "scan_id": scan_id, "reason": str(e)})
         event_store.append(scan_id, "scan.stopped", {"reason": str(e)})
     except Exception as e:
+        scan["planner"] = planner.to_dict()
+        scan["planner_summary"] = planner.summarize_progress()
         scan.update({"status": "failed", "phase": "failed", "error": str(e)})
         autopilot_state.update_run(scan_id, status="failed", phase=scan.get("phase", "error"),
                                    checkpoint={"error": str(e)})
@@ -2576,6 +2618,8 @@ def _autopilot_for_scan(scan_id: str) -> dict:
         "coverage_gaps": coverage_gaps,
         "attack_chains": graph.get("attack_paths", []),
         "intelligence": scan.get("intelligence", {}),
+        "planner": scan.get("planner", {}),
+        "planner_summary": scan.get("planner_summary", ""),
         "ready_to_submit": _ready_to_submit_findings(bounty),
     }
 
@@ -2648,6 +2692,16 @@ async def get_scan_intelligence(scan_id: str):
     return JSONResponse(
         scans[scan_id].get("recon", {}).get("intelligence", {})
     )
+
+@app.get("/scan/{scan_id}/planner")
+async def get_scan_planner(scan_id: str):
+    if scan_id not in scans:
+        raise HTTPException(404, "Scan not found")
+    return JSONResponse({
+        "scan_id": scan_id,
+        "planner": scans[scan_id].get("planner", {}),
+        "summary": scans[scan_id].get("planner_summary", ""),
+    })
 
 @app.get("/intelligence/program")
 async def get_program_intelligence(slug: str):

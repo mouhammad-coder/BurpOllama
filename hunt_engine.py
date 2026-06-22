@@ -4834,6 +4834,7 @@ async def _run_hunt_impl(
     request_timeout:float    = None,
     batch_size:     int      = 0,
     resource_controller:ResourceController = None,
+    planner=None,
 ) -> list:
     """
     Run all hunt classes + dual-session auth matrix + OOB SQLi payloads.
@@ -4874,6 +4875,22 @@ async def _run_hunt_impl(
         strategy, concurrency, min(len(all_urls), 200)))
 
     all_findings = []
+    external_progress_cb = progress_cb
+    tracked_class = {"name": "", "finding_count": 0}
+
+    async def tracked_progress(phase, current, total, label=""):
+        if planner and tracked_class["name"]:
+            planner.record_step(
+                tracked_class["name"],
+                "completed",
+                max(0, len(all_findings) - tracked_class["finding_count"]),
+            )
+        tracked_class["name"] = label
+        tracked_class["finding_count"] = len(all_findings)
+        if external_progress_cb:
+            await external_progress_cb(phase, current, total, label)
+
+    progress_cb = tracked_progress
     tested_bases = set()
     urls_to_test = scope_policy.filter_urls(
         list(dict.fromkeys(all_urls))[:max(1, int(max_urls))],
@@ -4898,6 +4915,14 @@ async def _run_hunt_impl(
         v3.4: Check HOST_DEAD_WAF flag before starting each hunt class.
         Returns True if scan should pivot to passive-only (skip active classes).
         """
+        if planner and not planner.should_continue():
+            await log(
+                "[Hunt] Planner budget reached before '{}' — stopping remaining active classes".format(
+                    class_name
+                ),
+                "warning",
+            )
+            return True
         if throttle._host_dead:
             await log("[Hunt] HOST_DEAD_WAF — skipping active class '{}', pivoting to passive-only".format(
                 class_name), )
@@ -4910,11 +4935,19 @@ async def _run_hunt_impl(
         limits=httpx.Limits(max_connections=concurrency + 5)
     ) as client:
 
-        total_classes = len(PER_URL_CLASSES) + len(PER_BASE_CLASSES) + 26
+        per_url_classes = (
+            planner.prioritize_classes(PER_URL_CLASSES, urls_to_test)
+            if planner else PER_URL_CLASSES
+        )
+        per_base_classes = (
+            planner.prioritize_classes(PER_BASE_CLASSES, base_urls)
+            if planner else PER_BASE_CLASSES
+        )
+        total_classes = len(per_url_classes) + len(per_base_classes) + 26
         class_idx     = 0
 
         # ── Per-URL classes ───────────────────────────────────────────────────
-        for name, fn in PER_URL_CLASSES:
+        for name, fn in per_url_classes:
             await resources.gate()
             class_idx += 1
             allowed_class, class_reason = _activation_allowed(name)
@@ -4949,7 +4982,7 @@ async def _run_hunt_impl(
                 await asyncio.sleep(0)
 
         # ── Per-base classes ──────────────────────────────────────────────────
-        for name, fn in PER_BASE_CLASSES:
+        for name, fn in per_base_classes:
             await resources.gate()
             class_idx += 1
             allowed_class, class_reason = _activation_allowed(name)
@@ -5874,6 +5907,13 @@ async def _run_hunt_impl(
                 len(business_logic_findings)
             ))
 
+    if planner and tracked_class["name"]:
+        planner.record_step(
+            tracked_class["name"],
+            "completed",
+            max(0, len(all_findings) - tracked_class["finding_count"]),
+        )
+
     # Deduplicate by (vuln_type, url)
     seen, dedup = set(), []
     for f in all_findings:
@@ -5907,6 +5947,7 @@ async def run_hunt(
     batch_size:     int      = 0,
     resource_controller:ResourceController = None,
     scan_level:     str      = "BALANCED",
+    planner=None,
 ) -> list:
     """Apply mode-specific URL and wall-clock limits around the hunt engine."""
     normalized_level = str(scan_level or "").strip().upper()
@@ -5953,6 +5994,7 @@ async def run_hunt(
                 request_timeout=request_timeout,
                 batch_size=batch_size,
                 resource_controller=resource_controller,
+                planner=planner,
             ),
             timeout=timeout_seconds,
         )
