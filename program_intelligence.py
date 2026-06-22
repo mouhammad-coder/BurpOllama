@@ -12,8 +12,9 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
-from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -27,6 +28,24 @@ HEADERS = {
     "User-Agent": "BurpOllama/3.0 public-security-intelligence",
     "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
 }
+_CACHE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _cache_connection():
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(CACHE_PATH, timeout=30)
+    try:
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS intelligence_cache "
+            "(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)"
+        )
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _cache_key(namespace: str, value: str) -> str:
@@ -36,16 +55,12 @@ def _cache_key(namespace: str, value: str) -> str:
 
 def _cache_get(key: str) -> Any | None:
     try:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(CACHE_PATH)) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS intelligence_cache "
-                "(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)"
-            )
-            row = connection.execute(
-                "SELECT payload, created_at FROM intelligence_cache WHERE cache_key=?",
-                (key,),
-            ).fetchone()
+        with _CACHE_LOCK:
+            with _cache_connection() as connection:
+                row = connection.execute(
+                    "SELECT payload, created_at FROM intelligence_cache WHERE cache_key=?",
+                    (key,),
+                ).fetchone()
         if not row or time.time() - float(row[1]) > CACHE_TTL_SECONDS:
             return None
         return json.loads(row[0])
@@ -55,18 +70,13 @@ def _cache_get(key: str) -> Any | None:
 
 def _cache_set(key: str, payload: Any) -> None:
     try:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(CACHE_PATH)) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS intelligence_cache "
-                "(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)"
-            )
-            connection.execute(
-                "INSERT OR REPLACE INTO intelligence_cache "
-                "(cache_key, payload, created_at) VALUES (?, ?, ?)",
-                (key, json.dumps(payload, ensure_ascii=False), time.time()),
-            )
-            connection.commit()
+        with _CACHE_LOCK:
+            with _cache_connection() as connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO intelligence_cache "
+                    "(cache_key, payload, created_at) VALUES (?, ?, ?)",
+                    (key, json.dumps(payload, ensure_ascii=False), time.time()),
+                )
     except Exception:
         return
 

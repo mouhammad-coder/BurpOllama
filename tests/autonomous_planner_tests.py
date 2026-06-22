@@ -1,5 +1,6 @@
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -57,6 +58,18 @@ def run_tests():
         )
         assert durable_copy.completed_steps[0]["step"] == "Recon"
         assert durable_copy.step_budget == 20
+
+        def add_event(index):
+            store.event("scan-1", "concurrent.test", {"index": index})
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(add_event, range(32)))
+        events = store.recent_events("scan-1", limit=100)
+        concurrent = [
+            event for event in events
+            if event["event_type"] == "concurrent.test"
+        ]
+        assert len(concurrent) == 32
 
     print("AUTONOMOUS PLANNER TESTS: PASS")
 

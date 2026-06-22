@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from contextlib import closing
 
@@ -126,6 +127,15 @@ async def async_contracts(cache_path: Path):
         })]
         cves = await intelligence.lookup_nvd_cve("example-product")
         assert [item["cve_id"] for item in cves] == ["CVE-2026-0001"]
+
+        def write_cache(index):
+            key = intelligence._cache_key("concurrency", str(index))
+            intelligence._cache_set(key, {"index": index})
+            return intelligence._cache_get(key)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            cached = list(executor.map(write_cache, range(32)))
+        assert [item["index"] for item in cached] == list(range(32))
     finally:
         intelligence.httpx.AsyncClient = original_client
         intelligence.CACHE_PATH = original_cache
