@@ -203,10 +203,15 @@ BurpOllama now generates a deterministic analyst playbook for each scan:
 
 - `GET /scan/{scan_id}/playbook` returns ranked OWASP WSTG/API/bug-bounty
   test classes, gaps, and next-best manual validation steps.
+- `GET /scan/{scan_id}/auth-coverage` shows whether authenticated and
+  dual-session authorization testing is actually ready, which sensitive
+  endpoint templates were discovered, and what still needs session setup.
 - `GET /intelligence/program/playbook?slug=<h1-slug>` creates an advisory
   pre-scan playbook from public program scope.
 - `burpollama playbook --recon-json recon.json --findings-json findings.json`
   builds the same playbook offline from exported artifacts.
+- `burpollama auth-coverage --recon-json recon.json --sessions-json sessions.json`
+  performs the same secret-safe auth readiness analysis offline.
 
 This helps distinguish “no findings found” from “high-risk areas were not
 covered yet,” which is critical for real bounty work.

@@ -90,6 +90,7 @@ from finding_model import normalize_finding, normalize_findings
 from bounty_mode import build_bounty_mode, build_bounty_report, build_single_bounty_report
 from autopilot_state import autopilot_state
 from autonomous_planner import WorkingMemory
+from auth_coverage_engine import analyze_auth_coverage
 from finding_quality import evaluate_findings
 from zero_fp_gate import apply_zero_fp_gate
 from secret_validator import validate_secret
@@ -1481,6 +1482,12 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 coverage2,
                 scan.get("planner", {}),
             )
+            auth_coverage = analyze_auth_coverage(
+                recon_data,
+                auth_matrix.stats,
+                passable,
+                coverage2,
+            )
         except Exception as e:
             await log("Coverage and attack graph error: {}".format(e), "error")
             ato_chains = []
@@ -1495,6 +1502,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             coverage = {"coverage_percent": 0}
             coverage2 = {"coverage_percent": 0}
             playbook = build_scan_playbook(recon_data, passable, coverage2, scan.get("planner", {}))
+            auth_coverage = analyze_auth_coverage(recon_data, auth_matrix.stats, passable, coverage2)
         attack_graph_data = attack_graph
         coverage_data = coverage2
         analysis["attack_graph"] = attack_graph
@@ -1504,13 +1512,16 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         analysis["coverage"] = coverage
         analysis["coverage_v2"] = coverage2
         analysis["playbook"] = playbook
+        analysis["auth_coverage"] = auth_coverage
         scan["playbook"] = playbook
+        scan["auth_coverage"] = auth_coverage
         scan["analysis"] = analysis
         scan["resource_control"] = resources.status()
         autopilot_state.output(scan_id, "analysis", "coverage_attack_graph", {
             "coverage_v2": coverage2,
             "attack_graph": attack_graph,
             "playbook": playbook,
+            "auth_coverage": auth_coverage,
         })
         chains   = analysis.get("chains",        [])
         priority = analysis.get("high_priority", [])
@@ -1521,6 +1532,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         await broadcast({"type": "coverage", "scan_id": scan_id, "data": coverage})
         await broadcast({"type": "coverage_v2", "scan_id": scan_id, "data": coverage2})
         await broadcast({"type": "playbook", "scan_id": scan_id, "data": playbook})
+        await broadcast({"type": "auth_coverage", "scan_id": scan_id, "data": auth_coverage})
         await log("Analysis: {} LLM chains | {} graph paths | {}% coverage".format(
             len(chains), attack_graph.get("path_count", 0), coverage.get("coverage_percent", 0)), "success")
         _save_phase_checkpoint(scan_id, "analysis")
@@ -1979,8 +1991,16 @@ async def _resume_pipeline_from_checkpoint(
                 coverage2,
                 scan.get("planner", {}),
             )
+            auth_coverage = analyze_auth_coverage(
+                recon_data,
+                auth_matrix.stats,
+                passable,
+                coverage2,
+            )
             analysis["playbook"] = playbook
+            analysis["auth_coverage"] = auth_coverage
             scan["playbook"] = playbook
+            scan["auth_coverage"] = auth_coverage
             scan["analysis"] = analysis
             await broadcast({
                 "type": "analysis_complete",
@@ -1990,6 +2010,7 @@ async def _resume_pipeline_from_checkpoint(
                 "ato_chains": ato_chains,
             })
             await broadcast({"type": "playbook", "scan_id": scan_id, "data": playbook})
+            await broadcast({"type": "auth_coverage", "scan_id": scan_id, "data": auth_coverage})
             _save_phase_checkpoint(scan_id, "analysis")
             planner.record_step(
                 "Deep Analysis",
@@ -2821,6 +2842,27 @@ async def get_scan_playbook(scan_id: str):
     )
     scan["playbook"] = playbook
     return JSONResponse(playbook)
+
+@app.get("/scan/{scan_id}/auth-coverage")
+async def get_scan_auth_coverage(scan_id: str):
+    if scan_id not in scans:
+        raise HTTPException(404, "Scan not found")
+    scan = scans[scan_id]
+    existing = scan.get("auth_coverage") or scan.get("analysis", {}).get("auth_coverage")
+    if existing:
+        return JSONResponse(existing)
+    findings = [
+        finding for finding in findings_store
+        if finding.get("scan_id") == scan_id
+    ]
+    report = analyze_auth_coverage(
+        scan.get("recon", {}),
+        auth_matrix.stats,
+        findings,
+        _coverage_v2_for_scan(scan_id),
+    )
+    scan["auth_coverage"] = report
+    return JSONResponse(report)
 
 @app.get("/intelligence/program")
 async def get_program_intelligence(slug: str):
