@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import uuid
 from datetime import datetime
 
@@ -67,9 +68,22 @@ class EventStore:
                     cur.execute(DDL)
                 conn.commit()
             return
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        try:
+            self._initialize_sqlite(self.db_path)
+        except (OSError, sqlite3.OperationalError):
+            self._use_fallback_sqlite()
+
+    def _initialize_sqlite(self, db_path: str):
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
             conn.executescript(DDL)
+
+    def _use_fallback_sqlite(self):
+        fallback_dir = os.path.join(tempfile.gettempdir(), "burpollama")
+        fallback_path = os.path.join(fallback_dir, os.path.basename(self.db_path) or "events.db")
+        self.db_path = fallback_path
+        self.database_url = "sqlite:///{}".format(fallback_path)
+        self._initialize_sqlite(fallback_path)
 
     def _conn(self):
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -88,12 +102,23 @@ class EventStore:
                           datetime.utcnow().isoformat()))
                 conn.commit()
             return eid
-        with self._conn() as conn:
-            conn.execute("""
-                INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
-                VALUES (?,?,?,?,?,?)
-            """, (eid, stream_id, event_type, actor, json.dumps(payload),
-                  datetime.utcnow().isoformat()))
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
+                    VALUES (?,?,?,?,?,?)
+                """, (eid, stream_id, event_type, actor, json.dumps(payload),
+                      datetime.utcnow().isoformat()))
+        except sqlite3.OperationalError as exc:
+            if "readonly" not in str(exc).lower():
+                raise
+            self._use_fallback_sqlite()
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
+                    VALUES (?,?,?,?,?,?)
+                """, (eid, stream_id, event_type, actor, json.dumps(payload),
+                      datetime.utcnow().isoformat()))
         return eid
 
     def audit(self, actor: str, action: str, target: str, payload: dict | None = None) -> str:
@@ -108,12 +133,23 @@ class EventStore:
                           datetime.utcnow().isoformat()))
                 conn.commit()
             return aid
-        with self._conn() as conn:
-            conn.execute("""
-                INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
-                VALUES (?,?,?,?,?,?)
-            """, (aid, actor, action, target, json.dumps(payload or {}),
-                  datetime.utcnow().isoformat()))
+        try:
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
+                    VALUES (?,?,?,?,?,?)
+                """, (aid, actor, action, target, json.dumps(payload or {}),
+                      datetime.utcnow().isoformat()))
+        except sqlite3.OperationalError as exc:
+            if "readonly" not in str(exc).lower():
+                raise
+            self._use_fallback_sqlite()
+            with self._conn() as conn:
+                conn.execute("""
+                    INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
+                    VALUES (?,?,?,?,?,?)
+                """, (aid, actor, action, target, json.dumps(payload or {}),
+                      datetime.utcnow().isoformat()))
         return aid
 
     def stream(self, stream_id: str, limit: int = 200) -> list[dict]:

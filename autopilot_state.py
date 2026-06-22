@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime
@@ -76,8 +77,20 @@ class AutopilotStateStore:
         self._ensure_db()
 
     def _ensure_db(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        try:
+            self._initialize_db(self.db_path)
+        except (OSError, sqlite3.OperationalError):
+            fallback_dir = os.path.join(tempfile.gettempdir(), "burpollama")
+            fallback_path = os.path.join(
+                fallback_dir,
+                os.path.basename(self.db_path) or "autopilot.db",
+            )
+            self.db_path = fallback_path
+            self._initialize_db(self.db_path)
+
+    def _initialize_db(self, db_path: str):
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with closing(sqlite3.connect(db_path)) as conn:
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(DDL)
