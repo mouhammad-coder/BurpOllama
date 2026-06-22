@@ -45,6 +45,7 @@ from adaptive_scan import ResourceController
 from hunt_sqli_advanced import hunt_sqli_advanced
 from smart_idor_detector import detect_idor as detect_idor_smart
 from business_logic_hunter import hunt_business_logic_deep
+from request_safety import outbound_guard
 
 # ── Shared config ─────────────────────────────────────────────────────────────
 BASE_HEADERS = {
@@ -104,48 +105,99 @@ async def tget(client, url, **kwargs):
     record_network_error() which does NOT advance the HOST_DEAD_WAF counter.
     Only HTTP-level WAF responses advance _consecutive_blocks.
     """
-    ok, reason = scope_policy.record_request(url, action="active")
-    if not ok:
+    decision = outbound_guard.authorize(
+        scope_policy, url, method="GET", action="active"
+    )
+    if not decision.allowed:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
+        started = time.perf_counter()
         try:
             r = await client.get(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
             if r is None:
+                outbound_guard.record_result(
+                    url, method="GET", action="active",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    error="HTTP client returned no response",
+                )
                 return None
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
+            outbound_guard.record_result(
+                url, method="GET", action="active",
+                status_code=r.status_code,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
             return r
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             # Network timeout — retry backoff but NOT a WAF signal
             await throttle.record_network_error(url)
+            outbound_guard.record_result(
+                url, method="GET", action="active",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
         except (httpx.ConnectError, httpx.RemoteProtocolError,
-                httpx.ReadError, httpx.WriteError):
+                httpx.ReadError, httpx.WriteError) as exc:
             # Layer 3/4 failures — also not WAF signals
             await throttle.record_network_error(url)
+            outbound_guard.record_result(
+                url, method="GET", action="active",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
-        except Exception:
+        except Exception as exc:
+            outbound_guard.record_result(
+                url, method="GET", action="active",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
 
 async def tpost(client, url, **kwargs):
-    ok, reason = scope_policy.record_request(url, action="active")
-    if not ok:
+    decision = outbound_guard.authorize(
+        scope_policy, url, method="POST", action="active", mutation=False
+    )
+    if not decision.allowed:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
+        started = time.perf_counter()
         try:
             r = await client.post(url, timeout=REQUEST_TIMEOUT.get(), **kwargs)
             if r is None:
+                outbound_guard.record_result(
+                    url, method="POST", action="active",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    error="HTTP client returned no response",
+                )
                 return None
             if throttle.is_block_response(r.status_code, r.text[:500]):
                 await throttle.record_block(r.status_code, r.text[:200], url, dict(r.headers))
+            outbound_guard.record_result(
+                url, method="POST", action="active",
+                status_code=r.status_code,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
             return r
         except (httpx.TimeoutException, httpx.ConnectError,
-                httpx.RemoteProtocolError, httpx.ReadError):
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
             await throttle.record_network_error(url)
+            outbound_guard.record_result(
+                url, method="POST", action="active",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
-        except Exception:
+        except Exception as exc:
+            outbound_guard.record_result(
+                url, method="POST", action="active",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
 
 
@@ -2186,26 +2238,49 @@ def _redact_json(value):
 
 
 async def _mass_assignment_request(client, method, url, headers, **kwargs):
-    allowed, _reason = scope_policy.record_request(url, action="authenticated")
-    if not allowed or throttle.host_dead:
+    decision = outbound_guard.authorize(
+        scope_policy,
+        url,
+        method=method,
+        action="authenticated",
+        mutation=True,
+        explicitly_approved=bool(auth_matrix.mutations_allowed),
+    )
+    if not decision.allowed or throttle.host_dead:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
+        started = time.perf_counter()
         try:
             response = await client.request(
                 method, url, headers=headers, timeout=REQUEST_TIMEOUT.get(),
                 follow_redirects=False, **kwargs
             )
             if response is None:
+                outbound_guard.record_result(
+                    url, method=method, action="authenticated",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    error="HTTP client returned no response",
+                )
                 return None
             if throttle.is_block_response(response.status_code, response.text[:500]):
                 await throttle.record_block(
                     response.status_code, response.text[:200], url,
                     dict(response.headers),
                 )
+            outbound_guard.record_result(
+                url, method=method, action="authenticated",
+                status_code=response.status_code,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
             return response
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
             await throttle.record_network_error(url)
+            outbound_guard.record_result(
+                url, method=method, action="authenticated",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
 
 
@@ -2647,11 +2722,20 @@ def _exact_json_request(method, url, body):
 
 
 async def _authenticated_request(client, method, url, **kwargs):
-    allowed, _reason = scope_policy.record_request(url, action="authenticated")
-    if not allowed:
+    mutation = str(method or "GET").upper() in {"PUT", "PATCH", "DELETE"}
+    decision = outbound_guard.authorize(
+        scope_policy,
+        url,
+        method=method,
+        action="authenticated",
+        mutation=mutation,
+        explicitly_approved=bool(auth_matrix.mutations_allowed),
+    )
+    if not decision.allowed:
         return None
     async with await throttle.gate():
         await throttle.record_request(url)
+        started = time.perf_counter()
         try:
             response = await client.request(
                 method,
@@ -2661,6 +2745,11 @@ async def _authenticated_request(client, method, url, **kwargs):
                 **kwargs
             )
             if response is None:
+                outbound_guard.record_result(
+                    url, method=method, action="authenticated",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    error="HTTP client returned no response",
+                )
                 return None
             if throttle.is_block_response(
                 response.status_code, response.text[:500]
@@ -2671,12 +2760,22 @@ async def _authenticated_request(client, method, url, **kwargs):
                     url,
                     dict(response.headers),
                 )
+            outbound_guard.record_result(
+                url, method=method, action="authenticated",
+                status_code=response.status_code,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
             return response
         except (
             httpx.TimeoutException, httpx.ConnectError,
             httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError,
-        ):
+        ) as exc:
             await throttle.record_network_error(url)
+            outbound_guard.record_result(
+                url, method=method, action="authenticated",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+            )
             return None
 
 
@@ -4596,13 +4695,7 @@ async def hunt_browser_storage(client, js_urls: list[str]) -> list[dict]:
         r"(?i)(?:addEventListener\s*\(\s*[\"']message[\"']|onmessage\s*=)"
     )
     for js_url in list(dict.fromkeys(js_urls or []))[:40]:
-        allowed, _ = scope_policy.record_request(js_url, action="active")
-        if not allowed:
-            continue
-        try:
-            response = await client.get(js_url)
-        except Exception:
-            continue
+        response = await tget(client, js_url)
         if response is None:
             continue
         if response.status_code != 200:
