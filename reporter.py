@@ -53,6 +53,12 @@ async def generate_full_report(
         finding.setdefault("cvss_40_score", cvss_40["score"])
         finding.setdefault("cvss_40_vector", cvss_40["vector"])
         finding.setdefault(
+            "cvss_40_severity", cvss_40["cvss_40_severity"]
+        )
+        finding.setdefault(
+            "cvss_40_official", cvss_40["cvss_40_official"]
+        )
+        finding.setdefault(
             "report_readiness",
             report_readiness(finding, bool(finding.get("_scope_match", True))),
         )
@@ -206,6 +212,9 @@ async def generate_full_report(
         lines.append("| **CWE** | {} |".format(f.get("cwe", "N/A")))
         lines.append("| **CVSS** | {} |".format(f.get("cvss", 0)))
         lines.append("| **CVSS 4.0** | {} |".format(f.get("cvss_40_score", 0)))
+        lines.append("| **CVSS 4.0 Severity** | {} |".format(
+            escape_markdown_table(f.get("cvss_40_severity", "Unknown"))
+        ))
         lines.append("| **CVSS 4.0 Vector** | `{}` |".format(
             escape_markdown_table(f.get("cvss_40_vector", ""))
         ))
@@ -511,6 +520,12 @@ def generate_technical_report(target: str, recon_data: dict, findings: list[dict
 def generate_json_report(target: str, recon_data: dict, findings: list[dict],
                          analysis: dict, scope: dict, review_items: list[dict] = None) -> dict:
     confirmed, candidates, false_pos = _split_findings(findings)
+    for finding in confirmed + candidates + false_pos:
+        cvss_40 = calculate_cvss_40(finding)
+        finding.setdefault("cvss_40_score", cvss_40["score"])
+        finding.setdefault("cvss_40_vector", cvss_40["vector"])
+        finding.setdefault("cvss_40_severity", cvss_40["cvss_40_severity"])
+        finding.setdefault("cvss_40_official", cvss_40["cvss_40_official"])
     return {
         "target": target,
         "generated_at": datetime.utcnow().isoformat(),
@@ -534,7 +549,8 @@ def generate_csv_report(findings: list[dict]) -> str:
         "id", "scan_id", "title", "vulnerability_class", "affected_url", "method",
         "parameter", "severity", "confidence", "exploitability_status",
         "evidence_strength", "false_positive_risk", "cwe", "owasp_top_10",
-        "cvss_40_score", "cvss_40_vector", "cvss_plus_plus",
+        "cvss_40_score", "cvss_40_vector", "cvss_40_severity",
+        "cvss_40_official", "cvss_plus_plus",
         "quality_score", "ready_to_submit", "duplicate_of",
         "rejection_reason_codes", "raw_evidence_id", "redaction_status",
         "created_at", "updated_at",
@@ -543,6 +559,15 @@ def generate_csv_report(findings: list[dict]) -> str:
     writer.writeheader()
     for row in rows:
         export_row = dict(row)
+        cvss_40 = calculate_cvss_40(export_row)
+        export_row.setdefault("cvss_40_score", cvss_40["score"])
+        export_row.setdefault("cvss_40_vector", cvss_40["vector"])
+        export_row.setdefault(
+            "cvss_40_severity", cvss_40["cvss_40_severity"]
+        )
+        export_row.setdefault(
+            "cvss_40_official", cvss_40["cvss_40_official"]
+        )
         if isinstance(export_row.get("rejection_reason_codes"), list):
             export_row["rejection_reason_codes"] = ",".join(
                 export_row["rejection_reason_codes"]

@@ -32,6 +32,10 @@ def run_tests():
     cvss = calculate_cvss_40(item)
     assert cvss["vector"].startswith("CVSS:4.0/")
     assert 0 <= cvss["score"] <= 10
+    assert cvss["cvss_40_official"] is True
+    assert cvss["cvss_40_severity"] in {
+        "None", "Low", "Medium", "High", "Critical"
+    }
     item["cvss_40_score"] = cvss["score"]
     readiness = report_readiness(item, True)
     assert readiness["status"] == "READY"

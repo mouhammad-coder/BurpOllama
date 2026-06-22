@@ -96,6 +96,7 @@ def run_tests():
     rows = list(csv.DictReader(io.StringIO(csv_report)))
     assert rows and rows[0]["id"] == "F-REPORT-1"
     assert rows[0]["cvss_40_vector"].startswith("CVSS:4.0/")
+    assert rows[0]["cvss_40_official"] == "True"
     assert rows[0]["ready_to_submit"] == "True"
 
     print("REPORT SNAPSHOT TESTS: PASS")

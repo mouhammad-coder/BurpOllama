@@ -166,6 +166,10 @@ def apply_zero_fp_gate(
         cvss_40 = calculate_cvss_40(finding)
         finding["cvss_40_score"] = cvss_40["score"]
         finding["cvss_40_vector"] = cvss_40["vector"]
+        finding["cvss_40_severity"] = cvss_40["cvss_40_severity"]
+        finding["cvss_40_official"] = cvss_40["cvss_40_official"]
+        if cvss_40.get("cvss_40_error"):
+            finding["cvss_40_error"] = cvss_40["cvss_40_error"]
         scope_ok, _scope_reason = _active_scope_allowed(affected_url, policy)
         finding["report_readiness"] = report_readiness(finding, scope_ok)
         finding["rejection_reason_codes"] = rejection_reason_codes(
@@ -231,6 +235,10 @@ def apply_zero_fp_gate(
                 cvss_40 = calculate_cvss_40(finding)
                 finding["cvss_40_score"] = cvss_40["score"]
                 finding["cvss_40_vector"] = cvss_40["vector"]
+                finding["cvss_40_severity"] = cvss_40["cvss_40_severity"]
+                finding["cvss_40_official"] = cvss_40["cvss_40_official"]
+                if cvss_40.get("cvss_40_error"):
+                    finding["cvss_40_error"] = cvss_40["cvss_40_error"]
             finding.setdefault(
                 "report_readiness",
                 report_readiness(finding, scope_ok),

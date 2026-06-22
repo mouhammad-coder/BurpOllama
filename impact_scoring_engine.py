@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from cvss import CVSS4
 from urllib.parse import urlparse
 
 
@@ -24,6 +25,93 @@ SEVERITY_FALLBACK = {
     "CRITICAL": 9.0, "HIGH": 7.5, "MEDIUM": 5.0,
     "LOW": 3.0, "INFO": 1.0, "INFORMATIONAL": 1.0,
 }
+
+
+def calculate_official_cvss_40(finding: dict) -> dict:
+    """
+    Calculate an official CVSS 4.0 score using the cvss library.
+
+    Finding metadata is mapped to the CVSS 4.0 base metrics, while all score
+    computation and severity classification are delegated to CVSS4.
+    """
+    finding = finding or {}
+
+    # AV: Attack Vector
+    av = "N"
+
+    # AC: Attack Complexity
+    ac = (
+        "L"
+        if str(finding.get("exploitability_status", "")).lower() == "confirmed"
+        else "H"
+    )
+
+    # AT: Attack Requirements
+    at = "N"
+
+    # PR: Privileges Required
+    url = str(
+        finding.get("affected_url") or finding.get("url", "")
+    ).lower()
+    pr = "H" if "admin" in url else ("L" if finding.get("requires_auth") else "N")
+
+    # UI: User Interaction
+    vt = str(finding.get("vuln_type", "")).lower()
+    ui = "A" if any(
+        keyword in vt for keyword in ("xss", "csrf", "clickjacking")
+    ) else "N"
+
+    # VC/VI/VA: impact to the vulnerable system
+    vc = (
+        "H"
+        if any(keyword in vt for keyword in ("sqli", "idor", "ssrf", "rce", "secret"))
+        else "L"
+        if any(keyword in vt for keyword in ("xss", "cors", "redirect"))
+        else "N"
+    )
+    vi = (
+        "H"
+        if any(keyword in vt for keyword in ("sqli", "rce", "command", "upload"))
+        else "L"
+        if any(keyword in vt for keyword in ("csrf", "idor", "mass assignment"))
+        else "N"
+    )
+    va = (
+        "L"
+        if any(keyword in vt for keyword in ("dos", "rate limit", "regex"))
+        else "N"
+    )
+
+    # SC/SI/SA: impact to subsequent systems
+    sc = (
+        "H"
+        if any(keyword in vt for keyword in ("ssrf", "xxe", "rce"))
+        else "N"
+    )
+    si = "N"
+    sa = "N"
+
+    vector = (
+        "CVSS:4.0/AV:{}/AC:{}/AT:{}/PR:{}/UI:{}/"
+        "VC:{}/VI:{}/VA:{}/SC:{}/SI:{}/SA:{}"
+    ).format(av, ac, at, pr, ui, vc, vi, va, sc, si, sa)
+
+    try:
+        score = CVSS4(vector)
+        return {
+            "cvss_40_score": float(score.base_score),
+            "cvss_40_vector": vector,
+            "cvss_40_severity": score.severity,
+            "cvss_40_official": True,
+        }
+    except Exception as exc:
+        return {
+            "cvss_40_score": 0.0,
+            "cvss_40_vector": vector,
+            "cvss_40_severity": "Unknown",
+            "cvss_40_official": False,
+            "cvss_40_error": str(exc),
+        }
 
 
 def _base_score(finding: dict) -> float:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from impact_scoring_engine import calculate_official_cvss_40
 from request_fingerprint import canonical_url, hamming_distance, simhash
 
 
@@ -37,72 +38,14 @@ def _steps(value: Any) -> list[str]:
     return [line.strip(" -\t") for line in text.splitlines() if line.strip()] if text else []
 
 
-def _impact_metrics(finding: dict) -> tuple[str, str, str]:
-    name = "{} {}".format(
-        finding.get("vulnerability_class", ""),
-        finding.get("vuln_type", ""),
-    ).lower()
-    confidentiality = integrity = availability = "N"
-    if any(term in name for term in (
-        "idor", "bola", "sqli", "sql injection", "secret", "disclosure",
-        "traversal", "lfi", "ssrf", "auth bypass",
-    )):
-        confidentiality = "H"
-    if any(term in name for term in (
-        "sqli", "sql injection", "command", "rce", "auth bypass",
-        "mass assignment", "csrf", "business logic", "prototype",
-    )):
-        integrity = "H"
-    if any(term in name for term in ("dos", "command", "rce", "desync")):
-        availability = "H"
-    if any(term in name for term in ("xss", "cors", "redirect", "clickjacking")):
-        confidentiality = "L" if confidentiality == "N" else confidentiality
-        integrity = "L" if integrity == "N" else integrity
-    return confidentiality, integrity, availability
-
-
 def calculate_cvss_40(finding: dict) -> dict:
-    """Produce a deterministic CVSS 4.0 base vector and conservative score."""
-    name = "{} {}".format(
-        finding.get("vulnerability_class", ""),
-        finding.get("vuln_type", ""),
-    ).lower()
-    exploitability = _text(finding.get("exploitability_status")).lower()
-    confidence = int(float(finding.get("confidence", 0) or 0))
-    av = "N"
-    ac = "L" if confidence >= 70 else "H"
-    at = "P" if any(term in name for term in ("race", "cache", "timing")) else "N"
-    pr = (
-        "H" if "admin" in name
-        else "L" if any(term in name for term in (
-            "idor", "bola", "csrf", "session", "authenticated", "business logic"
-        ))
-        else "N"
-    )
-    ui = (
-        "A" if any(term in name for term in ("xss", "csrf", "clickjacking"))
-        else "P" if "redirect" in name
-        else "N"
-    )
-    vc, vi, va = _impact_metrics(finding)
-    vector = (
-        "CVSS:4.0/AV:{}/AC:{}/AT:{}/PR:{}/UI:{}/"
-        "VC:{}/VI:{}/VA:{}/SC:N/SI:N/SA:N"
-    ).format(av, ac, at, pr, ui, vc, vi, va)
-
-    impact_weight = {"N": 0.0, "L": 1.2, "H": 2.4}
-    score = impact_weight[vc] + impact_weight[vi] + impact_weight[va]
-    score += 1.5 if av == "N" else 0.5
-    score += 1.0 if ac == "L" else 0.4
-    score += 0.6 if at == "N" else 0.2
-    score += {"N": 1.0, "L": 0.5, "H": 0.2}[pr]
-    score += {"N": 0.6, "P": 0.3, "A": 0.1}[ui]
-    if exploitability == "confirmed":
-        score += 0.8
-    elif exploitability in {"candidate", "needs_manual_validation"}:
-        score -= 0.8
-    score = round(max(0.0, min(10.0, score)), 1)
-    return {"score": score, "vector": vector}
+    """Compatibility wrapper for existing validation and reporting consumers."""
+    official = calculate_official_cvss_40(finding)
+    return {
+        "score": official["cvss_40_score"],
+        "vector": official["cvss_40_vector"],
+        **official,
+    }
 
 
 def contains_unredacted_secret(evidence: str) -> bool:
