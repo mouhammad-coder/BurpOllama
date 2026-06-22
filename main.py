@@ -830,12 +830,21 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
     coverage_data = {}
     attack_graph_data = {}
     intel_data = {}
-    planner = WorkingMemory(
-        step_budget=int(os.getenv("BURPOLLAMA_PLANNER_STEP_BUDGET", "100")),
-        time_budget=int(os.getenv("BURPOLLAMA_PLANNER_TIME_BUDGET", "1800")),
-    )
-
     scan = scans[scan_id]
+    stored_run = autopilot_state.get_run(scan_id) or {}
+    stored_planner = (
+        scan.get("planner")
+        or stored_run.get("checkpoint", {}).get("planner")
+        or {}
+    )
+    planner = (
+        WorkingMemory.from_dict(stored_planner)
+        if stored_planner
+        else WorkingMemory(
+            step_budget=int(os.getenv("BURPOLLAMA_PLANNER_STEP_BUDGET", "100")),
+            time_budget=int(os.getenv("BURPOLLAMA_PLANNER_TIME_BUDGET", "1800")),
+        )
+    )
     scan_logs = scan.setdefault("logs", scan_logs)
     scan["status"] = "running"
     task_id = scan.get("scheduler_task_id", "")
@@ -847,6 +856,13 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
 
     async def planner_checkpoint(phase_name: str):
         scan["planner"] = planner.to_dict()
+        autopilot_state.update_run(
+            scan_id,
+            checkpoint={
+                "planner": scan["planner"],
+                "planner_phase": phase_name,
+            },
+        )
         if planner.should_continue():
             return
         scan["planner_summary"] = planner.summarize_progress()
@@ -1617,6 +1633,20 @@ async def _resume_pipeline_from_checkpoint(
     scan["status"] = "running"
     scan["control"] = "run"
     scan["_checkpoint_resume_running"] = True
+    durable_run = autopilot_state.get_run(scan_id) or {}
+    planner = WorkingMemory.from_dict(
+        scan.get("planner")
+        or durable_run.get("checkpoint", {}).get("planner")
+        or {}
+    )
+
+    def persist_planner():
+        scan["planner"] = planner.to_dict()
+        scan["planner_summary"] = planner.summarize_progress()
+        autopilot_state.update_run(
+            scan_id,
+            checkpoint={"planner": scan["planner"]},
+        )
 
     async def log(msg, level="info"):
         await log_broadcast(scan_id, msg, level)
@@ -1701,6 +1731,7 @@ async def _resume_pipeline_from_checkpoint(
             await log("P2: HUNT (checkpoint resume)", "phase")
 
             async def hunt_progress(phase, cur, total, label):
+                persist_planner()
                 await progress(phase, cur, total, label)
 
             if scope_policy.config.passive_only_mode or not scope_policy.config.active_testing_enabled:
@@ -1724,6 +1755,7 @@ async def _resume_pipeline_from_checkpoint(
                     batch_size=adaptive_plan.request_batch_size,
                     resource_controller=resources,
                     scan_level=adaptive_plan.level,
+                    planner=planner,
                 )
             raw_findings = normalize_findings(raw_findings, scan_id=scan_id)
             classification_recon = dict(recon_data)
@@ -1766,6 +1798,7 @@ async def _resume_pipeline_from_checkpoint(
                 stats["total"] += 1
                 await broadcast({"type": "finding", "data": finding})
             _save_phase_checkpoint(scan_id, "hunt")
+            persist_planner()
             completed_phases.add("hunt")
         else:
             raw_findings = normalize_findings(
@@ -1834,6 +1867,8 @@ async def _resume_pipeline_from_checkpoint(
                 "verdicts": verdict_counts,
             })
             _save_phase_checkpoint(scan_id, "triage")
+            planner.record_step("Triage", "completed", len(triaged))
+            persist_planner()
             completed_phases.add("triage")
         else:
             triaged = normalize_findings(
@@ -1909,6 +1944,12 @@ async def _resume_pipeline_from_checkpoint(
                 "ato_chains": ato_chains,
             })
             _save_phase_checkpoint(scan_id, "analysis")
+            planner.record_step(
+                "Deep Analysis",
+                "completed",
+                len(analysis.get("high_priority", [])),
+            )
+            persist_planner()
             completed_phases.add("analysis")
         else:
             analysis = scan.get("analysis") or {}
@@ -1945,6 +1986,8 @@ async def _resume_pipeline_from_checkpoint(
                 "reportable": reportable,
             })
             _save_phase_checkpoint(scan_id, "report")
+            planner.record_step("Reporting", "completed", reportable)
+            persist_planner()
             completed_phases.add("report")
         else:
             reportable = len([
@@ -1987,8 +2030,16 @@ async def _resume_pipeline_from_checkpoint(
                 "data": intelligence,
             })
             _save_phase_checkpoint(scan_id, "intelligence")
+            planner.record_step(
+                "Analyst Intelligence",
+                "completed",
+                len(intelligence.get("top_manual_targets", [])),
+            )
+            persist_planner()
             completed_phases.add("intelligence")
 
+        planner.complete()
+        persist_planner()
         scan.update({
             "status": "complete",
             "phase": "complete",

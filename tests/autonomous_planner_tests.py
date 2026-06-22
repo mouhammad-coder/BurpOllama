@@ -1,9 +1,11 @@
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from autonomous_planner import PlannerState, WorkingMemory
+from autopilot_state import AutopilotStateStore
 
 
 def run_tests():
@@ -30,6 +32,31 @@ def run_tests():
     assert not memory.should_continue()
     assert memory.state == PlannerState.BUDGET_EXCEEDED
     assert "finding(s)" in memory.summarize_progress()
+
+    restored = WorkingMemory.from_dict(memory.to_dict())
+    assert restored.completed_steps == memory.completed_steps
+    assert restored.loop_detection == memory.loop_detection
+    assert restored.state == PlannerState.BUDGET_EXCEEDED
+
+    resumable = WorkingMemory(step_budget=20, time_budget=120)
+    resumable.record_step("Recon", "completed", 1)
+    resumable_copy = WorkingMemory.from_dict(resumable.to_dict())
+    assert resumable_copy.should_continue()
+    assert resumable_copy.completed_steps[0]["step"] == "Recon"
+
+    with tempfile.TemporaryDirectory() as directory:
+        store = AutopilotStateStore(str(Path(directory) / "autopilot.db"))
+        store.create_run("scan-1", "https://example.test")
+        store.update_run(
+            "scan-1",
+            checkpoint={"planner": resumable.to_dict()},
+        )
+        durable = store.get_run("scan-1")
+        durable_copy = WorkingMemory.from_dict(
+            durable["checkpoint"]["planner"]
+        )
+        assert durable_copy.completed_steps[0]["step"] == "Recon"
+        assert durable_copy.step_budget == 20
 
     print("AUTONOMOUS PLANNER TESTS: PASS")
 

@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import closing, contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -76,13 +77,19 @@ class AutopilotStateStore:
 
     def _ensure_db(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.executescript(DDL)
+            conn.commit()
 
+    @contextmanager
     def _conn(self):
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
     def status(self) -> dict[str, Any]:
         with self._conn() as conn:

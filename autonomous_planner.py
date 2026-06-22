@@ -60,6 +60,42 @@ class WorkingMemory:
         self.started_at = time.monotonic()
         self.state = PlannerState.PLANNING
 
+    @classmethod
+    def from_dict(cls, value: dict | None) -> "WorkingMemory":
+        data = value if isinstance(value, dict) else {}
+        memory = cls(
+            step_budget=int(data.get("step_budget", 100) or 100),
+            time_budget=int(data.get("time_budget", 1800) or 1800),
+        )
+        memory.completed_steps = [
+            dict(item)
+            for item in data.get("completed_steps", [])
+            if isinstance(item, dict)
+        ]
+        memory.observations = [
+            dict(item)
+            for item in data.get("observations", [])
+            if isinstance(item, dict)
+        ]
+        memory.next_priorities = [
+            dict(item)
+            for item in data.get("next_priorities", [])
+            if isinstance(item, dict)
+        ]
+        memory.loop_detection = {
+            str(name): max(0, int(count))
+            for name, count in (data.get("loop_detection", {}) or {}).items()
+        }
+        elapsed = max(0.0, float(data.get("elapsed_seconds", 0) or 0))
+        memory.started_at = time.monotonic() - elapsed
+        try:
+            memory.state = PlannerState(
+                str(data.get("state", PlannerState.PLANNING.value))
+            )
+        except ValueError:
+            memory.state = PlannerState.PLANNING
+        return memory
+
     def record_step(
         self,
         step_name: str,

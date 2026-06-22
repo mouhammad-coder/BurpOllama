@@ -534,12 +534,24 @@ def generate_csv_report(findings: list[dict]) -> str:
         "id", "scan_id", "title", "vulnerability_class", "affected_url", "method",
         "parameter", "severity", "confidence", "exploitability_status",
         "evidence_strength", "false_positive_risk", "cwe", "owasp_top_10",
-        "raw_evidence_id", "redaction_status", "created_at", "updated_at",
+        "cvss_40_score", "cvss_40_vector", "cvss_plus_plus",
+        "quality_score", "ready_to_submit", "duplicate_of",
+        "rejection_reason_codes", "raw_evidence_id", "redaction_status",
+        "created_at", "updated_at",
     ]
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for row in rows:
-        writer.writerow(row)
+        export_row = dict(row)
+        if isinstance(export_row.get("rejection_reason_codes"), list):
+            export_row["rejection_reason_codes"] = ",".join(
+                export_row["rejection_reason_codes"]
+            )
+        export_row["ready_to_submit"] = bool(
+            export_row.get("report_readiness", {}).get("ready")
+            or export_row.get("ready_to_submit")
+        )
+        writer.writerow(export_row)
     return output.getvalue()
 
 

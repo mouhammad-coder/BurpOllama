@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -36,7 +37,7 @@ def _cache_key(namespace: str, value: str) -> str:
 def _cache_get(key: str) -> Any | None:
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(CACHE_PATH) as connection:
+        with closing(sqlite3.connect(CACHE_PATH)) as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS intelligence_cache "
                 "(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)"
@@ -55,7 +56,7 @@ def _cache_get(key: str) -> Any | None:
 def _cache_set(key: str, payload: Any) -> None:
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(CACHE_PATH) as connection:
+        with closing(sqlite3.connect(CACHE_PATH)) as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS intelligence_cache "
                 "(cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)"
@@ -65,6 +66,7 @@ def _cache_set(key: str, payload: Any) -> None:
                 "(cache_key, payload, created_at) VALUES (?, ?, ?)",
                 (key, json.dumps(payload, ensure_ascii=False), time.time()),
             )
+            connection.commit()
     except Exception:
         return
 
