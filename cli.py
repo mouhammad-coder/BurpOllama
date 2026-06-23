@@ -47,7 +47,7 @@ from rich.table import Table
 from rich.text import Text
 
 from core import __version__
-from core.config import config_status, load_config
+from core.config import config_status, load_config, ollama_health
 from core.reports import render_report
 from core.scanner import scanner
 from core.storage import scan_store
@@ -1292,15 +1292,30 @@ async def command_doctor(args) -> int:
         ),
     )
     ollama_enabled = os.getenv("OLLAMA_ENABLED", "0") == "1"
+    ollama = await ollama_health()
     add(
         "Ollama",
         True,
         (
-            "running" if ai.get("ollama_running")
-            else "enabled but unavailable" if ollama_enabled
-            else "not enabled"
+            "{} | model={} | available={} | {} | {}".format(
+                "running" if ollama.get("running") else "not running",
+                ollama.get("model"),
+                ollama.get("model_available"),
+                ollama.get("ram_estimate"),
+                ollama.get("recommendation"),
+            )
         ),
     )
+    if not ollama.get("running"):
+        add(
+            "Ollama setup hint",
+            True,
+            "Install/start Ollama, then run: ollama pull {}".format(
+                ollama.get("model") or "mistral:7b-instruct"
+            ),
+        )
+    elif not ollama.get("model_available"):
+        add("Ollama model", True, ollama.get("setup", "configured model is missing"))
     semgrep_path = ROOT / ".tools" / "semgrep" / "bin" / "semgrep"
     if os.name == "nt":
         semgrep_path = ROOT / ".tools" / "semgrep" / "Scripts" / "semgrep.exe"
