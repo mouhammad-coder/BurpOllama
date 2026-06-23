@@ -146,3 +146,9 @@ Assess realistic impact only — do not exaggerate. Criteria and the Critical→
 - `references/templates.md` — evidence block, tables, and full report template
 - `references/proof.md` — authorized proof-of-control token format
 - `references/impact.md` — impact criteria and severity scale
+- `references/real_reports.md` — curated corpus of 240+ real, disclosed takeover reports & resources (service distribution, top HackerOne reports, fingerprint DBs, tooling)
+- `references/real_reports.json` — structured dataset: 167 detailed disclosed cases (method + PoC + verification), 216 ranked HackerOne reports (URL/program/upvotes/bounty), 24 curated resources
+
+## Real-World Evidence Base
+
+Before classifying a candidate, consult `references/real_reports.md` / `real_reports.json` to ground decisions in disclosed cases: match the provider against observed service patterns, check whether that service is still takeoverable today, and calibrate impact against comparable disclosed reports. Always cross-check `can-i-take-over-xyz` — several providers in the corpus patched takeover after the reports were filed.

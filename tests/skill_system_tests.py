@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.skills.evidence import validate_evidence_schema
+from core.skills.knowledge_base import SkillKnowledgeBase
 from core.skills.loader import SkillLoader
 from core.skills.registry import SkillRegistry
 from core.skills.runner import SkillRunOptions, SkillRunner, SkillSafetyError
@@ -26,10 +27,27 @@ class SkillSystemTests(unittest.TestCase):
         result = SkillValidator().validate("subdomain-takeover-hunter")
         self.assertTrue(result.valid, result.errors)
         self.assertIn("references/proof.md", result.files)
+        self.assertIn(
+            "references/real_reports.json",
+            SkillLoader().load("subdomain-takeover-hunter").references,
+        )
 
     def test_registry_list_shows_subdomain_takeover_hunter(self):
         names = [skill.name for skill in SkillRegistry().list()]
         self.assertIn("subdomain-takeover-hunter", names)
+
+    def test_refresh_knowledge_includes_real_report_corpus(self):
+        with tempfile.TemporaryDirectory() as temp:
+            kb = SkillKnowledgeBase(temp)
+            path = kb.refresh("subdomain-takeover-hunter")
+            data = json.loads(path.read_text(encoding="utf-8"))
+        corpus = data.get("real_report_corpus", {})
+        self.assertGreaterEqual(
+            corpus.get("counts", {}).get("detailed_cases", 0),
+            100,
+        )
+        self.assertTrue(corpus.get("top_services"))
+        self.assertTrue(corpus.get("curated_resources"))
 
     def test_cli_skills_list_and_show_work(self):
         import cli

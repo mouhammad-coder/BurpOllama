@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,53 @@ DEFAULT_TAKEOVER_FINGERPRINTS = {
 }
 
 
+def _skill_reference_file(skill_name: str, relative: str) -> Path:
+    return ROOT / "skills" / skill_name / relative
+
+
+def _load_real_report_corpus(skill_name: str) -> dict[str, Any]:
+    path = _skill_reference_file(skill_name, "references/real_reports.json")
+    if not path.exists():
+        return {}
+    try:
+        corpus = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    detailed_cases = corpus.get("detailed_cases") or []
+    ranked_reports = (
+        corpus.get("ranked_hackerone_reports")
+        or corpus.get("ranked_h1_reports")
+        or []
+    )
+    resources = corpus.get("curated_resources") or []
+    services = Counter(
+        str(case.get("service_type") or "").strip()
+        for case in detailed_cases
+        if str(case.get("service_type") or "").strip()
+    )
+    top_services = [
+        {"service": service, "cases": count}
+        for service, count in services.most_common(25)
+    ]
+    top_reports = [
+        {
+            "title": report.get("title", ""),
+            "url": report.get("url", ""),
+            "program": report.get("program", ""),
+            "upvotes": report.get("upvotes", 0),
+            "bounty": report.get("bounty", 0),
+        }
+        for report in ranked_reports[:25]
+    ]
+    return {
+        "counts": corpus.get("counts", {}),
+        "top_services": top_services,
+        "top_ranked_reports": top_reports,
+        "curated_resources": resources,
+        "source_file": str(path),
+    }
+
+
 class SkillKnowledgeBase:
     def __init__(self, cache_root: Path | str = CACHE_ROOT):
         self.cache_root = Path(cache_root)
@@ -72,11 +120,16 @@ class SkillKnowledgeBase:
     def refresh(self, skill_name: str) -> Path:
         path = self.cache_file(skill_name)
         path.parent.mkdir(parents=True, exist_ok=True)
+        real_reports = _load_real_report_corpus(skill_name)
         data = {
             **DEFAULT_TAKEOVER_FINGERPRINTS,
             "skill": skill_name,
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
-            "source": "bundled safe fingerprints; no live reference download",
+            "source": (
+                "bundled safe fingerprints + local disclosed-report corpus; "
+                "no live reference download"
+            ),
+            "real_report_corpus": real_reports,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         return path

@@ -93,7 +93,9 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _references_from_markdown(text: str) -> list[str]:
-    refs = sorted(set(re.findall(r"references/[A-Za-z0-9_.-]+\.md", text)))
+    refs = sorted(
+        set(re.findall(r"references/[A-Za-z0-9_.-]+\.(?:md|json)", text))
+    )
     return refs
 
 
