@@ -25,4 +25,4 @@ fi
 bash setup.sh
 
 echo ""
-echo "Installation complete. BurpOllama is starting..."
+echo "Installation complete. Run: burpollama doctor"

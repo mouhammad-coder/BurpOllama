@@ -5,6 +5,7 @@ JSON parse failure → re-minify + retry once → fallback KILL (safe default).
 """
 
 import json
+import inspect
 import re
 from gemini_client import ask_gemini, set_api_key
 from ai_provider import ai_router
@@ -436,6 +437,12 @@ Return ONLY a JSON array of exactly {count} objects:
 _TIER2_MAX_BATCH = 5   # Fix 3: Reduced from 10 to prevent attention degradation
 
 
+async def _emit_log(log, message: str):
+    result = log(message)
+    if inspect.isawaitable(result):
+        await result
+
+
 async def _tier2_batch(findings: list, api_key: str, log) -> list:
     """
     v3.4 Fix 3: Homogeneous batching with enforced exact-length JSON response.
@@ -457,7 +464,12 @@ async def _tier2_batch(findings: list, api_key: str, log) -> list:
 
     all_results = []
     for group_key, group_findings in groups.items():
-        log("[Triage] T2 batch '{}': {} findings".format(group_key, len(group_findings)))
+        await _emit_log(
+            log,
+            "[Triage] T2 batch '{}': {} findings".format(
+                group_key, len(group_findings)
+            ),
+        )
 
         # Fix 3: chunk size capped at _TIER2_MAX_BATCH
         for chunk_start in range(0, len(group_findings), _TIER2_MAX_BATCH):
@@ -481,8 +493,13 @@ async def _tier2_batch(findings: list, api_key: str, log) -> list:
 
             # Fix 3: Length validation — if count mismatch, distrust the batch
             if len(parsed) != len(chunk):
-                log("[Triage] T2 length mismatch (got {} expected {}) "
-                    "— falling back to individual verdicts".format(len(parsed), len(chunk)))
+                await _emit_log(
+                    log,
+                    "[Triage] T2 length mismatch (got {} expected {}) "
+                    "— falling back to individual verdicts".format(
+                        len(parsed), len(chunk)
+                    ),
+                )
                 # Assign PASS to all with low confidence rather than wrong mapping
                 for f in chunk:
                     f.update({
@@ -526,8 +543,12 @@ async def _tier2_batch(findings: list, api_key: str, log) -> list:
                         f["severity"]          = new_sev
                 all_results.append(f)
 
-    log("[Triage] T2 homogeneous batch complete: {} findings across {} groups".format(
-        len(all_results), len(groups)))
+    await _emit_log(
+        log,
+        "[Triage] T2 homogeneous batch complete: {} findings across {} groups".format(
+            len(all_results), len(groups)
+        ),
+    )
     return all_results
 
 
@@ -556,11 +577,17 @@ async def batch_triage(
     from review_queue import review_queue
     from learning_engine import learning_engine
 
-    log("[Triage] ━━━ Phase 3: 3-Tier Hierarchical Triage — {} findings ━━━".format(
-        len(findings)))
+    await _emit_log(
+        log,
+        "[Triage] ━━━ Phase 3: 3-Tier Hierarchical Triage — {} findings ━━━".format(
+            len(findings)
+        ),
+    )
 
     if not await ai_router.has_available_provider():
-        log("No AI provider available. Scan will run without AI triage.")
+        await _emit_log(
+            log, "No AI provider available. Scan will run without AI triage."
+        )
         triaged = []
         for finding in findings:
             finding.update({
@@ -569,8 +596,12 @@ async def batch_triage(
                 "triage": _no_ai_triage_result(),
             })
             triaged.append(finding)
-        log("[Triage] AI triage skipped; {} finding(s) require manual review.".format(
-            len(triaged)))
+        await _emit_log(
+            log,
+            "[Triage] AI triage skipped; {} finding(s) require manual review.".format(
+                len(triaged)
+            ),
+        )
         return triaged, {"NEEDS_MANUAL_REVIEW": len(triaged)}
 
     triaged    = []
@@ -649,7 +680,12 @@ async def batch_triage(
             continue
 
         # ── Tier 3: Full 7-gate CoT for HIGH / CRITICAL ───────────────────────
-        log("[Triage] T3 {}/{} — {} [{}]".format(idx + 1, total, f["vuln_type"], sev))
+        await _emit_log(
+            log,
+            "[Triage] T3 {}/{} — {} [{}]".format(
+                idx + 1, total, f["vuln_type"], sev
+            ),
+        )
         raw_gemini = ""
         try:
             triaged_f  = await run_triage_gate(f, api_key=api_key)
@@ -672,7 +708,9 @@ async def batch_triage(
             })
             triaged.append(f)
             ambig_count += 1
-            log("[Triage] AMBIGUOUS_PARSE → review queue: {}".format(fid))
+            await _emit_log(
+                log, "[Triage] AMBIGUOUS_PARSE → review queue: {}".format(fid)
+            )
             continue
 
         # Also catch parse failures inside run_triage_gate (returns _parse_failed)
@@ -687,7 +725,12 @@ async def batch_triage(
             )
             last.update({"verdict": "AMBIGUOUS_PARSE", "review_queue_id": fid})
             ambig_count += 1
-            log("[Triage] AMBIGUOUS_PARSE (json fail) → review queue: {}".format(fid))
+            await _emit_log(
+                log,
+                "[Triage] AMBIGUOUS_PARSE (json fail) → review queue: {}".format(
+                    fid
+                ),
+            )
 
     # Flush any remaining Tier 2 findings
     await flush_tier2()
@@ -697,9 +740,17 @@ async def batch_triage(
         v = f.get("verdict", "PASS")
         verdicts[v] = verdicts.get(v, 0) + 1
 
-    log("[Triage] T1-pass:{} T1-kill:{} T2:{} T3:{} Ambiguous:{}".format(
-        t1_pass, t1_kill, t2_count, t3_count, ambig_count))
-    log("[Triage] Results: {}".format(
-        " | ".join("{}: {}".format(k, v) for k, v in verdicts.items())))
-    log("[Triage] ━━━ Phase 3 complete ━━━")
+    await _emit_log(
+        log,
+        "[Triage] T1-pass:{} T1-kill:{} T2:{} T3:{} Ambiguous:{}".format(
+            t1_pass, t1_kill, t2_count, t3_count, ambig_count
+        ),
+    )
+    await _emit_log(
+        log,
+        "[Triage] Results: {}".format(
+            " | ".join("{}: {}".format(k, v) for k, v in verdicts.items())
+        ),
+    )
+    await _emit_log(log, "[Triage] ━━━ Phase 3 complete ━━━")
     return triaged, verdicts

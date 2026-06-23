@@ -22,10 +22,16 @@ reconnaissance, tested URLs, HTTP responses, vulnerability classes, throttle
 events, errors, and findings as they happen:
 
 ```bash
-python3 cli.py scan https://target.example
+python3 cli.py scan https://target.example --mode passive
 ```
 
 Or use the installed launcher:
+
+```bash
+burpollama scan https://target.example --mode passive
+```
+
+The default is passive mode, so this is equivalent:
 
 ```bash
 burpollama scan https://target.example
@@ -36,7 +42,7 @@ burpollama scan https://target.example
 ║ BurpOllama — Authorized Security Scanner               ║
 ╚════════════════════════════════════════════════════════╝
 Target: https://target.example
-Mode:   Bounty Scan
+Mode:   Safe Passive Scan
 
 ──────────────────── PHASE 1 — RECONNAISSANCE ────────────────────
 [19:31:01] ✓ Direct probe: https://target.example → HTTP 200
@@ -55,8 +61,9 @@ Mode:   Bounty Scan
   HIGH: 2  MEDIUM: 5  LOW: 3  INFO: 8
 ```
 
-The web dashboard remains available as a companion interface at
-`http://127.0.0.1:8888/ui`.
+No FastAPI process or browser is required. Scan history and reports are stored
+directly in local SQLite under `~/.burpollama/`. The dashboard remains an
+optional wrapper around the same scanner.
 
 ## What It Does
 
@@ -81,24 +88,55 @@ BurpOllama runs locally and:
 
 | Command | Purpose |
 |---|---|
-| `burpollama scan <target>` | Start a bounty scan and stream it live |
+| `burpollama scan <target>` | Start the default passive scan and stream it live |
 | `burpollama scan <target> --mode passive` | Safe passive-only scan |
+| `burpollama scan <target> --mode bounty` | Balanced authorized active scan |
 | `burpollama scan <target> --mode deep` | Deep authorized scan |
+| `burpollama scan <target> --mode bounty --concurrency 5 --rate-limit 2` | Tune bounded concurrency and request rate |
+| `burpollama scan <target> --scope example.com` | Lock every request to an explicit domain |
+| `burpollama scan <target> --json` | Stream machine-readable JSON events |
+| `burpollama scan <target> --quiet` | Show only final results and report paths |
 | `burpollama recon <target>` | Run reconnaissance directly |
 | `burpollama watch --scan-id <id>` | Watch a dashboard/API scan through WebSocket |
-| `burpollama status` | Check backend, database, and AI readiness |
-| `burpollama history` | List scans held by the running backend |
+| `burpollama status` | Check standalone scanner, database, and AI readiness |
+| `burpollama doctor` | Diagnose Python, packages, tools, storage, AI, and launcher |
+| `burpollama version` | Print the installed version |
+| `burpollama history` | List scans stored in local SQLite |
 | `burpollama report --scan-id <id>` | Print the completed report |
 | `burpollama report --scan-id <id> --format hackerone` | Export HackerOne format |
 | `burpollama validate "IDOR on /api/users/{id}"` | Classify a finding candidate |
 | `burpollama analyze --file traffic.json` | Analyze captured Burp traffic |
+| `burpollama serve` | Start the optional FastAPI dashboard |
+| `burpollama dashboard` | Start the optional server and open the UI |
 
-The CLI asks for authorization confirmation before active scanning. For
-non-interactive use on an explicitly authorized target, add `--yes`.
+Passive mode is the default. Bounty and deep modes show a legal warning and
+require authorization confirmation. For non-interactive use on an explicitly
+authorized target, add `--yes`. Restrict a scan with repeatable
+`--scope example.com` arguments; discovered out-of-scope URLs are filtered by
+ScopePolicy.
+
+### Controlled Specialist Agents
+
+BurpOllama uses a bounded scheduler rather than unconstrained autonomous loops:
+
+- ReconAgent — reachability, target profiling, technology and optional tools
+- CrawlerAgent — scoped URL, form, source and route discovery
+- JavaScriptAgent — hidden endpoints, route hints and interesting parameters
+- HeaderAgent — passive headers, cookies and CORS observations
+- AuthAgent — non-destructive session and login-flow observations
+- AccessControlAgent — IDOR/BOLA/BFLA candidates; Session A/B required for proof
+- InjectionAgent — mode-gated SQLi, SSTI and command-injection tests
+- XSSAgent — passive sinks/reflections or authorized active checks
+- RateLimitAgent — bounded checks without brute-force behavior
+- AITriageAgent — optional redacted summaries; never hidden chain-of-thought
+- ReportAgent — Markdown, JSON, CSV, SARIF, HackerOne and Bugcrowd exports
+
+All agents share one ScopePolicy, EventBus, RateLimiter, Scheduler and SQLite
+FindingStore. Ctrl+C requests a cooperative stop and writes partial reports.
 
 ### Dashboard Companion
 
-Run `bash start.sh`, then open
+Run `burpollama dashboard`, then open
 [http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui). A scan started in the
 dashboard can be followed live in another terminal:
 
@@ -209,20 +247,20 @@ cd BurpOllama
 bash setup.sh
 ```
 
-Setup creates `.env`, installs the Python environment, starts the backend, and
-installs the `burpollama` launcher under `~/.local/bin`.
-
-In a second terminal:
+Setup creates `.env`, installs the Python environment, creates isolated optional
+tool environments, and installs the `burpollama` launcher under
+`~/.local/bin`. It does not start a server.
 
 ```bash
+burpollama doctor
 burpollama status
-burpollama scan https://your-authorized-target.example
+burpollama scan https://your-authorized-target.example --mode passive
 ```
 
 If `~/.local/bin` is not in your shell path:
 
 ```bash
-python3 cli.py scan https://your-authorized-target.example
+python3 cli.py scan https://your-authorized-target.example --mode passive
 ```
 
 ---
@@ -260,32 +298,30 @@ Target URL
     ↓
 CLI authorization confirmation / Dashboard wizard
     ↓
-Adaptive Pre-Scan Analysis
+Core Scanner (no HTTP API required)
     ↓
-Phase 1: Reconnaissance
-(subfinder, httpx, katana, gau, JS extraction)
+Phase 1: Target Check
     ↓
-Live WebSocket event stream
-(phases, URLs, responses, findings, throttling)
+Phase 2: Reconnaissance
+(ReconAgent, CrawlerAgent, JavaScriptAgent)
     ↓
-Phase 2: Hunt
-(39 vulnerability classes, OOB confirmation)
+Phase 3: Vulnerability Hunt
+(bounded specialist agents, shared rate/scope controls)
     ↓
-Phase 3: AI Triage
-(3-tier: auto → batch → full CoT)
+Phase 4: Optional AI Triage
+(redacted summaries or manual-review-only mode)
     ↓
-Phase 4: Exploit Chain Builder + CVSS++ Scoring
+Phase 5: Proof Validation
+(Zero FP gate, CVSS 4.0, attack graph, coverage)
     ↓
-Phase 5: Zero FP Gate
-(12-point proof check)
-    ↓
-Phase 6: Report
+Phase 6: Report Export
 (HackerOne, Bugcrowd, Markdown, JSON, CSV, SARIF)
 ```
 
 Burp Suite traffic can also be sent to the local analyzer through
-`BurpOllama.py`, while all scan state, findings, reports, and configuration
-remain controlled by the local FastAPI backend.
+`BurpOllama.py`. Standalone CLI scans persist state and reports directly in
+SQLite; the optional FastAPI dashboard uses the same core scanner and event
+stream.
 
 ---
 
@@ -380,6 +416,13 @@ program policy before scanning.
 Core modules include:
 
 - `cli.py` — Primary Rich terminal interface and WebSocket log viewer
+- `core/scanner.py` — Direct six-phase scanner and agent coordinator
+- `core/scheduler.py` — Bounded concurrency and graceful cancellation
+- `core/events.py` — Typed in-process live scan events
+- `core/scope.py` — Per-scan host allowlist enforcement
+- `core/ratelimit.py` — Global request pacing and request budget
+- `core/storage.py` — SQLite scans, findings, evidence and report metadata
+- `core/agents/` — Controlled specialist agent implementations
 - `hunt_engine.py` — 39 vulnerability classes and live request events
 - `main.py` — FastAPI backend, scan orchestration, and WebSocket stream
 - `zero_fp_gate.py` — 12-point proof validation

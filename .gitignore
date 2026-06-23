@@ -1,5 +1,6 @@
 .env
 .venv/
+.tools/
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -7,6 +8,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+reports/
 .DS_Store
 *.log
 ~/.burpollama/

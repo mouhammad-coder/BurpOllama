@@ -104,6 +104,9 @@ from agent_registry import list_agents
 from external_tools import tool_status
 from technique_memory import TechniqueMemory
 from web3_scanner import audit_solidity_path
+from core import __version__
+from core.events import event_bus
+from core.scanner import scanner as core_scanner
 
 STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
 _startup_banner_printed = False
@@ -300,6 +303,11 @@ class ScanStopped(Exception):
 # ── Broadcast helpers ─────────────────────────────────────────────────────────
 async def broadcast(data: dict):
     metrics.inc("websocket.broadcast")
+    await event_bus.emit(data)
+    await _send_websocket_event(data)
+
+
+async def _send_websocket_event(data: dict):
     dead = set()
     for ws in list(ws_clients):
         try:
@@ -314,7 +322,8 @@ async def log_broadcast(scan_id: str, msg: str, level: str = "info"):
     if scan_id in scans:
         scans[scan_id].setdefault("logs", []).append(entry)
     await broadcast({"type": "log", "scan_id": scan_id, "entry": entry})
-    print("[{}] {}".format(scan_id[:8], msg))
+    if os.getenv("BURPOLLAMA_PIPELINE_STDOUT", "0") == "1":
+        print("[{}] {}".format(scan_id[:8], msg))
     event_store.append(scan_id, "log.{}".format(level), {"message": msg})
     autopilot_state.event(scan_id, "log.{}".format(level), entry)
 
@@ -2404,11 +2413,15 @@ async def _show_startup_banner():
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    dashboard_url = os.getenv(
+        "BURPOLLAMA_DASHBOARD_URL",
+        "http://127.0.0.1:8888/ui",
+    )
     print("")
     print("╔══════════════════════════════════════════╗")
     print("║      BurpOllama is running               ║")
     print("╠══════════════════════════════════════════╣")
-    print("║  Dashboard: http://127.0.0.1:8888/ui     ║")
+    print("║  Dashboard: {:<29}║".format(dashboard_url[:29]))
     print("║  Press Ctrl+C to stop                    ║")
     print("╚══════════════════════════════════════════╝")
     print("")
@@ -2756,44 +2769,45 @@ async def start_scan(req: ScanRequest):
             403,
             "Confirm that you own the target or have written permission to test it.",
         )
-    requested_scan_mode = ""
-    if req.scan_mode:
-        scan_mode = scope_policy.normalize_scan_mode_label(req.scan_mode)
-        scope_policy.update({"scan_mode": scan_mode})
-        requested_scan_mode = scan_mode
-    key = req.api_key or _gc.GEMINI_API_KEY
-    ok, reason = scope_policy.validate_target(req.target, action="scan")
-    if not ok:
-        raise HTTPException(403, reason)
-    authorization_warning = (
-        "Make sure you have written authorization to test this target."
-        if not scope_policy.config.allowed_domains
-        else ""
-    )
-    if req.api_key:
-        set_api_key(req.api_key)
-    scan_id  = str(uuid.uuid4())[:12]
-    scans[scan_id] = {
-        "id":scan_id,"target":req.target,
-        "status":"queued","phase":"queued",
-        "control":"run",
-        "requested_scan_mode": requested_scan_mode,
-        "authorization_warning": authorization_warning,
-        "started":datetime.utcnow().isoformat(),"logs":[],
-    }
-    resume_token = autopilot_state.create_run(scan_id, req.target, status="queued", phase="queued")
-    task_id = scheduler.enqueue(scan_id, "full_pipeline", {"target": req.target}, priority=10)
-    scans[scan_id]["scheduler_task_id"] = task_id
-    scans[scan_id]["autopilot_resume_token"] = resume_token
-    autopilot_state.upsert_task(scan_id, "full_pipeline", "queued", {"scheduler_task_id": task_id})
-    event_store.audit("local-user", "scan.start", scan_id, {"target": req.target})
-    asyncio.create_task(run_pipeline(scan_id, req.target, key))
+    try:
+        scan = core_scanner.prepare(
+            req.target,
+            req.scan_mode or "passive",
+            authorization_confirmed=req.authorization_confirmed,
+            api_key=req.api_key or "",
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    scans[scan["id"]] = scan
+
+    async def run_shared_scanner():
+        result = await core_scanner.run_prepared(
+            scan,
+            api_key=req.api_key or "",
+            event_callback=_send_websocket_event,
+        )
+        known = {
+            finding.get("id")
+            for finding in findings_store
+            if finding.get("scan_id") == scan["id"]
+        }
+        for finding in (
+            result.get("triaged_findings")
+            or result.get("raw_findings")
+            or []
+        ):
+            if finding.get("id") not in known:
+                findings_store.append(finding)
+
+    asyncio.create_task(run_shared_scanner())
     return {
-        "scan_id": scan_id,
+        "scan_id": scan["id"],
         "target": req.target,
         "status": "started",
-        "resume_token": resume_token,
-        "warning": authorization_warning,
+        "resume_token": scan.get("autopilot_resume_token", ""),
+        "warning": scan.get("authorization_warning", ""),
     }
 
 @app.post("/autopilot/start")
@@ -3534,7 +3548,7 @@ async def ready():
     availability = await ai_router.availability()
     return {
         "ready": True,
-        "version": "3.0",
+        "version": __version__,
         "ai_configured": availability["triage_capable"],
         "ai_provider": availability["active_provider"],
         "ai_model": availability["active_model"],
@@ -4330,13 +4344,18 @@ async def stop_scan(scan_id: str):
         raise HTTPException(404, "Scan not found")
     if scans[scan_id].get("status") in ("complete", "completed"):
         return {"stopped": False, "scan_id": scan_id, "reason": "Scan already completed."}
+    core_stopped = core_scanner.stop(scan_id)
     scans[scan_id]["control"] = "stop"
     scans[scan_id]["status"] = "stopped"
     scans[scan_id]["phase"] = "stopped"
     autopilot_state.update_run(scan_id, status="stopped", phase="stopped", finished=True)
     autopilot_state.upsert_task(scan_id, "full_pipeline", "stopped")
     await broadcast({"type": "scan_stopped", "scan_id": scan_id})
-    return {"stopped": True, "scan_id": scan_id}
+    return {
+        "stopped": True,
+        "scan_id": scan_id,
+        "core_scheduler_notified": core_stopped,
+    }
 
 @app.post("/scan/{scan_id}/retry-failed-task")
 async def retry_failed_task(scan_id: str):

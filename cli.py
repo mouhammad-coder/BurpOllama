@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.metadata
 import json
 import os
-import signal
+import platform
+import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -34,11 +37,20 @@ import httpx
 import websockets
 from rich import box
 from rich.console import Console
+from rich.console import Group
+from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+
+from core import __version__
+from core.config import config_status, load_config
+from core.reports import render_report
+from core.scanner import scanner
+from core.storage import scan_store
 
 
 ROOT = Path(__file__).resolve().parent
@@ -64,14 +76,49 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cli.py",
         description="BurpOllama CLI-first authorized security scanner.",
     )
-    parser.add_argument("--api", default=DEFAULT_API)
+    parser.add_argument(
+        "--api",
+        default=DEFAULT_API,
+        help="Dashboard API used only by watch and optional web commands.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Start a scan and stream everything live.")
     scan.add_argument("target")
-    scan.add_argument("--mode", choices=tuple(MODE_MAP), default="bounty")
+    scan.add_argument("--mode", choices=tuple(MODE_MAP), default="passive")
     scan.add_argument("--yes", action="store_true", help="Confirm authorization non-interactively.")
-    scan.add_argument("--no-auto-start", action="store_true")
+    scan.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        metavar="DOMAIN",
+        help="Restrict the scan to this domain. Repeat for multiple domains.",
+    )
+    scan.add_argument("--concurrency", type=int, default=5)
+    scan.add_argument("--rate-limit", type=float, default=2.0)
+    scan.add_argument("--timeout", type=float, default=10.0)
+    scan.add_argument("--retries", type=int, default=1)
+    scan.add_argument(
+        "--ai",
+        action="store_true",
+        help="Enable AI agents from the start if a provider is configured.",
+    )
+    scan.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Disable AI agents completely.",
+    )
+    scan.add_argument(
+        "--ai-provider",
+        default="",
+        metavar="PROVIDER",
+        help="Advanced AI provider override, e.g. ollama, gemini, openai.",
+    )
+    scan.add_argument("--model", default="")
+    scan.add_argument("--quiet", action="store_true")
+    scan.add_argument("--json", action="store_true", dest="json_output")
+    scan.add_argument("--follow", action="store_true")
+    scan.add_argument("--output", default="reports")
 
     watch = sub.add_parser("watch", help="Watch an existing scan in real time.")
     watch.add_argument("--scan-id", required=True)
@@ -79,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     recon = sub.add_parser("recon", help="Run authorized reconnaissance directly.")
     recon.add_argument("target")
     recon.add_argument("--yes", action="store_true")
-    recon.add_argument("--mode", choices=tuple(MODE_MAP), default="bounty")
+    recon.add_argument("--mode", choices=tuple(MODE_MAP), default="passive")
 
     validate = sub.add_parser("validate", help="Classify a finding candidate offline.")
     validate.add_argument("finding")
@@ -95,8 +142,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--output")
 
-    sub.add_parser("status", help="Show backend and AI readiness.")
-    sub.add_parser("history", help="List past scans.")
+    sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
+    sub.add_parser("history", help="List locally stored scans.")
+    sub.add_parser("doctor", help="Diagnose the local CLI installation.")
+    sub.add_parser("version", help="Print the BurpOllama version.")
+
+    serve = sub.add_parser("serve", help="Start the optional FastAPI dashboard.")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8888)
+
+    dashboard = sub.add_parser(
+        "dashboard", help="Start the optional dashboard and open a browser."
+    )
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8888)
 
     analyze = sub.add_parser(
         "analyze",
@@ -136,6 +195,17 @@ def normalized_target(value: str) -> str:
 
 
 def authorized(args, target: str) -> bool:
+    if getattr(args, "mode", "passive") == "passive":
+        return True
+    console.print(
+        Panel(
+            "[bold yellow]Active testing can affect the target.[/bold yellow]\n"
+            "Continue only if you own this system or have explicit written "
+            "authorization and the selected tests are allowed by scope.",
+            title="LEGAL AND SCOPE WARNING",
+            border_style="yellow",
+        )
+    )
     if getattr(args, "yes", False):
         return True
     if not sys.stdin.isatty():
@@ -175,67 +245,6 @@ async def api_json(
                 "HTTP {}: {}".format(response.status_code, response.text[:1000])
             )
         return response.json()
-
-
-async def api_text(api: str, path: str) -> tuple[str, str]:
-    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-        response = await client.get(api.rstrip("/") + path)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                "HTTP {}: {}".format(response.status_code, response.text[:1000])
-            )
-        return response.text, response.headers.get("content-type", "text/plain")
-
-
-async def backend_ready(api: str) -> bool:
-    try:
-        data = await api_json(api, "GET", "/health", timeout=3.0)
-        return data.get("status") == "ok"
-    except Exception:
-        return False
-
-
-async def start_local_backend(api: str) -> subprocess.Popen | None:
-    parsed = urlparse(api)
-    if parsed.hostname not in {"127.0.0.1", "localhost"}:
-        return None
-    if await backend_ready(api):
-        return None
-    console.print("[yellow]Backend is not running — starting it locally...[/yellow]")
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "main:app",
-            "--host",
-            parsed.hostname or "127.0.0.1",
-            "--port",
-            str(parsed.port or 8888),
-        ],
-        cwd=str(ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(40):
-        if process.poll() is not None:
-            raise RuntimeError("The BurpOllama backend failed to start.")
-        if await backend_ready(api):
-            console.print("[green]✓ Backend ready[/green]")
-            return process
-        await asyncio.sleep(0.25)
-    process.terminate()
-    raise RuntimeError("Timed out waiting for the BurpOllama backend.")
-
-
-def stop_local_backend(process: subprocess.Popen | None) -> None:
-    if not process or process.poll() is not None:
-        return
-    process.send_signal(signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
 
 
 def cloudflare_panel() -> Panel:
@@ -415,6 +424,15 @@ class StreamPrinter:
                     escape(str(message.get("reason", ""))),
                 )
             )
+        elif event_type in {"ai_note", "ai_hypothesis", "ai_strategy"}:
+            agent = message.get("agent") or "ai-agent"
+            console.print(
+                "[dim][{}][/dim] [magenta][{}][/magenta] {}".format(
+                    timestamp(),
+                    escape(str(agent)),
+                    escape(str(message.get("message", ""))),
+                )
+            )
         elif event_type == "scan_error":
             console.print("[red]Scan failed: {}[/red]".format(
                 escape(str(message.get("error", "Unknown error")))
@@ -423,6 +441,311 @@ class StreamPrinter:
         elif event_type in {"scan_complete", "scan_stopped"}:
             return True
         return False
+
+
+class LiveScanUI:
+    PHASE_INDEX = {
+        "target_check": 1,
+        "reconnaissance": 2,
+        "vulnerability_hunt": 3,
+        "ai_triage": 4,
+        "proof_validation": 5,
+        "report_export": 6,
+    }
+
+    def __init__(self, scan: dict, ai: dict):
+        self.scan = scan
+        self.ai = ai
+        self.phase_name = "queued"
+        self.phase_label = "Preparing scan"
+        self.agent_states: dict[str, dict] = {}
+        self.discovered_urls = 0
+        self.discovered_url_values: set[str] = set()
+        self.tested_requests = 0
+        self.confirmed = 0
+        self.candidates = 0
+        self.confirmed_ids: set[str] = set()
+        self.candidate_ids: set[str] = set()
+        self.findings = Counter()
+        self.last_findings: list[dict] = []
+        self.blackboard: list[dict] = []
+        self.phase_progress = Progress(
+            TextColumn("[bold cyan]Overall[/bold cyan]"),
+            BarColumn(bar_width=38),
+            TextColumn("{task.completed:.0f}/6 phases"),
+            expand=True,
+        )
+        self.phase_task = self.phase_progress.add_task("", total=6, completed=0)
+        self.agent_progress = Progress(
+            TextColumn("[cyan]{task.description:<20}[/cyan]"),
+            BarColumn(bar_width=30),
+            TextColumn("{task.completed:.0f}/{task.total:.0f}"),
+            expand=True,
+        )
+        self.agent_tasks: dict[str, int] = {}
+        self.live = Live(
+            self.render(),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+        )
+
+    def start(self):
+        options = self.scan.get("options", {})
+        scope = self.scan.get("scope", {}).get("allowed_domains", [])
+        ai_enabled = bool(self.ai.get("agents_enabled"))
+        ai_text = (
+            "{} / {}".format(
+                self.ai.get("active_provider"),
+                self.ai.get("active_model"),
+            )
+            if ai_enabled
+            else "disabled — manual review only"
+        )
+        ai_agents_text = (
+            "enabled from start" if ai_enabled else "inactive"
+        )
+        banner()
+        console.print(
+            Panel(
+                "\n".join([
+                    "[bold]Target:[/bold]      {}".format(
+                        escape(self.scan.get("target", ""))
+                    ),
+                    "[bold]Mode:[/bold]        {}".format(
+                        str(options.get("mode", "passive")).upper()
+                    ),
+                    "[bold]Scope:[/bold]       {}".format(
+                        escape(", ".join(scope))
+                    ),
+                    "[bold]Concurrency:[/bold] {}".format(
+                        options.get("concurrency", 5)
+                    ),
+                    "[bold]Rate limit:[/bold]  {} req/s".format(
+                        options.get("rate_limit", 2)
+                    ),
+                    "[bold]AI:[/bold]          {}".format(escape(ai_text)),
+                    "[bold]AI agents:[/bold]   {}".format(
+                        escape(ai_agents_text)
+                    ),
+                    "[bold]Scan ID:[/bold]     {}".format(
+                        escape(self.scan.get("id", ""))
+                    ),
+                ]),
+                title="CLI Swarm Scan",
+                border_style="cyan",
+            )
+        )
+        self.live.start()
+
+    def stop(self):
+        self.live.update(self.render(), refresh=True)
+        self.live.stop()
+
+    def render(self):
+        agents = Table(
+            title="Live agent status",
+            box=box.ROUNDED,
+            expand=True,
+        )
+        agents.add_column("Agent", style="cyan", no_wrap=True)
+        agents.add_column("Status", no_wrap=True)
+        agents.add_column("Tasks", justify="right")
+        agents.add_column("Findings", justify="right")
+        agents.add_column("Last event")
+        for name in sorted(self.agent_states):
+            state = self.agent_states[name]
+            status = str(state.get("status", "pending"))
+            style = {
+                "running": "yellow",
+                "complete": "green",
+                "error": "red",
+                "skipped": "dim",
+                "stopped": "red",
+            }.get(status, "white")
+            agents.add_row(
+                name,
+                "[{}]{}[/{}]".format(style, status, style),
+                str(state.get("tasks", 0)),
+                str(state.get("findings", 0)),
+                str(state.get("last_event", ""))[:70],
+            )
+        metrics = Table(box=box.SIMPLE, expand=True, show_header=False)
+        metrics.add_row(
+            "URLs", str(self.discovered_urls),
+            "Requests", str(self.tested_requests),
+            "Confirmed", str(self.confirmed),
+            "Candidates", str(self.candidates),
+        )
+        finding_text = "\n".join(
+            "[{severity}] {title} ({confidence}% · {proof})".format(
+                severity=item.get("severity", "INFO"),
+                title=item.get("title", "Finding"),
+                confidence=item.get("confidence", 0),
+                proof=item.get("proof", "candidate"),
+            )
+            for item in self.last_findings[-5:]
+        ) or "No findings yet"
+        blackboard_text = "\n".join(
+            "[{agent}] {message}".format(
+                agent=item.get("agent", "ai-agent"),
+                message=item.get("message", ""),
+            )
+            for item in self.blackboard[-6:]
+        ) or "AI agents inactive or no strategy notes yet"
+        return Group(
+            Rule("[bold cyan]{}[/bold cyan]".format(
+                escape(self.phase_label)
+            )),
+            self.phase_progress,
+            self.agent_progress,
+            agents,
+            metrics,
+            Panel(
+                blackboard_text,
+                title="Blackboard stream",
+                border_style="magenta",
+            ),
+            Panel(finding_text, title="Live findings ticker", border_style="yellow"),
+        )
+
+    def _agent(self, name: str) -> dict:
+        return self.agent_states.setdefault(
+            name or "core",
+            {
+                "status": "pending",
+                "tasks": 0,
+                "findings": 0,
+                "last_event": "",
+            },
+        )
+
+    def _line(self, event: dict, symbol: str, style: str):
+        agent = str(event.get("agent") or "core")
+        message = str(event.get("message") or "")
+        self.live.console.print(
+            "[dim][{}][/dim] [cyan]{:<14}[/cyan] [{}]{}[/{}] {}".format(
+                datetime.now().strftime("%H:%M:%S"),
+                escape(agent),
+                style,
+                symbol,
+                style,
+                escape(message),
+            )
+        )
+
+    def handle(self, event: dict):
+        event_type = str(event.get("type", ""))
+        agent = str(event.get("agent") or "core")
+        data = event.get("data") or {}
+        state = self._agent(agent)
+        message = str(event.get("message") or "")
+        state["last_event"] = message
+        if event_type == "phase_started":
+            self.phase_name = str(event.get("phase", ""))
+            self.phase_label = message
+            completed = max(0, self.PHASE_INDEX.get(self.phase_name, 1) - 1)
+            self.phase_progress.update(self.phase_task, completed=completed)
+            self._line(event, "▶", "cyan")
+        elif event_type == "phase_completed":
+            completed = self.PHASE_INDEX.get(str(event.get("phase", "")), 0)
+            self.phase_progress.update(self.phase_task, completed=completed)
+            self._line(event, "✓", "green")
+        elif event_type == "agent_started":
+            state["status"] = "running"
+            self._line(event, "→", "cyan")
+        elif event_type == "agent_completed":
+            state["status"] = "complete"
+            state["tasks"] += 1
+            state["findings"] = max(
+                state["findings"], int(data.get("findings", 0) or 0)
+            )
+            self._line(event, "✓", "green")
+        elif event_type == "agent_progress":
+            current = int(data.get("current", 0) or 0)
+            total = max(1, int(data.get("total", 1) or 1))
+            task_id = self.agent_tasks.get(agent)
+            if task_id is None:
+                task_id = self.agent_progress.add_task(
+                    agent, total=total, completed=current
+                )
+                self.agent_tasks[agent] = task_id
+            else:
+                self.agent_progress.update(
+                    task_id, total=total, completed=current
+                )
+        elif event_type == "url_discovered":
+            url = str(data.get("url", ""))
+            if url:
+                self.discovered_url_values.add(url)
+                self.discovered_urls = len(self.discovered_url_values)
+            self._line(event, "✓", "green")
+        elif event_type in {"request_tested", "response_received"}:
+            if event_type == "response_received":
+                self.tested_requests += 1
+            self._line(event, "→", "white")
+        elif event_type in {"finding_candidate", "finding_confirmed"}:
+            finding = data.get("finding", {})
+            finding_id = str(
+                finding.get("id")
+                or "{}|{}".format(
+                    finding.get("vuln_type", ""),
+                    finding.get("url", ""),
+                )
+            )
+            severity = str(finding.get("severity", "INFO")).upper()
+            if event_type == "finding_confirmed":
+                if finding_id in self.confirmed_ids:
+                    return
+                self.confirmed_ids.add(finding_id)
+                self.confirmed = len(self.confirmed_ids)
+                proof = "confirmed"
+                symbol, style = "✓", "green"
+            else:
+                if finding_id in self.candidate_ids:
+                    return
+                self.candidate_ids.add(finding_id)
+                self.candidates = len(self.candidate_ids)
+                proof = "needs proof"
+                symbol, style = "⚠", "yellow"
+            self.findings[severity] += 1
+            state["findings"] += 1
+            self.last_findings.append({
+                "severity": severity,
+                "title": finding.get("title") or finding.get("vuln_type"),
+                "confidence": finding.get("confidence", 0),
+                "proof": proof,
+            })
+            self._line(event, symbol, style)
+        elif event_type == "skipped":
+            state["status"] = (
+                "skipped" if state["status"] == "pending" else state["status"]
+            )
+            self._line(event, "⏭", "dim")
+        elif event_type == "throttled":
+            self._line(event, "!", "yellow")
+        elif event_type == "error":
+            state["status"] = "error"
+            self._line(event, "✗", "red")
+        elif event_type == "report_written":
+            self._line(event, "✓", "green")
+        elif event_type in {"ai_note", "ai_hypothesis", "ai_strategy"}:
+            self.blackboard.append({
+                "agent": agent,
+                "message": message,
+            })
+            self._line(event, "✦", "magenta")
+        elif event_type == "ai_triage":
+            self._line(event, "✓", "magenta")
+        elif event_type == "log":
+            level = str(data.get("level", "info"))
+            if level in {"warning", "error", "success"}:
+                self._line(
+                    event,
+                    "!" if level == "warning" else "✗" if level == "error" else "✓",
+                    "yellow" if level == "warning" else "red" if level == "error" else "green",
+                )
+        self.live.update(self.render(), refresh=True)
 
 
 async def scan_state(api: str, scan_id: str) -> dict:
@@ -463,43 +786,56 @@ async def stream_scan(
             await websocket.close()
 
 
-async def print_results(api: str, scan_id: str, started: float) -> None:
+def print_results(scan: dict, started: float) -> None:
     phase("RESULTS")
-    buckets = await api_json(
-        api, "GET", "/findings/{}/buckets".format(scan_id), timeout=60.0
+    scan_id = scan.get("id", "")
+    findings = (
+        scan.get("triaged_findings")
+        or scan.get("findings")
+        or scan.get("raw_findings")
+        or []
     )
-    findings = []
-    for name in (
-        "valid_bugs",
-        "needs_more_proof",
-        "candidates",
-        "informational",
-        "false_positives_removed",
-    ):
-        findings.extend(buckets.get(name, []))
     counts = Counter(str(item.get("severity", "INFO")).upper() for item in findings)
     elapsed = max(0, int(time.monotonic() - started))
-    console.print(
-        "[bold green]✓ Scan complete in {}m {}s[/bold green]".format(
-            elapsed // 60, elapsed % 60
-        )
+    analysis = scan.get("analysis", {})
+    coverage = analysis.get("coverage", {})
+    table = Table(box=box.ROUNDED, title="Scan summary")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Scan ID", str(scan_id))
+    table.add_row("Target", str(scan.get("target", "")))
+    table.add_row("Mode", str(scan.get("mode", "")))
+    table.add_row("Status", str(scan.get("status", "")))
+    table.add_row("Duration", "{:02d}:{:02d}:{:02d}".format(
+        elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+    ))
+    table.add_row(
+        "Discovered URLs", str(len(scan.get("recon", {}).get("urls", [])))
     )
-    table = Table(box=box.SIMPLE, show_header=False)
-    for severity, style in (
-        ("CRITICAL", "red"),
-        ("HIGH", "green"),
-        ("MEDIUM", "yellow"),
-        ("LOW", "cyan"),
-        ("INFO", "dim"),
-    ):
-        table.add_row(
-            Text(severity + ":", style=style),
-            Text(str(counts.get(severity, 0)), style=style),
-        )
+    table.add_row(
+        "Tested requests",
+        str(scan.get("rate_limiter", {}).get("total_requests", 0)),
+    )
+    table.add_row(
+        "Confirmed findings", str(len(scan.get("confirmed_findings", [])))
+    )
+    table.add_row(
+        "Candidate findings", str(len(scan.get("candidate_findings", [])))
+    )
+    table.add_row(
+        "Coverage", "{}%".format(coverage.get("coverage_percent", 0))
+    )
+    for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+        table.add_row(severity, str(counts.get(severity, 0)))
     console.print(table)
+    report_paths = scan.get("report_paths", {})
+    if report_paths:
+        console.print("[bold]Reports:[/bold]")
+        for report_format, path in report_paths.items():
+            console.print("  {}: {}".format(report_format, path))
     console.print(
-        "\nRun: [cyan]python3 cli.py report --scan-id {}[/cyan]\n"
-        "     [cyan]python3 cli.py report --scan-id {} --format hackerone[/cyan]".format(
+        "\nNext:\n[cyan]burpollama report --scan-id {}[/cyan]\n"
+        "[cyan]burpollama report --scan-id {} --format hackerone[/cyan]".format(
             scan_id, scan_id
         )
     )
@@ -509,67 +845,70 @@ async def command_scan(args) -> int:
     target = normalized_target(args.target)
     if not authorized(args, target):
         return 2
-    backend_process = None
-    if not await backend_ready(args.api):
-        if args.no_auto_start:
-            raise RuntimeError("Backend is not running. Run: bash start.sh")
-        backend_process = await start_local_backend(args.api)
-    mode_value, mode_label = MODE_MAP[args.mode]
-    banner()
-    console.print("Target: [bold]{}[/bold]".format(escape(target)))
-    console.print("Mode:   [bold]{}[/bold]".format(mode_label))
-    console.print("Time:   {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    started = time.monotonic()
-    try:
-        await api_json(
-            args.api,
-            "POST",
-            "/scope",
-            {
-                "scan_mode": mode_value,
-                "active_testing_enabled": args.mode != "passive",
-                "passive_only_mode": args.mode == "passive",
-            },
+    availability = await _ai_status(args.ai_provider, args.model)
+    ai_enabled = _scan_ai_enabled(args, availability)
+    if args.ai and not availability.get("triage_capable"):
+        console.print(
+            "[yellow]AI requested, but no provider is available. "
+            "Continuing manual-review only.[/yellow]"
         )
-        async with websockets.connect(
-            ws_url(args.api), max_size=4_000_000
-        ) as websocket:
-            await websocket.recv()  # initial state snapshot
-            result = await api_json(
-                args.api,
-                "POST",
-                "/scan",
-                {
-                    "target": target,
-                    "scan_mode": mode_value,
-                    "authorization_confirmed": True,
-                },
-            )
-            scan_id = result["scan_id"]
-            console.print("Scan ID: [cyan]{}[/cyan]".format(scan_id))
-            current = await stream_scan(
-                args.api,
-                scan_id,
-                websocket=websocket,
-                historical=False,
-            )
-        if str(current.get("status", "")).lower() in {"failed", "error"}:
-            console.print(
-                "[red]Scan failed: {}[/red]".format(
-                    escape(str(current.get("error", "Unknown error")))
-                )
-            )
-            return 1
-        await print_results(args.api, scan_id, started)
-        return 0
+    started = time.monotonic()
+    prepared = scanner.prepare(
+        target,
+        args.mode,
+        authorization_confirmed=True,
+        allowed_domains=args.scope,
+        concurrency=args.concurrency,
+        rate_limit=args.rate_limit,
+        timeout=args.timeout,
+        retries=args.retries,
+        ai_provider=args.ai_provider,
+        ai_enabled=ai_enabled,
+        model=args.model,
+        output=args.output,
+    )
+    prepared["ai"] = {
+        **prepared.get("ai", {}),
+        **availability,
+        "agents_enabled": bool(
+            ai_enabled is not False and availability.get("triage_capable")
+        ),
+    }
+    scan_id = prepared["id"]
+    ui = None if args.quiet or args.json_output else LiveScanUI(
+        prepared, availability
+    )
+    if ui:
+        ui.start()
+    elif not args.json_output:
+        console.print("Scan ID: {}".format(scan_id))
+
+    async def event_callback(event: dict):
+        if args.json_output:
+            print(json.dumps(event, ensure_ascii=False, default=str), flush=True)
+        elif ui:
+            ui.handle(event)
+
+    try:
+        current = await scanner.run_prepared(
+            prepared, event_callback=event_callback
+        )
     finally:
-        if backend_process and backend_process.poll() is None:
-            console.print(
-                "[dim]Backend remains running in the background (PID {}). "
-                "Use start.sh or your process manager to stop it.[/dim]".format(
-                    backend_process.pid
-                )
-            )
+        if ui:
+            ui.stop()
+    if str(current.get("status", "")).lower() in {"failed", "error"}:
+        if args.json_output:
+            print(json.dumps({"type": "result", "scan": current}, default=str))
+        else:
+            console.print("[red]Scan failed: {}[/red]".format(
+                escape(str(current.get("error", "Unknown error")))
+            ))
+        return 1
+    if args.json_output:
+        print(json.dumps({"type": "result", "scan": current}, default=str))
+    else:
+        print_results(current, started)
+    return 0
 
 
 async def command_watch(args) -> int:
@@ -658,15 +997,10 @@ def command_validate(args) -> int:
 
 
 async def command_report(args) -> int:
-    paths = {
-        "markdown": "/scan/{}/report".format(args.scan_id),
-        "hackerone": "/scan/{}/bounty/markdown?platform=hackerone".format(args.scan_id),
-        "bugcrowd": "/scan/{}/bounty/markdown?platform=bugcrowd".format(args.scan_id),
-        "json": "/scan/{}/report/json".format(args.scan_id),
-        "csv": "/scan/{}/report/csv".format(args.scan_id),
-        "sarif": "/scan/{}/report/sarif".format(args.scan_id),
-    }
-    body, _ = await api_text(args.api, paths[args.format])
+    scan = scan_store.get(args.scan_id)
+    if not scan:
+        raise RuntimeError("Local scan not found: {}".format(args.scan_id))
+    body = render_report(scan, args.format)
     if args.output:
         Path(args.output).write_text(body, encoding="utf-8")
         console.print("[green]✓ Saved {}[/green]".format(escape(args.output)))
@@ -677,17 +1011,26 @@ async def command_report(args) -> int:
 
 async def command_status(args) -> int:
     banner()
-    ready = await api_json(args.api, "GET", "/ready")
-    table = Table(title="BurpOllama status", box=box.ROUNDED)
+    storage = scan_store.status()
+    ai = await _ai_status()
+    table = Table(title="Standalone BurpOllama status", box=box.ROUNDED)
     table.add_column("Capability")
     table.add_column("Status")
     for label, value in (
-        ("Backend", ready.get("ready")),
-        ("Scanning", ready.get("scan_capable")),
-        ("AI triage", ready.get("triage_capable")),
-        ("AI provider", ready.get("ai_provider")),
-        ("AI model", ready.get("ai_model")),
-        ("Database", ready.get("database_ok")),
+        ("CLI scanner", "ready"),
+        ("Web backend required", False),
+        ("Local database", storage.get("writable")),
+        ("Stored scans", storage.get("scan_count")),
+        (
+            "AI",
+            "{}/{}".format(
+                ai.get("active_provider"), ai.get("active_model")
+            )
+            if ai.get("triage_capable")
+            else "disabled — manual review only",
+        ),
+        ("AI provider", ai.get("active_provider")),
+        ("AI model", ai.get("active_model")),
     ):
         table.add_row(label, str(value))
     console.print(table)
@@ -695,17 +1038,17 @@ async def command_status(args) -> int:
 
 
 async def command_history(args) -> int:
-    scans = await api_json(args.api, "GET", "/scans")
+    scans = scan_store.list()
     table = Table(title="Scan history", box=box.ROUNDED)
     for column in ("Scan ID", "Target", "Status", "Phase", "Started"):
         table.add_column(column)
     for scan in scans:
         table.add_row(
-            str(scan.get("id", "")),
+            str(scan.get("scan_id", "")),
             str(scan.get("target", "")),
             str(scan.get("status", "")),
             str(scan.get("phase", "")),
-            str(scan.get("started", "")),
+            str(scan.get("started_at", "")),
         )
     console.print(table)
     return 0
@@ -727,8 +1070,11 @@ async def command_analyze(args) -> int:
     rows = payload if isinstance(payload, list) else [payload]
     found = 0
     for index, row in enumerate(rows, start=1):
-        result = await api_json(args.api, "POST", "/analyze", row)
-        found += int(result.get("instant_findings", 0))
+        from main import BurpTraffic, pattern_scan_traffic
+
+        findings = await pattern_scan_traffic(BurpTraffic(**row))
+        result = {"instant_findings": len(findings), "deduped": False}
+        found += len(findings)
         console.print(
             "[{}] {} → {} finding(s){}".format(
                 index,
@@ -738,6 +1084,261 @@ async def command_analyze(args) -> int:
             )
         )
     console.print("[green]Passive analysis complete: {} finding(s)[/green]".format(found))
+    return 0
+
+
+def _scan_ai_enabled(args, availability: dict) -> bool:
+    if getattr(args, "no_ai", False):
+        return False
+    if getattr(args, "ai", False):
+        return True
+    return bool(availability.get("triage_capable"))
+
+
+async def _ai_status(provider: str = "", model: str = "") -> dict:
+    load_config()
+    from ai_provider import ai_router
+
+    if provider:
+        os.environ["BURPOLLAMA_PREFERRED_AI_PROVIDER"] = provider
+    if model:
+        env_provider = (provider or "OLLAMA").upper().replace("-", "_")
+        os.environ["{}_MODEL".format(env_provider)] = model
+    ai_router.reload_from_env()
+    return await ai_router.availability()
+
+
+async def command_doctor(args) -> int:
+    load_config()
+    checks = []
+
+    def add(name: str, ok: bool, detail: str):
+        checks.append((name, ok, detail))
+
+    add("Python", sys.version_info >= (3, 10), platform.python_version())
+    in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    add("Virtual environment", in_venv, sys.prefix)
+    env = config_status()
+    add(".env", bool(env.get("env_exists")), env.get("path", ""))
+    database = scan_store.status()
+    add("Local scan database", bool(database.get("writable")), database.get("database", ""))
+    report_dir = ROOT / "reports"
+    try:
+        report_dir.mkdir(parents=True, exist_ok=True)
+        probe = report_dir / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        reports_ok = True
+    except OSError:
+        reports_ok = False
+    add("Reports directory", reports_ok, str(report_dir))
+
+    requirements = {
+        "fastapi": "fastapi",
+        "uvicorn": "uvicorn",
+        "httpx": "httpx",
+        "pydantic": "pydantic",
+        "python-dotenv": "python-dotenv",
+        "psutil": "psutil",
+        "psycopg": "psycopg",
+        "cvss": "cvss",
+        "rich": "rich",
+    }
+    missing = []
+    for label, distribution in requirements.items():
+        try:
+            importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(label)
+    add(
+        "Required Python packages",
+        not missing,
+        "all installed" if not missing else "missing: " + ", ".join(missing),
+    )
+
+    from external_tools import tool_status
+
+    tools = tool_status()
+    available = [tool["name"] for tool in tools if tool["available"]]
+    add(
+        "Optional external tools",
+        True,
+        "{} available: {}".format(len(available), ", ".join(available) or "none"),
+    )
+    ai = await _ai_status()
+    add(
+        "AI provider (optional)",
+        True,
+        "{} / {}".format(
+            ai.get("active_provider", "none"),
+            ai.get("active_model", "none"),
+        ),
+    )
+    ollama_enabled = os.getenv("OLLAMA_ENABLED", "0") == "1"
+    add(
+        "Ollama",
+        True,
+        (
+            "running" if ai.get("ollama_running")
+            else "enabled but unavailable" if ollama_enabled
+            else "not enabled"
+        ),
+    )
+    semgrep_path = ROOT / ".tools" / "semgrep" / "bin" / "semgrep"
+    if os.name == "nt":
+        semgrep_path = ROOT / ".tools" / "semgrep" / "Scripts" / "semgrep.exe"
+    add(
+        "Semgrep isolation",
+        True,
+        (
+            str(semgrep_path)
+            if semgrep_path.exists()
+            else "optional isolated environment not installed"
+        ),
+    )
+    dependency_check = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    dependency_detail = (
+        dependency_check.stdout.strip()
+        or dependency_check.stderr.strip()
+        or "no critical conflicts"
+    )
+    add(
+        "Dependency conflicts",
+        dependency_check.returncode == 0,
+        dependency_detail,
+    )
+    launcher = shutil.which("burpollama")
+    launcher_ok = bool(launcher)
+    if launcher:
+        try:
+            launcher_path = Path(launcher).resolve()
+            launcher_text = launcher_path.read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            launcher_ok = launcher_path.exists() and "cli.py" in launcher_text
+        except OSError:
+            launcher_ok = False
+    add("CLI launcher", launcher_ok, launcher or "not found in PATH")
+    add(
+        "Dashboard (optional)",
+        True,
+        "available with `burpollama serve`; not required for scans",
+    )
+
+    table = Table(title="BurpOllama doctor", box=box.ROUNDED)
+    table.add_column("Check")
+    table.add_column("Result")
+    table.add_column("Detail")
+    for name, ok, detail in checks:
+        table.add_row(name, "[green]PASS[/green]" if ok else "[red]FAIL[/red]", str(detail))
+    console.print(table)
+    console.print(
+        "[dim]AI is optional and does not block scanning.[/dim]"
+    )
+    return 0 if all(ok for name, ok, _ in checks if name != "Optional external tools") else 1
+
+
+async def command_launcher() -> int:
+    banner()
+    availability = await _ai_status()
+    if availability.get("triage_capable"):
+        console.print(
+            "[green]AI detected: {} / {}[/green]".format(
+                availability.get("active_provider"),
+                availability.get("active_model"),
+            )
+        )
+        use_ai = True
+        if sys.stdin.isatty():
+            answer = console.input(
+                "[bold cyan]Use AI agents from the start? [Y/n]: [/bold cyan]"
+            )
+            use_ai = answer.strip().lower() not in {"n", "no"}
+        console.print(
+            "[green]AI agents: enabled from start[/green]"
+            if use_ai
+            else "[yellow]AI: disabled — manual review only[/yellow]"
+        )
+    else:
+        use_ai = False
+        console.print("[yellow]AI: disabled — manual review only[/yellow]")
+        console.print("[dim]AI agents: inactive[/dim]")
+
+    if not sys.stdin.isatty():
+        console.print(
+            "\nTry:\n"
+            "  [cyan]burpollama doctor[/cyan]\n"
+            "  [cyan]burpollama scan https://authorized-target.example --mode passive[/cyan]\n"
+            "  [cyan]burpollama scan https://authorized-target.example --mode bounty --ai --yes[/cyan]"
+        )
+        return 0
+
+    target = console.input(
+        "\n[bold]Target to scan[/bold] "
+        "[dim](Enter to show commands only): [/dim]"
+    ).strip()
+    if not target:
+        console.print(
+            "\nCommands:\n"
+            "  [cyan]burpollama doctor[/cyan]\n"
+            "  [cyan]burpollama status[/cyan]\n"
+            "  [cyan]burpollama scan <target> --mode passive[/cyan]\n"
+            "  [cyan]burpollama scan <target> --mode bounty --yes[/cyan]\n"
+            "  [cyan]burpollama history[/cyan]\n"
+        )
+        return 0
+    mode = console.input("[bold]Mode[/bold] [passive/bounty/deep] (passive): ").strip().lower() or "passive"
+    if mode not in MODE_MAP:
+        console.print("[red]Unknown mode: {}[/red]".format(escape(mode)))
+        return 2
+    args = argparse.Namespace(
+        command="scan",
+        target=target,
+        mode=mode,
+        yes=False,
+        scope=None,
+        concurrency=5,
+        rate_limit=2.0,
+        timeout=10.0,
+        retries=1,
+        ai=use_ai,
+        no_ai=not use_ai,
+        ai_provider="",
+        model="",
+        quiet=False,
+        json_output=False,
+        follow=False,
+        output="reports",
+    )
+    return await command_scan(args)
+
+
+async def command_serve(args, open_browser: bool = False) -> int:
+    dashboard_url = "http://{}:{}/ui".format(args.host, args.port)
+    os.environ["BURPOLLAMA_DASHBOARD_URL"] = dashboard_url
+    if open_browser:
+        url = dashboard_url
+
+        async def delayed_open():
+            await asyncio.sleep(1.5)
+            webbrowser.open(url)
+
+        asyncio.get_event_loop().create_task(delayed_open())
+    import uvicorn
+
+    config = uvicorn.Config(
+        "main:app",
+        host=args.host,
+        port=args.port,
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
     return 0
 
 
@@ -756,10 +1357,26 @@ async def async_main(args) -> int:
         return await command_history(args)
     if args.command == "analyze":
         return await command_analyze(args)
+    if args.command == "doctor":
+        return await command_doctor(args)
+    if args.command == "version":
+        console.print("BurpOllama {}".format(__version__))
+        return 0
+    if args.command == "serve":
+        return await command_serve(args)
+    if args.command == "dashboard":
+        return await command_serve(args, open_browser=True)
     return 1
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        try:
+            return asyncio.run(command_launcher())
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopped by user.[/yellow]")
+            return 130
     args = build_parser().parse_args(argv)
     if args.command == "validate":
         return command_validate(args)
@@ -769,9 +1386,12 @@ def main(argv: list[str] | None = None) -> int:
         console.print("\n[yellow]Stopped by user.[/yellow]")
         return 130
     except (RuntimeError, httpx.HTTPError, OSError, json.JSONDecodeError) as exc:
+        if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+            22, 32,
+        }:
+            # Downstream JSON/quiet consumers may intentionally close stdout.
+            return 0
         console.print("[red]Error: {}[/red]".format(escape(str(exc))))
-        if args.command != "scan":
-            console.print("[dim]Start the backend with: bash start.sh[/dim]")
         return 1
 
 

@@ -176,6 +176,12 @@ class WorkingMemory:
         classes: list[tuple[str, Any]],
         available_urls: list[str],
     ) -> list[tuple[str, Any]]:
+        baseline_order = {
+            "Security Headers": 0,
+            "Sensitive Paths": 0,
+            "CORS": 1,
+            "Open Redirect": 2,
+        }
         first = self.get_next_priority(
             available_urls,
             [entry["step"] for entry in self.completed_steps],
@@ -183,6 +189,7 @@ class WorkingMemory:
         return sorted(
             classes,
             key=lambda item: (
+                baseline_order.get(item[0], 3),
                 0 if item[0] == first else 1,
                 -self.risk_score(item[0], available_urls),
                 item[0],

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BurpOllama - Fast launcher
+# BurpOllama - optional dashboard launcher
 set -e
 
 CYAN="\033[1;36m"
@@ -47,21 +47,19 @@ fi
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${RESET}"
-echo -e "${CYAN}║  BurpOllama is running                              ║${RESET}"
+echo -e "${CYAN}║  BurpOllama optional dashboard is starting          ║${RESET}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo "  Dashboard: http://127.0.0.1:8888/ui"
 echo ""
-echo "  CLI commands:"
-echo "    python3 cli.py scan <target>           Start a scan"
-echo "    python3 cli.py watch --scan-id <id>    Watch live"
-echo "    python3 cli.py status                  Check status"
-echo "    python3 cli.py history                 Past scans"
-echo "    python3 cli.py report --scan-id <id>   Get report"
+echo "  Normal CLI commands do not require this server:"
+echo "    burpollama scan <target> --mode passive"
+echo "    burpollama status"
+echo "    burpollama history"
 echo ""
 echo "  Press Ctrl+C to stop the backend"
 echo ""
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/.venv/bin/activate"
-exec uvicorn main:app --host 127.0.0.1 --port 8888 --reload
+exec python "$SCRIPT_DIR/cli.py" serve

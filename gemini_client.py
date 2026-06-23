@@ -61,7 +61,11 @@ async def ask_gemini(
         system=system,
         temperature=temperature,
         max_tokens=max_tokens,
-        preferred_provider="gemini" if key else "",
+        preferred_provider=(
+            "gemini"
+            if key
+            else os.getenv("BURPOLLAMA_PREFERRED_AI_PROVIDER", "")
+        ),
         api_key=key,
     )
 

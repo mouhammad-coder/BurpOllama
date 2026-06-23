@@ -14,7 +14,23 @@ class CliTests(unittest.TestCase):
         parser = cli.build_parser()
         self.assertEqual(
             parser.parse_args(["scan", "https://example.test"]).mode,
-            "bounty",
+            "passive",
+        )
+        ai_args = parser.parse_args([
+            "scan",
+            "https://example.test",
+            "--ai",
+            "--ai-provider",
+            "ollama",
+        ])
+        self.assertTrue(ai_args.ai)
+        self.assertEqual(ai_args.ai_provider, "ollama")
+        self.assertTrue(
+            parser.parse_args([
+                "scan",
+                "https://example.test",
+                "--no-ai",
+            ]).no_ai
         )
         self.assertEqual(
             parser.parse_args(["watch", "--scan-id", "abc123"]).scan_id,
@@ -26,6 +42,8 @@ class CliTests(unittest.TestCase):
             ).format,
             "sarif",
         )
+        self.assertEqual(parser.parse_args(["doctor"]).command, "doctor")
+        self.assertEqual(parser.parse_args(["serve"]).command, "serve")
 
     def test_cloudflare_event_switch_message_is_renderable(self):
         printer = cli.StreamPrinter("scan-1")

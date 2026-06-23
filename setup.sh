@@ -23,10 +23,20 @@ fi
 source "$SCRIPT_DIR/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
+mkdir -p "$HOME/.local/bin"
 
-echo -e "${CYAN}[*]${RESET} Installing optional Semgrep support..."
-pip install semgrep --break-system-packages 2>/dev/null || pip install semgrep || \
-    echo -e "${YELLOW}[!]${RESET} Semgrep installation failed; setup will continue with regex analysis."
+echo -e "${CYAN}[*]${RESET} Installing optional Semgrep in an isolated environment..."
+SEMGREP_VENV="$SCRIPT_DIR/.tools/semgrep"
+if python3 -m venv "$SEMGREP_VENV" 2>/dev/null; then
+    "$SEMGREP_VENV/bin/python" -m pip install --upgrade pip -q
+    "$SEMGREP_VENV/bin/python" -m pip install semgrep -q || \
+        echo -e "${YELLOW}[!]${RESET} Semgrep installation failed; regex analysis remains available."
+    if [[ -x "$SEMGREP_VENV/bin/semgrep" ]]; then
+        ln -sf "$SEMGREP_VENV/bin/semgrep" "$HOME/.local/bin/semgrep"
+    fi
+else
+    echo -e "${YELLOW}[!]${RESET} Could not create the optional Semgrep environment."
+fi
 
 if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
     cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
@@ -37,25 +47,25 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  AI PROVIDER SETUP"
+echo "  OPTIONAL AI"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "You will choose and configure an AI provider inside the dashboard."
-echo "Scans work without AI. Ollama remains disabled until you enable it."
+echo "Scans work without AI and use manual-review status when needed."
+echo "Configure a provider later in .env or with the optional dashboard."
 
 chmod +x "$SCRIPT_DIR/setup.sh" \
     "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/update.sh" "$SCRIPT_DIR/burpollama" \
     "$SCRIPT_DIR/cli.py" 2>/dev/null || true
-mkdir -p "$HOME/.local/bin"
 ln -sf "$SCRIPT_DIR/burpollama" "$HOME/.local/bin/burpollama"
 echo -e "${GREEN}[+]${RESET} CLI installed at $HOME/.local/bin/burpollama"
 
 echo ""
-echo -e "${GREEN}╔═══════════════════════════════════════════╗${RESET}"
-echo -e "${GREEN}║         BURPOLLAMA IS READY               ║${RESET}"
-echo -e "${GREEN}╠═══════════════════════════════════════════╣${RESET}"
-echo -e "${GREEN}║  Dashboard: http://127.0.0.1:8888/ui      ║${RESET}"
-echo -e "${GREEN}║  Press Ctrl+C to stop                     ║${RESET}"
-echo -e "${GREEN}╚═══════════════════════════════════════════╝${RESET}"
+echo -e "${GREEN}╔════════════════════════════════════════════════════╗${RESET}"
+echo -e "${GREEN}║              BURPOLLAMA CLI IS READY               ║${RESET}"
+echo -e "${GREEN}╠════════════════════════════════════════════════════╣${RESET}"
+echo -e "${GREEN}║  burpollama doctor                                 ║${RESET}"
+echo -e "${GREEN}║  burpollama status                                 ║${RESET}"
+echo -e "${GREEN}║  burpollama scan <target> --mode passive           ║${RESET}"
+echo -e "${GREEN}║  burpollama serve       (optional dashboard)       ║${RESET}"
+echo -e "${GREEN}╚════════════════════════════════════════════════════╝${RESET}"
 echo ""
-
-exec bash "$SCRIPT_DIR/start.sh"
+echo "Open a new terminal if ~/.local/bin was not already in PATH."

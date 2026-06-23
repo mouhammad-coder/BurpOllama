@@ -389,6 +389,11 @@ class AIRouter:
             "gemini": availability["available"]["gemini"],
             "openai": availability["available"]["openai"],
             "anthropic": availability["available"]["anthropic"],
+            "groq": availability["available"]["groq"],
+            "mistral": availability["available"]["mistral"],
+            "deepseek": availability["available"]["deepseek"],
+            "together": availability["available"]["together"],
+            "custom": availability["available"]["custom"],
         }
         providers = [p for p in providers if availability_names.get(p.name, False)]
         if preferred_provider:

@@ -21,7 +21,7 @@ def run_tests():
         ("SQL Injection", object()),
         ("CORS", object()),
     ], ["https://example.test/search?q=x"])
-    assert ranked[0][0] == "SQL Injection"
+    assert ranked[0][0] == "Security Headers"
 
     memory.record_step("SQL Injection", "completed", 2)
     assert memory.observations

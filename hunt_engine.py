@@ -60,6 +60,9 @@ REQUEST_TIMEOUT = contextvars.ContextVar(
 REQUEST_EVENT_CB = contextvars.ContextVar(
     "burpollama_hunt_request_event_cb", default=None
 )
+REQUEST_RATE_LIMITER = contextvars.ContextVar(
+    "burpollama_hunt_rate_limiter", default=None
+)
 
 # ── Infrastructure-trust bypass headers (Classes 8 & 9) ──────────────────────
 INFRA_TRUST_HEADERS = [
@@ -113,6 +116,17 @@ async def tget(client, url, **kwargs):
     )
     if not decision.allowed:
         return None
+    limiter = REQUEST_RATE_LIMITER.get()
+    if limiter:
+        waited = await limiter.acquire()
+        callback = REQUEST_EVENT_CB.get()
+        if waited > 0.05 and callback:
+            await callback({
+                "type": "throttled",
+                "method": "GET",
+                "url": url,
+                "wait_seconds": round(waited, 3),
+            })
     async with await throttle.gate():
         await throttle.record_request(url)
         started = time.perf_counter()
@@ -196,6 +210,17 @@ async def tpost(client, url, **kwargs):
     )
     if not decision.allowed:
         return None
+    limiter = REQUEST_RATE_LIMITER.get()
+    if limiter:
+        waited = await limiter.acquire()
+        callback = REQUEST_EVENT_CB.get()
+        if waited > 0.05 and callback:
+            await callback({
+                "type": "throttled",
+                "method": "POST",
+                "url": url,
+                "wait_seconds": round(waited, 3),
+            })
     async with await throttle.gate():
         await throttle.record_request(url)
         started = time.perf_counter()
@@ -4889,6 +4914,7 @@ async def _run_hunt_impl(
     planner=None,
     request_event_cb:Callable = None,
     finding_event_cb:Callable = None,
+    rate_limiter=None,
 ) -> list:
     """
     Run all hunt classes + dual-session auth matrix + OOB SQLi payloads.
@@ -6026,6 +6052,7 @@ async def run_hunt(
     planner=None,
     request_event_cb:Callable = None,
     finding_event_cb:Callable = None,
+    rate_limiter=None,
 ) -> list:
     """Apply mode-specific URL and wall-clock limits around the hunt engine."""
     normalized_level = str(scan_level or "").strip().upper()
@@ -6053,6 +6080,7 @@ async def run_hunt(
     )
 
     request_event_token = REQUEST_EVENT_CB.set(request_event_cb)
+    request_limiter_token = REQUEST_RATE_LIMITER.set(rate_limiter)
     try:
         return await asyncio.wait_for(
             _run_hunt_impl(
@@ -6089,6 +6117,7 @@ async def run_hunt(
         return []
     finally:
         REQUEST_EVENT_CB.reset(request_event_token)
+        REQUEST_RATE_LIMITER.reset(request_limiter_token)
 
 
 async def _hunt_oob_sqli(client, urls: list, waf_info: dict, log: Callable) -> list:

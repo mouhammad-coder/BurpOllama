@@ -18,11 +18,16 @@ import json
 import httpx
 import os
 import tempfile
+import contextvars
 from typing import Callable
 from urllib.parse import urljoin, urlparse
 from scope_policy import scope_policy
 from js_endpoint_extractor import extract_js_endpoints
 from finding_model import normalize_finding
+
+RECON_RATE_LIMITER = contextvars.ContextVar(
+    "burpollama_recon_rate_limiter", default=None
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -107,7 +112,7 @@ async def probe_target_connection(target: str):
     ) as client:
         for candidate in candidates:
             try:
-                response = await client.get(candidate)
+                response = await _recon_get(client, candidate)
                 if response is not None:
                     return response, candidate, None
             except Exception as exc:
@@ -122,6 +127,20 @@ def _extract_title(body: str) -> str:
         re.IGNORECASE | re.DOTALL,
     )
     return re.sub(r"\s+", " ", match.group(1)).strip()[:200] if match else "Unknown"
+
+
+async def _recon_get(client: httpx.AsyncClient, url: str, **kwargs):
+    limiter = RECON_RATE_LIMITER.get()
+    if limiter is not None:
+        await limiter.acquire()
+    return await client.get(url, **kwargs)
+
+
+async def _recon_head(client: httpx.AsyncClient, url: str, **kwargs):
+    limiter = RECON_RATE_LIMITER.get()
+    if limiter is not None:
+        await limiter.acquire()
+    return await client.head(url, **kwargs)
 
 
 async def _recon_log(log: Callable, message: str, level: str = "info"):
@@ -780,7 +799,7 @@ async def _python_crawl(
                 )
                 if not allowed:
                     continue
-                response = await client.get(url, timeout=8)
+                response = await _recon_get(client, url, timeout=8)
                 if response is None:
                     continue
                 found.append(canonical_request)
@@ -836,6 +855,7 @@ async def discover_local_urls(
     log: Callable,
     reachable_url: str | None = None,
     max_urls: int = 200,
+    use_external_tools: bool = True,
 ) -> list[str]:
     """Crawl local targets in Python first, then optionally supplement with Katana."""
     target_url = _target_url(target)
@@ -851,7 +871,7 @@ async def discover_local_urls(
         if not method_url:
             for candidate in _local_connection_candidates(target_url):
                 try:
-                    response = await client.get(candidate, timeout=5)
+                    response = await _recon_get(client, candidate, timeout=5)
                     if response is not None and response.status_code < 500:
                         method_url = candidate
                         break
@@ -880,7 +900,7 @@ async def discover_local_urls(
                     target_url.rstrip("/") + "/", path.lstrip("/")
                 )
                 try:
-                    response = await client.get(request_url, timeout=5)
+                    response = await _recon_get(client, request_url, timeout=5)
                     if response is not None and response.status_code < 500:
                         urls.add(canonical_url)
                         await _recon_log(
@@ -894,7 +914,7 @@ async def discover_local_urls(
 
             # Katana is supplemental only, and only runs after a successful
             # Python reachability check.
-            if tool_available("katana"):
+            if use_external_tools and tool_available("katana"):
                 await _recon_log(
                     log,
                     "[Recon] Running katana on reachable local URL {}".format(
@@ -950,7 +970,7 @@ async def _simple_crawl(
                 ok, _ = scope_policy.record_request(url, action="scan")
                 if not ok:
                     continue
-                response = await client.get(url)
+                response = await _recon_get(client, url)
                 if response is None:
                     continue
                 links = re.findall(
@@ -1066,7 +1086,8 @@ async def _probe_common_paths(
             return
         try:
             async with sem:
-                response = await client.get(
+                response = await _recon_get(
+                    client,
                     url, timeout=3, follow_redirects=False
                 )
             if response is None:
@@ -1161,7 +1182,9 @@ async def discover_content(
             return
         async with sem:
             try:
-                response = await client.get(url, follow_redirects=False)
+                response = await _recon_get(
+                    client, url, follow_redirects=False
+                )
             except httpx.HTTPError:
                 return
         if response.status_code in (200, 401, 403):
@@ -1258,7 +1281,7 @@ async def analyze_js_files(
                 ok, _ = scope_policy.record_request(js_url, action="scan")
                 if not ok:
                     continue
-                r = await client.get(js_url)
+                r = await _recon_get(client, js_url)
                 if r.status_code != 200:
                     continue
                 js_contents[js_url] = r.text
@@ -1277,7 +1300,7 @@ async def analyze_js_files(
                 # Source map check
                 map_url = js_url + ".map"
                 try:
-                    mr = await client.head(map_url)
+                    mr = await _recon_head(client, map_url)
                     if mr.status_code == 200:
                         findings.append({
                             "type":     "Source Map Exposed",
@@ -1578,6 +1601,7 @@ async def run_full_recon(
     target: str,
     log: Callable,
     adaptive_plan: dict | None = None,
+    use_external_tools: bool = True,
 ) -> dict:
     """Run recon with the target itself as the guaranteed starting point."""
     target_url = _target_url(target)
@@ -1680,6 +1704,11 @@ async def run_full_recon(
             log,
             "[Recon] Local target detected — skipping subfinder, using direct probing",
         )
+    elif not use_external_tools:
+        await _recon_log(
+            log,
+            "[Recon] External subdomain tools disabled by controlled CLI scheduler",
+        )
     elif scan_level == "LIGHT":
         await _recon_log(
             log, "[Recon] LIGHT plan: broad subdomain enumeration skipped"
@@ -1726,9 +1755,14 @@ async def run_full_recon(
                 log,
                 reachable_url=transport_url,
                 max_urls=max_urls,
+                use_external_tools=use_external_tools,
             )
             if local_target
-            else await discover_urls(live_hosts, log, max_urls=max_urls)
+            else (
+                await discover_urls(live_hosts, log, max_urls=max_urls)
+                if use_external_tools
+                else []
+            )
         )
     except Exception as exc:
         await _recon_log(
@@ -1738,7 +1772,11 @@ async def run_full_recon(
             ),
         )
         raw_urls = []
-    if not local_target and (not tool_available("katana") or not raw_urls):
+    if not local_target and (
+        not use_external_tools
+        or not tool_available("katana")
+        or not raw_urls
+    ):
         raw_urls = list(raw_urls or []) + list(
             await _simple_crawl(base_url, depth=3, max_urls=max_urls)
         )
