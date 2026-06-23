@@ -9,35 +9,102 @@
 </p>
 
 <p align="center">
-<b>Local autonomous bug bounty platform with AI triage, 39 vulnerability classes,
-Zero FP mode, exploit chain builder, and bounty-ready report export.</b>
+<b>CLI-first authorized security scanner with live request streaming, 39 vulnerability
+classes, optional AI triage, proof validation, and bounty-ready reports.</b>
 </p>
 
 ---
 
+## Terminal First
+
+BurpOllama now puts the terminal first. Start an authorized scan and watch the
+reconnaissance, tested URLs, HTTP responses, vulnerability classes, throttle
+events, errors, and findings as they happen:
+
+```bash
+python3 cli.py scan https://target.example
+```
+
+Or use the installed launcher:
+
+```bash
+burpollama scan https://target.example
+```
+
+```text
+╔════════════════════════════════════════════════════════╗
+║ BurpOllama — Authorized Security Scanner               ║
+╚════════════════════════════════════════════════════════╝
+Target: https://target.example
+Mode:   Bounty Scan
+
+──────────────────── PHASE 1 — RECONNAISSANCE ────────────────────
+[19:31:01] ✓ Direct probe: https://target.example → HTTP 200
+[19:31:02] → Crawling: https://target.example/api/users
+[19:31:03] ✓ Found: /admin → 403
+
+────────────────── PHASE 2 — VULNERABILITY HUNT ──────────────────
+[19:31:10] Testing [1/50] SQL Injection...
+[19:31:10] → Testing URL 1/47 https://target.example/api/users
+[19:31:11] GET https://target.example/api/users → HTTP 200
+[19:31:15] Testing [20/50] Security Headers...
+[19:31:16] ⚠ FINDING: Missing Content-Security-Policy
+
+────────────────────────── RESULTS ───────────────────────────────
+✓ Scan complete in 4m 32s
+  HIGH: 2  MEDIUM: 5  LOW: 3  INFO: 8
+```
+
+The web dashboard remains available as a companion interface at
+`http://127.0.0.1:8888/ui`.
+
 ## What It Does
 
-BurpOllama is a local web-based security platform that runs on your machine.
-You open the dashboard, enter an authorized target, and it:
+BurpOllama runs locally and:
 
 - Discovers attack surface automatically
-- Tests 39 vulnerability classes
+- Streams every scan phase, tested URL, and key response to the terminal
+- Tests 39 specialized vulnerability classes
 - Confirms findings with actual proof (not just detection)
-- Scores everything with CVSS++ business-aware impact scoring
+- Scores findings with official CVSS 4.0 and business-aware impact scoring
 - Builds exploit chains connecting related vulnerabilities
-- Exports HackerOne and Bugcrowd ready reports
+- Exports HackerOne, Bugcrowd, Markdown, JSON, CSV, and SARIF reports
+- Works with Ollama, Gemini, OpenAI, Anthropic, other compatible providers, or no AI
 
-**No cloud dependency. No subscription. Runs on your laptop.**
+**No mandatory cloud dependency. No mandatory AI key. Runs on your machine.**
 
 > Use BurpOllama only on systems you own or have explicit written authorization to test.
 
 ---
 
-## Dashboard
+## CLI Commands
 
-The dashboard lives at `http://127.0.0.1:8888/ui`
+| Command | Purpose |
+|---|---|
+| `burpollama scan <target>` | Start a bounty scan and stream it live |
+| `burpollama scan <target> --mode passive` | Safe passive-only scan |
+| `burpollama scan <target> --mode deep` | Deep authorized scan |
+| `burpollama recon <target>` | Run reconnaissance directly |
+| `burpollama watch --scan-id <id>` | Watch a dashboard/API scan through WebSocket |
+| `burpollama status` | Check backend, database, and AI readiness |
+| `burpollama history` | List scans held by the running backend |
+| `burpollama report --scan-id <id>` | Print the completed report |
+| `burpollama report --scan-id <id> --format hackerone` | Export HackerOne format |
+| `burpollama validate "IDOR on /api/users/{id}"` | Classify a finding candidate |
+| `burpollama analyze --file traffic.json` | Analyze captured Burp traffic |
 
-Guided step-by-step wizard — no command line knowledge needed.
+The CLI asks for authorization confirmation before active scanning. For
+non-interactive use on an explicitly authorized target, add `--yes`.
+
+### Dashboard Companion
+
+Run `bash start.sh`, then open
+[http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui). A scan started in the
+dashboard can be followed live in another terminal:
+
+```bash
+burpollama watch --scan-id <scan-id>
+```
 
 ---
 
@@ -128,36 +195,61 @@ See [CLI](docs/CLI.md), [agents](docs/AGENTS.md),
 
 ## Quick Start on Kali Linux
 
+### One-line installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mouhammad-coder/BurpOllama/main/install.sh | bash
+```
+
+### Manual installation
+
 ```bash
 git clone https://github.com/mouhammad-coder/BurpOllama.git
 cd BurpOllama
-cp .env.example .env
 bash setup.sh
 ```
 
-Open: [http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui)
+Setup creates `.env`, installs the Python environment, starts the backend, and
+installs the `burpollama` launcher under `~/.local/bin`.
 
-The setup script starts the dashboard automatically and installs the
-`burpollama` launcher under `~/.local/bin`.
+In a second terminal:
+
+```bash
+burpollama status
+burpollama scan https://your-authorized-target.example
+```
+
+If `~/.local/bin` is not in your shell path:
+
+```bash
+python3 cli.py scan https://your-authorized-target.example
+```
 
 ---
 
 ## AI Setup
 
-### Option A — Free Gemini API (Recommended for Beginners)
+AI is optional. Scanning and raw findings continue to work with no provider.
 
-1. Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
-2. Enter the key in **Dashboard → Settings → AI Configuration**.
-3. The free tier currently offers limited requests; check Google AI Studio for current quotas.
+### Option A — Local Ollama (Private, No API Key)
 
-### Option B — Local Ollama (No API Key Needed)
+BurpOllama never downloads an Ollama model automatically. Install and enable it
+only when you choose:
 
 ```bash
 curl -fsSL https://ollama.ai/install.sh | sh
 ollama pull mistral
 ```
 
-Configure it in **Dashboard → Settings → AI Configuration**.
+Then enable Ollama in **Dashboard → Settings → AI Configuration**.
+
+### Option B — Free Gemini API
+
+1. Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Enter the key in **Dashboard → Settings → AI Configuration**.
+3. Check Google AI Studio for the current free-tier limits.
+
+OpenAI, Anthropic, and compatible providers can be configured on the same page.
 
 ---
 
@@ -166,12 +258,15 @@ Configure it in **Dashboard → Settings → AI Configuration**.
 ```text
 Target URL
     ↓
-Guided Wizard (scope, mode, sessions)
+CLI authorization confirmation / Dashboard wizard
     ↓
 Adaptive Pre-Scan Analysis
     ↓
 Phase 1: Reconnaissance
 (subfinder, httpx, katana, gau, JS extraction)
+    ↓
+Live WebSocket event stream
+(phases, URLs, responses, findings, throttling)
     ↓
 Phase 2: Hunt
 (39 vulnerability classes, OOB confirmation)
@@ -185,7 +280,7 @@ Phase 5: Zero FP Gate
 (12-point proof check)
     ↓
 Phase 6: Report
-(HackerOne, Bugcrowd, Markdown, JSON)
+(HackerOne, Bugcrowd, Markdown, JSON, CSV, SARIF)
 ```
 
 Burp Suite traffic can also be sent to the local analyzer through
@@ -201,7 +296,13 @@ network and DNS access and uses only local mock data:
 
 ```bash
 python tests/offline_test_suite.py
+python tests/e2e_pipeline_test.py
+python -m pytest -q -p no:cacheprovider -o python_files=*_tests.py
 ```
+
+The E2E test starts a local mock target, runs real recon and hunt phases, and
+verifies URL discovery, security-header detection, sensitive-path detection,
+and clean shutdown without network access.
 
 ## Playbook and Coverage Brain
 
@@ -276,12 +377,13 @@ program policy before scanning.
 
 ## File Structure
 
-54 Python modules, including:
+Core modules include:
 
-- `hunt_engine.py` — 38 vulnerability classes
-- `main.py` — FastAPI backend with 50+ endpoints
+- `cli.py` — Primary Rich terminal interface and WebSocket log viewer
+- `hunt_engine.py` — 39 vulnerability classes and live request events
+- `main.py` — FastAPI backend, scan orchestration, and WebSocket stream
 - `zero_fp_gate.py` — 12-point proof validation
-- `impact_scoring_engine.py` — CVSS++ scoring
+- `impact_scoring_engine.py` — Official CVSS 4.0 and business-impact scoring
 - `exploit_chain_engine.py` — Multi-step attack path builder
 - `adaptive_scan.py` — Intelligent scan depth classification
 - `triage_gate.py` — 3-tier AI triage with learning engine
