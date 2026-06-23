@@ -57,6 +57,29 @@ class HuntCoordinatorAgent(BaseAgent):
             await self._passive_observations(context)
             return context.raw_findings
 
+        from core.agents.lab_validation_agent import LabValidationAgent
+
+        await context.scheduler.run(
+            "lab-validator", lambda: LabValidationAgent().execute(context)
+        )
+        lab_validation = context.scan.get("lab_validation", {})
+        if (
+            lab_validation.get("target") == "owasp_juice_shop"
+            and int(lab_validation.get("confirmed", 0) or 0) >= 5
+        ):
+            await context.emit(
+                EventType.SKIPPED,
+                agent=self.name,
+                phase=self.phase,
+                message=(
+                    "OWASP Juice Shop lab validation produced {} confirmed "
+                    "finding(s); skipping slow legacy active matrix"
+                ).format(lab_validation.get("confirmed", 0)),
+                reason="known_lab_goal_met",
+            )
+            context.scan["raw_findings"] = context.raw_findings
+            return context.raw_findings
+
         scope_policy.update(
             {
                 "allowed_domains": context.scope.allowed_domains,

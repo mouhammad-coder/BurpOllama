@@ -18,11 +18,12 @@ class AITriageAgent(BaseAgent):
             or not availability.get("triage_capable")
         ):
             for finding in context.raw_findings:
-                finding.update({
-                    "verdict": "NEEDS_MANUAL_REVIEW",
-                    "triaged": False,
-                    "ai_summary": "AI disabled — manual review only",
-                })
+                finding["triaged"] = False
+                finding["ai_summary"] = "AI disabled — manual review only"
+                if finding.get("exploitability_status") not in {
+                    "confirmed", "probable",
+                }:
+                    finding.setdefault("verdict", "NEEDS_MANUAL_REVIEW")
             context.triaged_findings = list(context.raw_findings)
             context.scan["triaged_findings"] = context.triaged_findings
             await context.emit(
