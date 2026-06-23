@@ -7,3 +7,4 @@ python-dotenv==1.0.1
 psutil>=5.9.0
 psycopg[binary,pool]>=3.2.1
 cvss>=3.0.0
+rich>=13.0.0

@@ -43,7 +43,8 @@ echo "You will choose and configure an AI provider inside the dashboard."
 echo "Scans work without AI. Ollama remains disabled until you enable it."
 
 chmod +x "$SCRIPT_DIR/setup.sh" \
-    "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/update.sh" "$SCRIPT_DIR/burpollama" 2>/dev/null || true
+    "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/update.sh" "$SCRIPT_DIR/burpollama" \
+    "$SCRIPT_DIR/cli.py" 2>/dev/null || true
 mkdir -p "$HOME/.local/bin"
 ln -sf "$SCRIPT_DIR/burpollama" "$HOME/.local/bin/burpollama"
 echo -e "${GREEN}[+]${RESET} CLI installed at $HOME/.local/bin/burpollama"

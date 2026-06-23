@@ -1229,6 +1229,23 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 await log("WAF: {} ({}%) — strategy: {}".format(
                     waf_info["vendor"], waf_info["confidence"], waf_info["strategy"]), "warning")
                 await broadcast({"type": "waf_detected", "scan_id": scan_id, "waf": waf_info})
+                if "cloudflare" in str(waf_info.get("vendor", "")).lower():
+                    scan["cloudflare_passive_fallback"] = True
+                    scan["effective_scan_mode"] = "passive_only"
+                    waf_info["strategy"] = "passive_only"
+                    await log(
+                        "Cloudflare detected — automatically switching this scan "
+                        "to passive-only mode. HTTP-only scanners cannot bypass "
+                        "JavaScript challenges safely.",
+                        "warning",
+                    )
+                    await broadcast({
+                        "type": "cloudflare_detected",
+                        "scan_id": scan_id,
+                        "target": target,
+                        "waf": waf_info,
+                        "passive_fallback": True,
+                    })
             else:
                 await log("WAF: None detected", "success")
 
@@ -1299,10 +1316,44 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             scan["planner"] = planner.to_dict()
             await progress(phase, cur, total, label)
 
+        live_finding_ids = set()
+
+        async def hunt_request_event(event: dict):
+            payload = dict(event or {})
+            payload.setdefault("type", "request")
+            payload["scan_id"] = scan_id
+            if payload["type"] == "request":
+                scan["requests_streamed"] = scan.get("requests_streamed", 0) + 1
+                payload["request_number"] = scan["requests_streamed"]
+            await broadcast(payload)
+
+        async def hunt_finding_event(finding: dict):
+            live = normalize_finding(finding, scan_id=scan_id)
+            finding_id = live.get("id", "")
+            if finding_id and finding_id in live_finding_ids:
+                return
+            if finding_id:
+                live_finding_ids.add(finding_id)
+            await broadcast({
+                "type": "finding_live",
+                "scan_id": scan_id,
+                "data": live,
+                "finding_count": len(live_finding_ids),
+            })
+
         prioritized_urls = prioritize_urls(recon_data.get("urls", []), recon_data.get("live_hosts", []))
         scan["risk_prioritized_url_count"] = len(prioritized_urls)
-        if scope_policy.config.passive_only_mode or not scope_policy.config.active_testing_enabled:
-            await log("Active hunt skipped by ScopePolicy", "warning")
+        if (
+            scan.get("cloudflare_passive_fallback")
+            or scope_policy.config.passive_only_mode
+            or not scope_policy.config.active_testing_enabled
+        ):
+            await log(
+                "Active hunt skipped: Cloudflare passive fallback"
+                if scan.get("cloudflare_passive_fallback")
+                else "Active hunt skipped by ScopePolicy",
+                "warning",
+            )
             raw_findings = []
         else:
             try:
@@ -1323,6 +1374,8 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                     resource_controller=resources,
                     scan_level=adaptive_plan.level,
                     planner=planner,
+                    request_event_cb=hunt_request_event,
+                    finding_event_cb=hunt_finding_event,
                 )
             except Exception as e:
                 await log("Hunt error: {}".format(e), "error")
@@ -1365,7 +1418,9 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                     scope_policy,
                     log,
                 )
-                if adaptive_plan.run_nuclei else []
+                if adaptive_plan.run_nuclei
+                and not scan.get("cloudflare_passive_fallback")
+                else []
             )
         except Exception as e:
             await log("Nuclei error: {}".format(e), "error")

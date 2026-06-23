@@ -57,6 +57,9 @@ MAX_CONC     = 8   # reduced from 10 — more polite default
 REQUEST_TIMEOUT = contextvars.ContextVar(
     "burpollama_hunt_timeout", default=TIMEOUT
 )
+REQUEST_EVENT_CB = contextvars.ContextVar(
+    "burpollama_hunt_request_event_cb", default=None
+)
 
 # ── Infrastructure-trust bypass headers (Classes 8 & 9) ──────────────────────
 INFRA_TRUST_HEADERS = [
@@ -131,6 +134,13 @@ async def tget(client, url, **kwargs):
                 status_code=r.status_code,
                 elapsed_ms=(time.perf_counter() - started) * 1000,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "GET",
+                    "url": url,
+                    "status_code": r.status_code,
+                })
             return r
         except httpx.TimeoutException as exc:
             # Network timeout — retry backoff but NOT a WAF signal
@@ -140,6 +150,13 @@ async def tget(client, url, **kwargs):
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 error=type(exc).__name__,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "GET",
+                    "url": url,
+                    "error": type(exc).__name__,
+                })
             return None
         except (httpx.ConnectError, httpx.RemoteProtocolError,
                 httpx.ReadError, httpx.WriteError) as exc:
@@ -150,6 +167,13 @@ async def tget(client, url, **kwargs):
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 error=type(exc).__name__,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "GET",
+                    "url": url,
+                    "error": type(exc).__name__,
+                })
             return None
         except Exception as exc:
             outbound_guard.record_result(
@@ -157,6 +181,13 @@ async def tget(client, url, **kwargs):
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 error=type(exc).__name__,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "GET",
+                    "url": url,
+                    "error": type(exc).__name__,
+                })
             return None
 
 async def tpost(client, url, **kwargs):
@@ -186,6 +217,13 @@ async def tpost(client, url, **kwargs):
                 status_code=r.status_code,
                 elapsed_ms=(time.perf_counter() - started) * 1000,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "POST",
+                    "url": url,
+                    "status_code": r.status_code,
+                })
             return r
         except (httpx.TimeoutException, httpx.ConnectError,
                 httpx.RemoteProtocolError, httpx.ReadError) as exc:
@@ -195,6 +233,13 @@ async def tpost(client, url, **kwargs):
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 error=type(exc).__name__,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "POST",
+                    "url": url,
+                    "error": type(exc).__name__,
+                })
             return None
         except Exception as exc:
             outbound_guard.record_result(
@@ -202,6 +247,13 @@ async def tpost(client, url, **kwargs):
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 error=type(exc).__name__,
             )
+            callback = REQUEST_EVENT_CB.get()
+            if callback:
+                await callback({
+                    "method": "POST",
+                    "url": url,
+                    "error": type(exc).__name__,
+                })
             return None
 
 
@@ -4835,6 +4887,8 @@ async def _run_hunt_impl(
     batch_size:     int      = 0,
     resource_controller:ResourceController = None,
     planner=None,
+    request_event_cb:Callable = None,
+    finding_event_cb:Callable = None,
 ) -> list:
     """
     Run all hunt classes + dual-session auth matrix + OOB SQLi payloads.
@@ -4874,7 +4928,21 @@ async def _run_hunt_impl(
     await log("[Hunt] Strategy: {} | Concurrency: {} | URLs: {}".format(
         strategy, concurrency, min(len(all_urls), 200)))
 
-    all_findings = []
+    class ObservableFindings(list):
+        def append(self, item):
+            super().append(item)
+            if finding_event_cb and item:
+                asyncio.create_task(finding_event_cb(item))
+
+        def extend(self, items):
+            rows = list(items or [])
+            super().extend(rows)
+            if finding_event_cb:
+                for item in rows:
+                    if item:
+                        asyncio.create_task(finding_event_cb(item))
+
+    all_findings = ObservableFindings()
     external_progress_cb = progress_cb
     tracked_class = {"name": "", "finding_count": 0}
 
@@ -4961,8 +5029,16 @@ async def _run_hunt_impl(
             if progress_cb:
                 await progress_cb("hunt", class_idx, total_classes, name)
 
-            async def run_one(url, _fn=fn):
+            async def run_one(url, _fn=fn, _name=name):
                 async with sem:
+                    if request_event_cb:
+                        await request_event_cb({
+                            "type": "url_test",
+                            "url": url,
+                            "vulnerability_class": _name,
+                            "current": urls_to_test.index(url) + 1,
+                            "total": len(urls_to_test),
+                        })
                     try:
                         if _fn is hunt_sqli:
                             return await _fn(client, url, waf_info=waf_info)
@@ -5948,6 +6024,8 @@ async def run_hunt(
     resource_controller:ResourceController = None,
     scan_level:     str      = "BALANCED",
     planner=None,
+    request_event_cb:Callable = None,
+    finding_event_cb:Callable = None,
 ) -> list:
     """Apply mode-specific URL and wall-clock limits around the hunt engine."""
     normalized_level = str(scan_level or "").strip().upper()
@@ -5974,6 +6052,7 @@ async def run_hunt(
         )
     )
 
+    request_event_token = REQUEST_EVENT_CB.set(request_event_cb)
     try:
         return await asyncio.wait_for(
             _run_hunt_impl(
@@ -5995,6 +6074,8 @@ async def run_hunt(
                 batch_size=batch_size,
                 resource_controller=resource_controller,
                 planner=planner,
+                request_event_cb=request_event_cb,
+                finding_event_cb=finding_event_cb,
             ),
             timeout=timeout_seconds,
         )
@@ -6006,6 +6087,8 @@ async def run_hunt(
             "warning",
         )
         return []
+    finally:
+        REQUEST_EVENT_CB.reset(request_event_token)
 
 
 async def _hunt_oob_sqli(client, urls: list, waf_info: dict, log: Callable) -> list:
