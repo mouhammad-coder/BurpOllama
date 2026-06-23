@@ -835,18 +835,18 @@ async def _python_crawl(
     return list(dict.fromkeys(found))
 
 
-JUICE_SHOP_PATHS = [
-    "/rest/products/search?q=test",
-    "/api/Users",
-    "/rest/user/login",
-    "/rest/BasketItems",
-    "/api/Challenges",
-    "/rest/admin/application-configuration",
-    "/ftp/",
-    "/socket.io/",
-    "/assets/public/",
-    "/#/login",
-    "/#/search",
+LOCAL_GENERIC_PATHS = [
+    "/admin",
+    "/login",
+    "/api",
+    "/api/v1",
+    "/graphql",
+    "/swagger-ui.html",
+    "/openapi.json",
+    "/.env",
+    "/.git/HEAD",
+    "/robots.txt",
+    "/health",
 ]
 
 
@@ -894,7 +894,7 @@ async def discover_local_urls(
                 ),
             )
 
-            for path in JUICE_SHOP_PATHS:
+            for path in LOCAL_GENERIC_PATHS:
                 request_url = urljoin(method_url.rstrip("/") + "/", path.lstrip("/"))
                 canonical_url = urljoin(
                     target_url.rstrip("/") + "/", path.lstrip("/")
@@ -1015,7 +1015,7 @@ COMMON_PATHS = [
     "/admin", "/administrator", "/admin/login",
     "/api", "/api/v1", "/api/v2",
     "/graphql", "/graphiql", "/api/graphql",
-    "/swagger-ui.html", "/api-docs",
+    "/swagger-ui.html",
     "/openapi.json", "/.env", "/.git/HEAD",
     "/robots.txt", "/sitemap.xml",
     "/login", "/signin", "/signup", "/register",
@@ -1035,13 +1035,13 @@ FULL_COMMON_PATHS = list(dict.fromkeys(COMMON_PATHS + [
     "/server-status", "/server-info",
     "/wp-admin", "/wp-login.php",
     "/rest", "/rest/user", "/rest/products",
-    "/socket.io/", "/ftp/",
+    "/socket.io/",
 ]))
 ADMIN_CONTENT_PATHS = [
     "/admin", "/administrator", "/manage", "/management", "/dashboard", "/portal",
 ]
 API_DOC_CONTENT_PATHS = [
-    "/swagger-ui.html", "/api-docs", "/openapi.json", "/redoc",
+    "/swagger-ui.html", "/openapi.json", "/redoc",
 ]
 
 # Retained as public constants because the dashboard imports them.

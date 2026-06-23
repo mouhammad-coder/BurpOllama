@@ -15,6 +15,7 @@ from validation_enhancements import (
     rejection_reason_codes,
     report_readiness,
 )
+from core.evidence import valid_evidence_artifact
 
 
 READY_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
@@ -80,6 +81,12 @@ def _failed_ready_checks(finding: dict, policy: ScopePolicy = scope_policy) -> l
         failed.append("missing_remediation")
     if _lower(finding.get("redaction_status")) != "redacted":
         failed.append("unredacted_evidence")
+    if exploitability == "confirmed":
+        artifact_ok, artifact_reason = valid_evidence_artifact(
+            finding.get("evidence_artifact")
+        )
+        if not artifact_ok:
+            failed.append(artifact_reason)
     if false_positive_risk == "high":
         failed.append("high_false_positive_risk")
     if exploitability == "false_positive":

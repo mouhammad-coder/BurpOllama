@@ -8,7 +8,25 @@ from urllib.parse import urlparse
 from finding_model import normalize_finding
 
 from core.agents.base import BaseAgent, ScanContext
+from core.evidence import write_evidence_artifact
 from core.events import EventType
+
+
+def _raw_response(response: httpx.Response, body_limit: int = 2000) -> str:
+    headers = "\n".join(
+        "{}: {}".format(key, value)
+        for key, value in response.headers.items()
+    )
+    body = response.text[:body_limit] if response.text else ""
+    return "HTTP/1.1 {}\n{}\n\n{}".format(
+        response.status_code,
+        headers,
+        body,
+    )
+
+
+def _raw_request(method: str, url: str) -> str:
+    return "{} {} HTTP/1.1".format(method.upper(), url)
 
 
 class HeaderAgent(BaseAgent):
@@ -101,16 +119,30 @@ class HeaderAgent(BaseAgent):
                         if name not in response.headers
                     ]
                     if missing:
+                        title = "Missing Security Headers"
+                        artifact = write_evidence_artifact(
+                            context.scan,
+                            title=title,
+                            url=url,
+                            raw_request=_raw_request("GET", url),
+                            raw_response=_raw_response(response, body_limit=0),
+                            matched_indicator="Absent: {}".format(
+                                ", ".join(missing)
+                            ),
+                            indicator_location="response.headers",
+                            metadata={"missing_headers": missing},
+                        )
                         findings.append(normalize_finding({
                             "source": "passive-header-agent",
                             "vuln_type": "Missing Security Headers",
-                            "title": "Missing Security Headers",
+                            "title": title,
                             "severity": "MEDIUM",
                             "confidence": 92,
                             "url": url,
                             "method": "GET",
                             "description": "Important browser security headers are absent.",
                             "evidence": "Absent: {}".format(", ".join(missing)),
+                            "evidence_artifact": artifact,
                             "remediation": "Configure CSP, frame protections, and nosniff headers.",
                             "cwe": "CWE-16",
                             "exploitability_status": "probable",
@@ -120,16 +152,27 @@ class HeaderAgent(BaseAgent):
                         }, scan_id=context.scan["id"]))
                 acao = response.headers.get("access-control-allow-origin", "")
                 if acao == "*":
+                    title = "Wildcard CORS header observed"
+                    artifact = write_evidence_artifact(
+                        context.scan,
+                        title=title,
+                        url=url,
+                        raw_request=_raw_request("GET", url),
+                        raw_response=_raw_response(response, body_limit=0),
+                        matched_indicator="Access-Control-Allow-Origin: *",
+                        indicator_location="response.headers.access-control-allow-origin",
+                    )
                     findings.append(normalize_finding({
                         "source": "passive-header-agent",
                         "vuln_type": "CORS Wildcard Observation",
-                        "title": "Wildcard CORS header observed",
+                        "title": title,
                         "severity": "LOW",
                         "confidence": 65,
                         "url": url,
                         "method": "GET",
                         "description": "The response advertises a wildcard CORS origin.",
                         "evidence": "Access-Control-Allow-Origin: *",
+                        "evidence_artifact": artifact,
                         "remediation": "Restrict allowed origins where sensitive data is returned.",
                         "exploitability_status": "candidate",
                         "evidence_strength": "weak",
@@ -141,16 +184,28 @@ class HeaderAgent(BaseAgent):
                     and response.status_code == 200
                     and "=" in response.text[:4000]
                 ):
+                    title = "Environment configuration file is publicly accessible"
+                    artifact = write_evidence_artifact(
+                        context.scan,
+                        title=title,
+                        url=url,
+                        raw_request=_raw_request("GET", url),
+                        raw_response=_raw_response(response),
+                        matched_indicator="environment-style key/value content",
+                        indicator_location="response.body",
+                        metadata={"status_code": response.status_code},
+                    )
                     findings.append(normalize_finding({
                         "source": "passive-header-agent",
                         "vuln_type": "Environment File Exposed",
-                        "title": "Environment configuration file is publicly accessible",
+                        "title": title,
                         "severity": "HIGH",
                         "confidence": 98,
                         "url": url,
                         "method": "GET",
                         "description": "A .env-style configuration response is accessible without authentication.",
                         "evidence": "HTTP 200 with environment-style key/value content (secret values redacted).",
+                        "evidence_artifact": artifact,
                         "business_impact": "Exposed configuration may reveal credentials, database access, or service secrets.",
                         "reproduction_steps": [
                             "Send GET /.env to the affected host.",

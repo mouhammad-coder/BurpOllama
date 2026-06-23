@@ -14,7 +14,6 @@ from core.agents.header_agent import HeaderAgent
 from core.agents.hunt_agents import HuntCoordinatorAgent, SPECIALIST_AGENTS
 from core.agents.injection_agent import InjectionAgent
 from core.agents.javascript_agent import JavaScriptAgent
-from core.agents.lab_validation_agent import LabValidationAgent
 from core.agents.rate_limit_agent import RateLimitAgent
 from core.agents.recon_agent import ReconAgent
 from core.agents.report_agent import ReportAgent
@@ -33,7 +32,6 @@ __all__ = [
     "HuntCoordinatorAgent",
     "InjectionAgent",
     "JavaScriptAgent",
-    "LabValidationAgent",
     "RateLimitAgent",
     "ReconAgent",
     "ReportAgent",

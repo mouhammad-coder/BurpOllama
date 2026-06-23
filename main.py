@@ -105,6 +105,7 @@ from external_tools import tool_status
 from technique_memory import TechniqueMemory
 from web3_scanner import audit_solidity_path
 from core import __version__
+from core.evidence import write_evidence_artifact
 from core.events import event_bus
 from core.scanner import scanner as core_scanner
 
@@ -3780,6 +3781,25 @@ def _create_autopilot_dry_run() -> dict:
         "emergency_stop": False,
         "scan_mode": "conservative",
     }
+    artifact_scan = {"id": scan_id, "options": {"output": "reports"}}
+    idor_artifact = write_evidence_artifact(
+        artifact_scan,
+        title="IDOR exposes another user's account profile",
+        url=target + "/api/users/2",
+        raw_request="GET /api/users/2 HTTP/1.1\nHost: example.com\nCookie: session=mock-session-a",
+        raw_response="HTTP/1.1 200 OK\ncontent-type: application/json\n\n{\"id\":2,\"email\":\"user-b@example.com\"}",
+        matched_indicator="synthetic Session B profile data",
+        indicator_location="response.body.email",
+    )
+    key_artifact = write_evidence_artifact(
+        artifact_scan,
+        title="Exposed API key in public JavaScript",
+        url=target + "/static/app.js",
+        raw_request="GET /static/app.js HTTP/1.1\nHost: example.com",
+        raw_response="HTTP/1.1 200 OK\ncontent-type: application/javascript\n\nconst apiKey='sk_test_[REDACTED]';",
+        matched_indicator="sk_test_[REDACTED]",
+        indicator_location="response.body",
+    )
     mock_findings = normalize_findings([
         {
             "id": "DRY-IDOR-1",
@@ -3804,6 +3824,7 @@ def _create_autopilot_dry_run() -> dict:
             "remediation": "Enforce object-level authorization on every user object request.",
             "redaction_status": "redacted",
             "evidence": "Mock confirmed proof: Session A received synthetic Session B profile data.",
+            "evidence_artifact": idor_artifact,
             "verdict": "PASS",
         },
         {
@@ -3828,6 +3849,7 @@ def _create_autopilot_dry_run() -> dict:
             "remediation": "Revoke the exposed key and move secrets to server-side secret storage.",
             "redaction_status": "redacted",
             "evidence": "Mock validated key: sk_test_[REDACTED].",
+            "evidence_artifact": key_artifact,
             "verdict": "PASS",
         },
         {

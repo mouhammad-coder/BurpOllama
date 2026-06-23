@@ -23,7 +23,6 @@ SWAGGER_PATHS = [
     "/api/swagger.json", "/api/swagger.yaml", "/swagger.json",
     "/swagger.yaml", "/openapi.json", "/openapi.yaml",
     "/api/v1/swagger.json", "/api/v2/swagger.json", "/api/v3/swagger.json",
-    "/api-docs", "/api-docs.json", "/v1/api-docs", "/v2/api-docs",
     "/api/openapi", "/docs/api.json", "/swagger/v1/swagger.json",
     "/swagger/v2/swagger.json",
 ]

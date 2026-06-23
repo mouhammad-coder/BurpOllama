@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import socket
 import sys
@@ -113,6 +114,20 @@ class Results:
 RESULTS = Results()
 
 
+def _test_evidence_artifact(finding_id: str) -> dict:
+    path = Path(tempfile.gettempdir()) / "burpollama-test-evidence-{}.json".format(
+        finding_id
+    )
+    artifact = {
+        "raw_request": "GET /api/resource HTTP/1.1\nHost: example.com",
+        "raw_response": "HTTP/1.1 200 OK\ncontent-type: application/json\n\n{}",
+        "matched_indicator": "Controlled response snippet.",
+        "indicator_location": "response.body",
+    }
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    return {**artifact, "path": str(path)}
+
+
 def _full_finding(
     finding_id: str,
     vuln_type: str,
@@ -149,6 +164,11 @@ def _full_finding(
         "owasp_top_10": "A01:2021",
         "redaction_status": "redacted",
         "evidence": "HTTP/1.1 200 OK\nControlled response snippet.",
+        "evidence_artifact": (
+            _test_evidence_artifact(finding_id)
+            if status == "confirmed"
+            else {}
+        ),
         "verdict": "PASS",
     }
 

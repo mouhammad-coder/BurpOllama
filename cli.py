@@ -120,6 +120,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--follow", action="store_true")
     scan.add_argument("--output", default="reports")
 
+    from core.benchmarks import BENCHMARKS
+
+    benchmark = sub.add_parser(
+        "benchmark",
+        help="Run an explicit benchmark harness; never used by normal scans.",
+    )
+    benchmark.add_argument("lab", choices=tuple(BENCHMARKS))
+    benchmark.add_argument("--target", default="")
+    benchmark.add_argument("--yes", action="store_true")
+    benchmark.add_argument("--output", default="reports")
+    benchmark.add_argument("--timeout", type=float, default=10.0)
+
     watch = sub.add_parser("watch", help="Watch an existing scan in real time.")
     watch.add_argument("--scan-id", required=True)
 
@@ -911,6 +923,111 @@ async def command_scan(args) -> int:
     return 0
 
 
+async def command_benchmark(args) -> int:
+    from core.benchmarks import BENCHMARKS
+
+    benchmark = BENCHMARKS.get(args.lab)
+    if not benchmark:
+        raise RuntimeError("Unsupported benchmark: {}".format(args.lab))
+    target = normalized_target(args.target or benchmark["default_target"])
+    if not getattr(args, "yes", False):
+        console.print(
+            "[red]Benchmark mode is lab-specific. Re-run with --yes only for "
+            "your local authorized {} instance.[/red]".format(
+                escape(str(benchmark["label"]))
+            )
+        )
+        return 2
+
+    from attack_graph import build_attack_graph
+    from coverage_intelligence import compute_coverage
+    from zero_fp_gate import apply_zero_fp_gate
+    from core.agents.base import ScanContext
+    from core.agents.report_agent import ReportAgent
+    from core.benchmarks.juice_shop import JuiceShopBenchmark
+    from core.events import event_bus
+    from core.ratelimit import RateLimiter
+    from core.scheduler import Scheduler
+    from core.scope import ScanScope
+
+    started = time.monotonic()
+    prepared = scanner.prepare(
+        target,
+        "bounty",
+        authorization_confirmed=True,
+        concurrency=2,
+        rate_limit=2.0,
+        timeout=args.timeout,
+        retries=0,
+        ai_enabled=False,
+        output=args.output,
+    )
+    prepared["mode"] = "benchmark"
+    prepared["requested_scan_mode"] = benchmark["requested_scan_mode"]
+    context = ScanContext(
+        scan=prepared,
+        options=type("BenchmarkOptions", (), {
+            "timeout": args.timeout,
+            "concurrency": 2,
+            "rate_limit": 2.0,
+            "retries": 0,
+            "mode": "bounty",
+            "api_key": "",
+            "output": args.output,
+        })(),
+        events=event_bus,
+        scheduler=Scheduler(2),
+        rate_limiter=RateLimiter(2.0),
+        scope=ScanScope(target, []),
+        store=scan_store,
+    )
+    banner()
+    console.print(
+        Panel(
+            "Lab: {}\nTarget: {}\n"
+            "This benchmark path is isolated from normal scans.".format(
+                escape(str(benchmark["label"])),
+                escape(target)
+            ),
+            title="Benchmark mode",
+            border_style="yellow",
+        )
+    )
+    await JuiceShopBenchmark().execute(context)
+    context.triaged_findings = list(context.raw_findings)
+    context.scan["triaged_findings"] = context.triaged_findings
+    graph = build_attack_graph(context.triaged_findings).to_dict()
+    gated = apply_zero_fp_gate(
+        context.triaged_findings,
+        context.scope.to_dict(),
+        graph,
+        tech_stack=[],
+        scan_context={"benchmark": args.lab},
+    )
+    context.analysis["zero_fp_gate"] = gated
+    context.analysis["coverage"] = compute_coverage(
+        context.recon,
+        context.triaged_findings,
+        tested_urls=sorted(context.tested_urls),
+    )
+    context.scan["analysis"] = context.analysis
+    context.scan["confirmed_findings"] = gated.get("valid_bugs", [])
+    context.scan["candidate_findings"] = (
+        gated.get("needs_more_proof", [])
+        + gated.get("candidates", [])
+        + gated.get("informational", [])
+    )
+    await ReportAgent().execute(context)
+    context.scan["status"] = "complete"
+    context.scan["phase"] = "complete"
+    context.scan["finished"] = datetime.utcnow().isoformat()
+    context.scan["agent_status"] = context.scheduler.snapshot()
+    context.scan["rate_limiter"] = context.rate_limiter.snapshot()
+    scan_store.save(context.scan, context.triaged_findings)
+    print_results(context.scan, started)
+    return 0
+
+
 async def command_watch(args) -> int:
     banner()
     current = await stream_scan(args.api, args.scan_id)
@@ -1345,6 +1462,8 @@ async def command_serve(args, open_browser: bool = False) -> int:
 async def async_main(args) -> int:
     if args.command == "scan":
         return await command_scan(args)
+    if args.command == "benchmark":
+        return await command_benchmark(args)
     if args.command == "watch":
         return await command_watch(args)
     if args.command == "recon":
