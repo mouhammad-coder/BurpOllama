@@ -119,10 +119,19 @@ def _test_evidence_artifact(finding_id: str) -> dict:
         finding_id
     )
     artifact = {
+        "scan_id": "offline-suite",
+        "agent": "offline-test",
+        "vuln_class": "Test Finding",
+        "url": "https://example.com/api/resource",
         "raw_request": "GET /api/resource HTTP/1.1\nHost: example.com",
         "raw_response": "HTTP/1.1 200 OK\ncontent-type: application/json\n\n{}",
         "matched_indicator": "Controlled response snippet.",
         "indicator_location": "response.body",
+        "impact": "Controlled test evidence demonstrates the condition.",
+        "fp_check": "Baseline fixture does not include the matched indicator.",
+        "confirmed": True,
+        "timestamp": "2026-06-24T00:00:00Z",
+        "artifact_path": str(path),
     }
     path.write_text(json.dumps(artifact), encoding="utf-8")
     return {**artifact, "path": str(path)}

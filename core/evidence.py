@@ -11,13 +11,23 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 
 
 REQUIRED_EVIDENCE_FIELDS = {
+    "scan_id",
+    "agent",
+    "vuln_class",
+    "url",
     "raw_request",
     "raw_response",
     "matched_indicator",
     "indicator_location",
+    "impact",
+    "fp_check",
+    "confirmed",
+    "timestamp",
+    "artifact_path",
 }
 
 
@@ -27,8 +37,7 @@ def _safe_slug(value: str) -> str:
 
 
 def artifact_dir(scan: dict[str, Any]) -> Path:
-    output = Path(str(scan.get("options", {}).get("output") or "reports")).expanduser()
-    return output / str(scan.get("id", "scan")) / "evidence"
+    return Path("evidence") / str(scan.get("id", "scan"))
 
 
 def write_evidence_artifact(
@@ -40,10 +49,17 @@ def write_evidence_artifact(
     raw_response: str,
     matched_indicator: str,
     indicator_location: str,
+    agent: str = "agent",
+    vuln_class: str | None = None,
+    impact: str = "Evidence collected for security review.",
+    fp_check: str = "False-positive check not supplied.",
+    confirmed: bool = False,
+    filename_prefix: str = "evidence",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     directory = artifact_dir(scan)
     directory.mkdir(parents=True, exist_ok=True)
+    scan_id = str(scan.get("id", "scan"))
     digest = hashlib.sha256(
         "\n".join([
             str(title or ""),
@@ -53,12 +69,22 @@ def write_evidence_artifact(
             str(raw_response or ""),
         ]).encode("utf-8", errors="ignore")
     ).hexdigest()[:16]
-    path = directory / "{}-{}.json".format(_safe_slug(title), digest)
+    path = directory / "{}-{}.json".format(_safe_slug(filename_prefix), digest)
     artifact = {
+        "scan_id": scan_id,
+        "agent": agent,
+        "vuln_class": vuln_class or title,
+        "url": url,
         "raw_request": raw_request,
         "raw_response": raw_response,
         "matched_indicator": matched_indicator,
         "indicator_location": indicator_location,
+        "impact": impact,
+        "fp_check": fp_check,
+        "confirmed": bool(confirmed),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "artifact_path": str(path),
+        "path": str(path),
         "metadata": metadata or {},
     }
     path.write_text(
@@ -74,7 +100,7 @@ def write_evidence_artifact(
 def valid_evidence_artifact(value: Any) -> tuple[bool, str]:
     if not isinstance(value, dict):
         return False, "missing_evidence_artifact"
-    path = str(value.get("path") or "").strip()
+    path = str(value.get("artifact_path") or value.get("path") or "").strip()
     if not path:
         return False, "missing_evidence_artifact_path"
     artifact_path = Path(path)
@@ -82,7 +108,7 @@ def valid_evidence_artifact(value: Any) -> tuple[bool, str]:
         return False, "evidence_artifact_file_missing"
     missing = [
         field for field in sorted(REQUIRED_EVIDENCE_FIELDS)
-        if not str(value.get(field) or "").strip()
+        if field != "confirmed" and not str(value.get(field) or "").strip()
     ]
     if missing:
         return False, "evidence_artifact_missing:" + ",".join(missing)
@@ -92,8 +118,10 @@ def valid_evidence_artifact(value: Any) -> tuple[bool, str]:
         return False, "evidence_artifact_unreadable"
     file_missing = [
         field for field in sorted(REQUIRED_EVIDENCE_FIELDS)
-        if not str(loaded.get(field) or "").strip()
+        if field != "confirmed" and not str(loaded.get(field) or "").strip()
     ]
     if file_missing:
         return False, "evidence_artifact_file_missing:" + ",".join(file_missing)
+    if loaded.get("artifact_path") != str(artifact_path):
+        return False, "evidence_artifact_path_mismatch"
     return True, ""
