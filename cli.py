@@ -174,6 +174,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Send captured Burp traffic JSON to passive analysis.",
     )
     analyze.add_argument("--file", help="JSON object/list file. Defaults to stdin.")
+
+    skills = sub.add_parser("skills", help="Manage and run modular CLI skills.")
+    skill_sub = skills.add_subparsers(dest="skill_command", required=True)
+    skill_sub.add_parser("list", help="Show installed skills.")
+    show = skill_sub.add_parser("show", help="Show skill details.")
+    show.add_argument("skill")
+    validate_skill = skill_sub.add_parser("validate", help="Validate skill structure.")
+    validate_skill.add_argument("skill")
+    refresh = skill_sub.add_parser(
+        "refresh-knowledge",
+        help="Refresh local cached fingerprints/knowledge.",
+    )
+    refresh.add_argument("skill")
+    run_skill = skill_sub.add_parser("run", help="Run a skill explicitly.")
+    run_skill.add_argument("skill")
+    run_skill.add_argument("--target", required=True)
+    run_skill.add_argument("--mode", choices=("passive", "validate", "report"), default="passive")
+    run_skill.add_argument("--scope", action="append", default=None)
+    run_skill.add_argument("--yes", action="store_true", help="Confirm authorization and scope non-interactively.")
+    run_skill.add_argument("--active-permission", action="store_true")
+    run_skill.add_argument("--proof-of-control", action="store_true")
+    run_skill.add_argument("--proof-confirmed", action="store_true")
+    run_skill.add_argument("--output", default="runs/skills")
+    run_skill.add_argument("--timeout", type=float, default=8.0)
     return parser
 
 
@@ -1204,6 +1228,138 @@ async def command_analyze(args) -> int:
     return 0
 
 
+async def command_skills(args) -> int:
+    from core.skills.knowledge_base import SkillKnowledgeBase
+    from core.skills.registry import SkillRegistry
+    from core.skills.runner import SkillRunOptions, SkillRunner, SkillSafetyError
+    from core.skills.validator import SkillValidator
+
+    registry = SkillRegistry()
+    validator = SkillValidator()
+    knowledge = SkillKnowledgeBase()
+
+    if args.skill_command == "list":
+        table = Table(title="Installed skills", box=box.ROUNDED)
+        table.add_column("Skill")
+        table.add_column("Description")
+        table.add_column("Modes")
+        for skill in registry.list():
+            table.add_row(
+                skill.name,
+                skill.description[:120],
+                ", ".join(skill.supported_modes),
+            )
+        console.print(table)
+        return 0
+
+    if args.skill_command == "show":
+        skill = registry.get(args.skill)
+        result = validator.validate(args.skill)
+        table = Table(title="Skill: {}".format(skill.name), box=box.ROUNDED)
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_row("Name", skill.name)
+        table.add_row("Purpose", skill.purpose[:500])
+        table.add_row("Safety", skill.safety_summary[:500])
+        table.add_row("Required inputs", "\n".join(skill.required_inputs))
+        table.add_row("Supported modes", ", ".join(skill.supported_modes))
+        table.add_row("Valid", str(result.valid))
+        if result.errors:
+            table.add_row("Validation errors", "\n".join(result.errors))
+        console.print(table)
+        return 0 if result.valid else 1
+
+    if args.skill_command == "validate":
+        result = validator.validate(args.skill)
+        console.print_json(json.dumps(result.to_dict(), indent=2))
+        return 0 if result.valid else 1
+
+    if args.skill_command == "refresh-knowledge":
+        skill = registry.get(args.skill)
+        path = knowledge.refresh(skill.name)
+        console.print("[green]✓ Refreshed local knowledge cache:[/green] {}".format(path))
+        return 0
+
+    if args.skill_command == "run":
+        skill = registry.get(args.skill)
+        validation = validator.validate(args.skill)
+        if not validation.valid:
+            console.print("[red]Skill validation failed:[/red]")
+            for error in validation.errors:
+                console.print("  - {}".format(escape(error)))
+            return 1
+        if not args.yes and not sys.stdin.isatty():
+            console.print(
+                "[red]Authorization and scope confirmation required. "
+                "Re-run with --yes only for targets you own or are authorized to test.[/red]"
+            )
+            return 2
+        authorized_run = bool(args.yes)
+        if not authorized_run:
+            panel = Panel(
+                "Run only against assets you own or have written authorization for.\n"
+                "Proof-of-control is disabled unless explicitly allowed and confirmed.",
+                title="Skill safety gate",
+                border_style="yellow",
+            )
+            console.print(panel)
+            try:
+                answer = console.input(
+                    "[bold yellow]Confirm authorization and in-scope target {} [y/N]: [/bold yellow]".format(
+                        escape(args.target)
+                    )
+                )
+            except EOFError:
+                console.print(
+                    "\n[red]Authorization confirmation required. Re-run with --yes "
+                    "only for targets you own or are authorized to test.[/red]"
+                )
+                return 2
+            authorized_run = answer.strip().lower() in {"y", "yes"}
+        if not authorized_run:
+            return 2
+        try:
+            result = await SkillRunner().run(
+                skill,
+                SkillRunOptions(
+                    target=args.target,
+                    mode=args.mode,
+                    scope=args.scope,
+                    authorization_confirmed=True,
+                    scope_confirmed=True,
+                    active_permission=bool(args.active_permission),
+                    proof_of_control_allowed=bool(args.proof_of_control),
+                    proof_of_control_confirmed=bool(args.proof_confirmed),
+                    output_root=args.output,
+                    timeout=args.timeout,
+                ),
+            )
+        except SkillSafetyError as exc:
+            console.print("[red]Safety gate refused run:[/red] {}".format(escape(str(exc))))
+            return 2
+        if result.get("warning"):
+            console.print("[yellow]{}[/yellow]".format(escape(result["warning"])))
+        table = Table(title="Skill run complete", box=box.ROUNDED)
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_row("Skill", result["skill"])
+        table.add_row("Target", result["target"])
+        table.add_row("Mode", result["mode"])
+        table.add_row("Run directory", result["run_dir"])
+        table.add_row("Evidence", result["evidence_path"])
+        table.add_row("Report", result["report_path"])
+        for record in result.get("records", []):
+            table.add_row("Final status", str(record.get("final_status", "")))
+            table.add_row(
+                "Proof performed",
+                str(record.get("proof_performed", False)),
+            )
+        console.print(table)
+        return 0
+
+    return 1
+
+
 def _scan_ai_enabled(args, availability: dict) -> bool:
     if getattr(args, "no_ai", False):
         return False
@@ -1491,6 +1647,8 @@ async def async_main(args) -> int:
         return await command_history(args)
     if args.command == "analyze":
         return await command_analyze(args)
+    if args.command == "skills":
+        return await command_skills(args)
     if args.command == "doctor":
         return await command_doctor(args)
     if args.command == "version":
