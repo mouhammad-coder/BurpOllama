@@ -1,3 +1,13 @@
+## v1.2
+- Access control: IDOR candidates, auth coverage gaps
+- Rate limit: passive observation + safe 5-request probe
+- SSRF: passive parameter detection + OOB stub
+- CORS: misconfiguration detection including * + credentials
+- Open redirect: passive parameter observation
+- Report export: HackerOne and Bugcrowd markdown format
+- External tools: Katana, Nuclei, TruffleHog, Gitleaks wrappers
+- All v1.1 features included
+
 ## v1.1
 - Access control passive observation: IDOR candidates, auth coverage gaps, HTTP method observations
 - Rate limit passive observation and safe 5-request probe

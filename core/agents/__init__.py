@@ -14,9 +14,11 @@ from core.agents.header_agent import HeaderAgent
 from core.agents.hunt_agents import HuntCoordinatorAgent, SPECIALIST_AGENTS
 from core.agents.injection_agent import InjectionAgent
 from core.agents.javascript_agent import JavaScriptAgent
+from core.agents.open_redirect_agent import OpenRedirectAgent
 from core.agents.rate_limit_agent import RateLimitAgent
 from core.agents.recon_agent import ReconAgent
 from core.agents.report_agent import ReportAgent
+from core.agents.ssrf_agent import SSRFAgent
 from core.agents.xss_agent import XSSAgent
 
 __all__ = [
@@ -32,9 +34,11 @@ __all__ = [
     "HuntCoordinatorAgent",
     "InjectionAgent",
     "JavaScriptAgent",
+    "OpenRedirectAgent",
     "RateLimitAgent",
     "ReconAgent",
     "ReportAgent",
+    "SSRFAgent",
     "SPECIALIST_AGENTS",
     "XSSAgent",
 ]

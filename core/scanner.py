@@ -63,6 +63,8 @@ class ScanOptions:
     api_key: str = ""
     output: str = "reports"
     time_budget: int = 900
+    oob_server: str = ""
+    no_external_tools: bool = False
 
     def __post_init__(self):
         mode = str(self.mode or "passive").lower()
@@ -132,6 +134,8 @@ class Scanner:
         model: str = "",
         output: str = "reports",
         time_budget: int = 900,
+        oob_server: str = "",
+        no_external_tools: bool = False,
     ) -> dict[str, Any]:
         load_config()
         options = ScanOptions(
@@ -147,6 +151,8 @@ class Scanner:
             api_key=api_key,
             output=output,
             time_budget=time_budget,
+            oob_server=oob_server,
+            no_external_tools=no_external_tools,
         )
         if options.active and not authorization_confirmed:
             raise PermissionError(
@@ -406,10 +412,16 @@ class Scanner:
         await context.scheduler.run(
             "recon", lambda: ReconAgent().execute(context)
         )
-        await context.scheduler.gather_safe([
-            ("crawler", lambda: CrawlerAgent().execute(context)),
-            ("javascript", lambda: JavaScriptAgent().execute(context)),
-        ])
+        await context.scheduler.run(
+            "crawler", lambda: CrawlerAgent().execute(context)
+        )
+        await self._external_katana(context)
+        await context.scheduler.run(
+            "javascript", lambda: JavaScriptAgent().execute(context)
+        )
+        if context.options.active:
+            await self._external_js_secret_scans(context)
+            await self._external_nuclei(context)
         if context.scan.get("ai", {}).get("agents_enabled"):
             await context.scheduler.run(
                 "ai-ranker",
@@ -422,6 +434,124 @@ class Scanner:
             await context.scheduler.run(
                 "ai-strategy",
                 lambda: AIStrategyAgent().execute(context),
+            )
+
+    async def _external_katana(self, context):
+        if context.options.no_external_tools:
+            await context.emit(
+                EventType.SKIPPED,
+                agent="katana",
+                phase="reconnaissance",
+                message="External tools disabled by --no-external-tools",
+                reason="external_tools_disabled",
+            )
+            return
+        from core.integrations.katana import run_katana
+
+        output_dir = Path(context.options.output) / context.scan["id"] / "external"
+        urls = await asyncio.to_thread(
+            run_katana,
+            context.scan["target"],
+            context.scope,
+            output_dir,
+        )
+        if not urls:
+            await context.emit(
+                EventType.SKIPPED,
+                agent="katana",
+                phase="reconnaissance",
+                message="katana not available or no in-scope URLs discovered",
+                reason="external_tool_skipped",
+            )
+            return
+        existing = set(context.recon.get("urls", []))
+        added = [url for url in urls if url not in existing]
+        context.recon.setdefault("urls", []).extend(added)
+        await context.emit(
+            EventType.URL_DISCOVERED,
+            agent="katana",
+            phase="reconnaissance",
+            message="katana discovered {} in-scope URL(s)".format(len(added)),
+            count=len(added),
+        )
+
+    async def _external_js_secret_scans(self, context):
+        if context.options.no_external_tools:
+            await context.emit(
+                EventType.SKIPPED,
+                agent="secret-tools",
+                phase="reconnaissance",
+                message="External tools disabled by --no-external-tools",
+                reason="external_tools_disabled",
+            )
+            return
+        from core.integrations.gitleaks import scan_js_content as scan_gitleaks
+        from core.integrations.trufflehog import scan_js_content as scan_trufflehog
+
+        findings = []
+        js_contents = context.recon.get("js_contents", {}) or {}
+        if not isinstance(js_contents, dict):
+            return
+        for url, content in js_contents.items():
+            if not isinstance(content, str) or not context.scope.allows(str(url)):
+                continue
+            findings.extend(await asyncio.to_thread(
+                scan_trufflehog,
+                content,
+                context.scan["id"],
+                str(url),
+            ))
+            findings.extend(await asyncio.to_thread(
+                scan_gitleaks,
+                content,
+                context.scan["id"],
+                str(url),
+            ))
+        if findings:
+            context.raw_findings.extend(findings)
+            context.scan["raw_findings"] = context.raw_findings
+            for finding in findings:
+                context.scheduler.state(str(finding.get("source") or "secret-tools")).findings += 1
+                await context.emit(
+                    EventType.FINDING_CANDIDATE,
+                    agent=str(finding.get("source") or "secret-tools"),
+                    phase="reconnaissance",
+                    message=finding.get("title", "External secret finding"),
+                    finding=finding,
+                )
+
+    async def _external_nuclei(self, context):
+        if context.options.no_external_tools:
+            return
+        from core.integrations.nuclei import run_nuclei
+
+        output_dir = Path(context.options.output) / context.scan["id"] / "external"
+        findings = await asyncio.to_thread(
+            run_nuclei,
+            context.scan["target"],
+            output_dir,
+            "exposures/",
+            context.scan,
+        )
+        if not findings:
+            await context.emit(
+                EventType.SKIPPED,
+                agent="nuclei",
+                phase="reconnaissance",
+                message="nuclei not available or no exposure findings",
+                reason="external_tool_skipped",
+            )
+            return
+        context.raw_findings.extend(findings)
+        context.scan["raw_findings"] = context.raw_findings
+        for finding in findings:
+            context.scheduler.state("nuclei").findings += 1
+            await context.emit(
+                EventType.FINDING_CANDIDATE,
+                agent="nuclei",
+                phase="reconnaissance",
+                message=finding.get("title", "Nuclei finding"),
+                finding=finding,
             )
 
     async def _vulnerability_hunt(self, context):

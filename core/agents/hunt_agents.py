@@ -24,10 +24,12 @@ SPECIALIST_AGENTS = {
     "access-control": {
         "IDOR", "GraphQL Authorization", "Business Logic", "Race Conditions",
     },
+    "open-redirect": {"Open Redirect", "Open Redirect Candidate"},
+    "ssrf": {"SSRF Candidate", "SSRF"},
     "injection": {
         "SQL Injection", "SSTI", "Path Traversal and LFI",
         "NoSQL Injection", "OS Command Injection", "CRLF Injection",
-        "Host Header Injection", "SSRF", "XXE Candidates",
+        "Host Header Injection", "XXE Candidates",
     },
     "xss": {
         "XSS", "Stored XSS", "DOM XSS", "Blind XSS", "CSRF",
@@ -72,6 +74,10 @@ class HuntCoordinatorAgent(BaseAgent):
         priority_classes = list(
             context.scan.get("ai_strategy", {}).get("priority_classes", [])
         )
+        from core.agents.ssrf_agent import SSRFAgent
+
+        await context.scheduler.run("ssrf", lambda: SSRFAgent().execute(context))
+        passive_findings = list(context.raw_findings)
 
         def class_priority(module: str) -> int:
             lowered = str(module or "").lower()
@@ -203,7 +209,7 @@ class HuntCoordinatorAgent(BaseAgent):
             finding_event_cb=finding_event,
             rate_limiter=context.rate_limiter,
         )
-        context.raw_findings = normalize_findings(
+        context.raw_findings = passive_findings + normalize_findings(
             findings, scan_id=context.scan["id"]
         )
         context.scan["raw_findings"] = context.raw_findings
@@ -224,7 +230,9 @@ class HuntCoordinatorAgent(BaseAgent):
         from core.agents.auth_agent import AuthAgent
         from core.agents.header_agent import HeaderAgent
         from core.agents.injection_agent import InjectionAgent
+        from core.agents.open_redirect_agent import OpenRedirectAgent
         from core.agents.rate_limit_agent import RateLimitAgent
+        from core.agents.ssrf_agent import SSRFAgent
         from core.agents.xss_agent import XSSAgent
 
         await context.scheduler.run("header", lambda: HeaderAgent().execute(context))
@@ -237,5 +245,7 @@ class HuntCoordinatorAgent(BaseAgent):
             ("injection", lambda: InjectionAgent().execute(context)),
             ("xss", lambda: XSSAgent().execute(context)),
             ("rate-limit", lambda: RateLimitAgent().execute(context)),
+            ("ssrf", lambda: SSRFAgent().execute(context)),
+            ("open-redirect", lambda: OpenRedirectAgent().execute(context)),
         ])
         context.scan["raw_findings"] = context.raw_findings

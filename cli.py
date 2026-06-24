@@ -48,7 +48,7 @@ from rich.text import Text
 
 from core import __version__
 from core.config import config_status, load_config, ollama_health
-from core.reports import render_report
+from core.reports import REPORT_FILENAMES, render_report
 from core.scanner import scanner
 from core.storage import scan_store
 
@@ -124,6 +124,16 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", action="store_true", dest="json_output")
     scan.add_argument("--follow", action="store_true")
     scan.add_argument("--output", default="reports")
+    scan.add_argument(
+        "--no-external-tools",
+        action="store_true",
+        help="Skip optional Katana, Nuclei, TruffleHog, and Gitleaks integrations.",
+    )
+    scan.add_argument(
+        "--oob-server",
+        default="",
+        help="Explicit OOB callback URL for authorized bounty/deep SSRF validation.",
+    )
 
     from core.benchmarks import BENCHMARKS
 
@@ -930,6 +940,8 @@ async def command_scan(args) -> int:
         ai_enabled=ai_enabled,
         model=args.model,
         output=args.output,
+        oob_server=args.oob_server,
+        no_external_tools=args.no_external_tools,
     )
     prepared["ai"] = {
         **prepared.get("ai", {}),
@@ -1170,9 +1182,18 @@ async def command_report(args) -> int:
     if not scan:
         raise RuntimeError("Local scan not found: {}".format(args.scan_id))
     body = render_report(scan, args.format)
-    if args.output:
-        Path(args.output).write_text(body, encoding="utf-8")
-        console.print("[green]✓ Saved {}[/green]".format(escape(args.output)))
+    output = args.output
+    if not output and args.format in {"hackerone", "bugcrowd"}:
+        output = str(
+            Path("reports")
+            / str(scan.get("id") or args.scan_id)
+            / REPORT_FILENAMES[args.format]
+        )
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        console.print("[green]✓ Saved {}[/green]".format(escape(str(path))))
     else:
         console.print(body, markup=False)
     return 0
@@ -1656,6 +1677,7 @@ async def command_doctor(args) -> int:
     )
 
     from external_tools import tool_status
+    from core.integrations.tool_checker import tool_detail
 
     tools = tool_status()
     available = [tool["name"] for tool in tools if tool["available"]]
@@ -1664,6 +1686,9 @@ async def command_doctor(args) -> int:
         True,
         "{} available: {}".format(len(available), ", ".join(available) or "none"),
     )
+    for tool_name in ("katana", "nuclei", "trufflehog", "gitleaks"):
+        ok, detail = tool_detail(tool_name)
+        add(tool_name, ok, detail, blocking=False)
     try:
         from core.skills.registry import SkillRegistry
 
