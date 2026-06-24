@@ -28,7 +28,7 @@ import sys
 import time
 import webbrowser
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -54,6 +54,7 @@ from core.storage import scan_store
 
 
 ROOT = Path(__file__).resolve().parent
+FEEDBACK_PATH = ROOT / "data" / "feedback.jsonl"
 DEFAULT_API = "http://127.0.0.1:8888"
 MODE_MAP = {
     "bounty": ("conservative", "Bounty Scan"),
@@ -153,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="markdown",
     )
     report.add_argument("--output")
+
+    train = sub.add_parser("train", help="Label findings for local AI feedback data.")
+    train.add_argument("--scan-id", help="Scan ID to label interactively.")
+    train.add_argument("--stats", action="store_true", help="Show feedback dataset stats.")
 
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
     sub.add_parser("history", help="List locally stored scans.")
@@ -1195,6 +1200,182 @@ async def command_history(args) -> int:
     return 0
 
 
+def _feedback_candidates(scan: dict) -> list[dict]:
+    seen = set()
+    selected = []
+    pools = (
+        scan.get("confirmed_findings", []),
+        scan.get("candidate_findings", []),
+        scan.get("triaged_findings", []),
+        scan.get("findings", []),
+    )
+    for pool in pools:
+        for finding in pool or []:
+            if not isinstance(finding, dict):
+                continue
+            status = str(finding.get("exploitability_status") or "").lower()
+            if status not in {"confirmed", "needs_manual_validation"}:
+                continue
+            key = str(finding.get("id") or id(finding))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(finding)
+    return selected
+
+
+def _feedback_record(scan_id: str, finding: dict, verdict: str) -> dict:
+    artifact = finding.get("evidence_artifact") or {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    ai = finding.get("ai_triage") or {}
+    if not isinstance(ai, dict):
+        ai = {}
+    return {
+        "scan_id": str(scan_id),
+        "vuln_class": str(
+            finding.get("vulnerability_class")
+            or finding.get("vuln_type")
+            or finding.get("title")
+            or ""
+        ),
+        "matched_indicator": str(artifact.get("matched_indicator") or ""),
+        "indicator_location": str(artifact.get("indicator_location") or ""),
+        "ai_exploitability": str(ai.get("exploitability") or ""),
+        "ai_fp_risk": str(ai.get("false_positive_risk") or ""),
+        "human_verdict": verdict,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _append_feedback(record: dict, path: Path | None = None) -> None:
+    path = path or FEEDBACK_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _read_feedback(path: Path | None = None) -> list[dict]:
+    path = path or FEEDBACK_PATH
+    if not path.exists():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return records
+
+
+def _feedback_stats(path: Path | None = None) -> dict:
+    path = path or FEEDBACK_PATH
+    records = _read_feedback(path)
+    verdicts = Counter(record.get("human_verdict", "") for record in records)
+    classes = Counter(str(record.get("vuln_class", "")) for record in records)
+    fp_patterns = Counter(
+        str(record.get("matched_indicator", ""))
+        for record in records
+        if record.get("human_verdict") == "false_positive"
+    )
+    return {
+        "total": len(records),
+        "valid": verdicts.get("valid", 0),
+        "false_positive": verdicts.get("false_positive", 0),
+        "top_vuln_classes": classes.most_common(5),
+        "top_fp_patterns": fp_patterns.most_common(5),
+    }
+
+
+async def command_train(args) -> int:
+    if args.stats:
+        stats = _feedback_stats()
+        table = Table(title="Feedback dataset stats", box=box.ROUNDED)
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Total labeled", str(stats["total"]))
+        table.add_row("Valid", str(stats["valid"]))
+        table.add_row("False positives", str(stats["false_positive"]))
+        table.add_row(
+            "Top vuln classes",
+            "\n".join(
+                "{} ({})".format(label or "unknown", count)
+                for label, count in stats["top_vuln_classes"]
+            ) or "none",
+        )
+        table.add_row(
+            "Top FP patterns",
+            "\n".join(
+                "{} ({})".format(label or "unknown", count)
+                for label, count in stats["top_fp_patterns"]
+            ) or "none",
+        )
+        console.print(table)
+        return 0
+
+    if not args.scan_id:
+        console.print("[red]Pass --scan-id <id> or --stats.[/red]")
+        return 2
+    scan = scan_store.get(args.scan_id)
+    if not scan:
+        raise RuntimeError("Local scan not found: {}".format(args.scan_id))
+    findings = _feedback_candidates(scan)
+    if not findings:
+        console.print("[yellow]No confirmed or needs_manual_validation findings to label.[/yellow]")
+        return 0
+
+    written = 0
+    for index, finding in enumerate(findings, start=1):
+        artifact = finding.get("evidence_artifact") or {}
+        ai = finding.get("ai_triage") or {}
+        note = ""
+        if isinstance(ai, dict):
+            note = ai.get("triage_note") or ai.get("recommended_action") or ""
+        console.print(
+            Panel(
+                "Finding {}/{}\nClass: {}\nTitle: {}\nSeverity: {}\nStatus: {}\n"
+                "Matched indicator: {}\nIndicator location: {}\nAI note: {}".format(
+                    index,
+                    len(findings),
+                    escape(str(
+                        finding.get("vulnerability_class")
+                        or finding.get("vuln_type")
+                        or ""
+                    )),
+                    escape(str(finding.get("title") or "")),
+                    escape(str(finding.get("severity") or "")),
+                    escape(str(finding.get("exploitability_status") or "")),
+                    escape(str(artifact.get("matched_indicator") or "")) if isinstance(artifact, dict) else "",
+                    escape(str(artifact.get("indicator_location") or "")) if isinstance(artifact, dict) else "",
+                    escape(str(note)),
+                ),
+                title="Training label",
+                border_style="cyan",
+            )
+        )
+        try:
+            answer = console.input("[bold cyan][v]alid / [f]alse positive / [s]kip: [/bold cyan]")
+        except EOFError:
+            answer = "s"
+        choice = answer.strip().lower()[:1]
+        if choice == "v":
+            verdict = "valid"
+        elif choice == "f":
+            verdict = "false_positive"
+        else:
+            console.print("[dim]Skipped.[/dim]")
+            continue
+        _append_feedback(_feedback_record(args.scan_id, finding, verdict))
+        written += 1
+        console.print("[green]Recorded {} label.[/green]".format(verdict))
+    console.print("[green]Wrote {} feedback record(s) to {}[/green]".format(written, FEEDBACK_PATH))
+    return 0
+
+
 async def command_analyze(args) -> int:
     if args.file:
         raw = Path(args.file).read_text(encoding="utf-8")
@@ -1670,6 +1851,8 @@ async def async_main(args) -> int:
         return await command_status(args)
     if args.command == "history":
         return await command_history(args)
+    if args.command == "train":
+        return await command_train(args)
     if args.command == "analyze":
         return await command_analyze(args)
     if args.command == "skills":
