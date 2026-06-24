@@ -125,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--follow", action="store_true")
     scan.add_argument("--output", default="reports")
     scan.add_argument(
+        "--no-external-tools",
+        action="store_true",
+        help="Skip optional Katana, Nuclei, TruffleHog, and Gitleaks integrations.",
+    )
+    scan.add_argument(
         "--oob-server",
         default="",
         help="Explicit OOB callback URL for authorized bounty/deep SSRF validation.",
@@ -936,6 +941,7 @@ async def command_scan(args) -> int:
         model=args.model,
         output=args.output,
         oob_server=args.oob_server,
+        no_external_tools=args.no_external_tools,
     )
     prepared["ai"] = {
         **prepared.get("ai", {}),
@@ -1662,6 +1668,7 @@ async def command_doctor(args) -> int:
     )
 
     from external_tools import tool_status
+    from core.integrations.tool_checker import tool_detail
 
     tools = tool_status()
     available = [tool["name"] for tool in tools if tool["available"]]
@@ -1670,6 +1677,9 @@ async def command_doctor(args) -> int:
         True,
         "{} available: {}".format(len(available), ", ".join(available) or "none"),
     )
+    for tool_name in ("katana", "nuclei", "trufflehog", "gitleaks"):
+        ok, detail = tool_detail(tool_name)
+        add(tool_name, ok, detail, blocking=False)
     try:
         from core.skills.registry import SkillRegistry
 
