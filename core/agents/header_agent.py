@@ -168,7 +168,7 @@ class HeaderAgent(BaseAgent):
                                 matched_indicator=header,
                                 indicator_location="response headers",
                                 agent=self.name,
-                                vuln_class="Missing Security Header",
+                                vuln_class="Missing Security Headers",
                                 impact=HEADER_IMPACT.get(
                                     header,
                                     "Missing browser security header weakens client-side defenses.",
@@ -185,7 +185,7 @@ class HeaderAgent(BaseAgent):
                             confirmed = _artifact_saved(artifact) and header not in lowered_headers
                             findings.append(normalize_finding({
                                 "source": "passive-header-agent",
-                                "vuln_type": "Missing Security Header",
+                                "vuln_type": "Missing Security Headers",
                                 "title": title,
                                 "severity": "MEDIUM",
                                 "confidence": 94 if confirmed else 65,

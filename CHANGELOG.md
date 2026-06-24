@@ -1,0 +1,12 @@
+## v1.0-beta
+- CLI-first scanner with Rich terminal UI
+- Passive / bounty / deep scan modes
+- Multi-agent architecture (11 agents)
+- Strict proof gate: findings confirmed only with full evidence artifacts
+- Generic evidence agents: header, SQLi, XSS, exposed paths
+- Passive recon: crt.sh, Wayback, JS secrets, DNS checks
+- Local Ollama AI triage (reads artifacts, never overrides gate)
+- Modular skill system
+- Subdomain Takeover Hunter skill with real-world corpus
+- Benchmark mode isolated from normal scan path
+- 160+ offline tests passing

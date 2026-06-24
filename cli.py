@@ -1385,12 +1385,12 @@ async def command_doctor(args) -> int:
     load_config()
     checks = []
 
-    def add(name: str, ok: bool, detail: str):
-        checks.append((name, ok, detail))
+    def add(name: str, ok: bool, detail: str, blocking: bool = True):
+        checks.append((name, ok, detail, blocking))
 
     add("Python", sys.version_info >= (3, 10), platform.python_version())
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
-    add("Virtual environment", in_venv, sys.prefix)
+    add("Virtual environment", in_venv, sys.prefix, blocking=False)
     env = config_status()
     add(".env", bool(env.get("env_exists")), env.get("path", ""))
     database = scan_store.status()
@@ -1405,6 +1405,16 @@ async def command_doctor(args) -> int:
     except OSError:
         reports_ok = False
     add("Reports directory", reports_ok, str(report_dir))
+    evidence_dir = ROOT / "evidence"
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        probe = evidence_dir / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        evidence_ok = True
+    except OSError:
+        evidence_ok = False
+    add("Evidence directory writable", evidence_ok, str(evidence_dir))
 
     requirements = {
         "fastapi": "fastapi",
@@ -1438,6 +1448,16 @@ async def command_doctor(args) -> int:
         True,
         "{} available: {}".format(len(available), ", ".join(available) or "none"),
     )
+    try:
+        from core.skills.registry import SkillRegistry
+
+        installed_skills = [skill.name for skill in SkillRegistry().list()]
+        skills_ok = "subdomain-takeover-hunter" in installed_skills
+        skills_detail = ", ".join(installed_skills) or "none"
+    except Exception as exc:
+        skills_ok = False
+        skills_detail = "{}: {}".format(type(exc).__name__, exc)
+    add("Skills installed", skills_ok, skills_detail)
     ai = await _ai_status()
     add(
         "AI provider (optional)",
@@ -1447,7 +1467,6 @@ async def command_doctor(args) -> int:
             ai.get("active_model", "none"),
         ),
     )
-    ollama_enabled = os.getenv("OLLAMA_ENABLED", "0") == "1"
     ollama = await ollama_health()
     add(
         "Ollama",
@@ -1512,7 +1531,7 @@ async def command_doctor(args) -> int:
             launcher_ok = launcher_path.exists() and "cli.py" in launcher_text
         except OSError:
             launcher_ok = False
-    add("CLI launcher", launcher_ok, launcher or "not found in PATH")
+    add("CLI launcher", launcher_ok, launcher or "not found in PATH", blocking=False)
     add(
         "Dashboard (optional)",
         True,
@@ -1523,13 +1542,19 @@ async def command_doctor(args) -> int:
     table.add_column("Check")
     table.add_column("Result")
     table.add_column("Detail")
-    for name, ok, detail in checks:
-        table.add_row(name, "[green]PASS[/green]" if ok else "[red]FAIL[/red]", str(detail))
+    for name, ok, detail, blocking in checks:
+        if ok:
+            result = "[green]PASS[/green]"
+        elif blocking:
+            result = "[red]FAIL[/red]"
+        else:
+            result = "[yellow]WARN[/yellow]"
+        table.add_row(name, result, str(detail))
     console.print(table)
     console.print(
         "[dim]AI is optional and does not block scanning.[/dim]"
     )
-    return 0 if all(ok for name, ok, _ in checks if name != "Optional external tools") else 1
+    return 0 if all(ok or not blocking for _name, ok, _detail, blocking in checks) else 1
 
 
 async def command_launcher() -> int:
