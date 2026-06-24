@@ -24,6 +24,7 @@ SPECIALIST_AGENTS = {
     "access-control": {
         "IDOR", "GraphQL Authorization", "Business Logic", "Race Conditions",
     },
+    "open-redirect": {"Open Redirect", "Open Redirect Candidate"},
     "ssrf": {"SSRF Candidate", "SSRF"},
     "injection": {
         "SQL Injection", "SSTI", "Path Traversal and LFI",
@@ -229,6 +230,7 @@ class HuntCoordinatorAgent(BaseAgent):
         from core.agents.auth_agent import AuthAgent
         from core.agents.header_agent import HeaderAgent
         from core.agents.injection_agent import InjectionAgent
+        from core.agents.open_redirect_agent import OpenRedirectAgent
         from core.agents.rate_limit_agent import RateLimitAgent
         from core.agents.ssrf_agent import SSRFAgent
         from core.agents.xss_agent import XSSAgent
@@ -244,5 +246,6 @@ class HuntCoordinatorAgent(BaseAgent):
             ("xss", lambda: XSSAgent().execute(context)),
             ("rate-limit", lambda: RateLimitAgent().execute(context)),
             ("ssrf", lambda: SSRFAgent().execute(context)),
+            ("open-redirect", lambda: OpenRedirectAgent().execute(context)),
         ])
         context.scan["raw_findings"] = context.raw_findings
