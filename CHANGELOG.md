@@ -1,3 +1,10 @@
+## v1.0
+- Passive auth observation: JWT, cookie flags, OAuth redirect_uri
+- Local AI feedback loop: burpollama train
+- Scope file support: HackerOne/Bugcrowd wildcard scope blocks
+- burpollama scope-check utility
+- All v1.0-beta features included
+
 ## v1.0-beta
 - CLI-first scanner with Rich terminal UI
 - Passive / bounty / deep scan modes
