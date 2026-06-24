@@ -3,12 +3,60 @@
 from __future__ import annotations
 
 import httpx
+from pathlib import Path
 from urllib.parse import urlparse
 
 from finding_model import normalize_finding
 
 from core.agents.base import BaseAgent, ScanContext
+from core.evidence import write_evidence_artifact
 from core.events import EventType
+
+
+def _raw_response(response: httpx.Response, body_limit: int = 2000) -> str:
+    headers = "\n".join(
+        "{}: {}".format(key, value)
+        for key, value in response.headers.items()
+    )
+    body = response.text[:body_limit] if response.text else ""
+    return "HTTP/1.1 {}\n{}\n\n{}".format(
+        response.status_code,
+        headers,
+        body,
+    )
+
+
+REQUEST_HEADERS = {
+    "User-Agent": "BurpOllama Evidence Agent",
+    "Accept": "*/*",
+}
+
+
+HEADER_IMPACT = {
+    "content-security-policy": (
+        "Missing CSP weakens browser-side injection defenses and can increase XSS impact."
+    ),
+    "x-frame-options": (
+        "Missing frame protection can allow clickjacking on sensitive workflows."
+    ),
+    "x-content-type-options": (
+        "Missing nosniff allows some browsers to MIME-sniff content unsafely."
+    ),
+}
+
+
+def _raw_request(method: str, url: str, headers: dict | None = None) -> str:
+    header_lines = "\n".join(
+        "{}: {}".format(key, value)
+        for key, value in (headers or REQUEST_HEADERS).items()
+    )
+    return "{} {} HTTP/1.1\n{}".format(method.upper(), url, header_lines)
+
+
+def _artifact_saved(artifact: dict) -> bool:
+    return bool(artifact.get("artifact_path")) and Path(
+        str(artifact.get("artifact_path"))
+    ).exists()
 
 
 class HeaderAgent(BaseAgent):
@@ -23,6 +71,7 @@ class HeaderAgent(BaseAgent):
             follow_redirects=True,
             timeout=context.options.timeout,
             limits=httpx.Limits(max_connections=context.options.concurrency),
+            headers=REQUEST_HEADERS,
         ) as client:
             for url in urls:
                 await context.scheduler.checkpoint()
@@ -33,6 +82,7 @@ class HeaderAgent(BaseAgent):
                         phase=self.phase,
                         message="Skipped out-of-scope URL",
                         url=url,
+                        reason="out_of_scope",
                     )
                     continue
                 waited = await context.rate_limiter.acquire()
@@ -81,6 +131,13 @@ class HeaderAgent(BaseAgent):
                     )
                     continue
                 context.tested_urls.add(url)
+                context.recon.setdefault("http_observations", []).append({
+                    "url": url,
+                    "status_code": response.status_code,
+                    "headers": dict(response.headers),
+                    "set_cookie_headers": response.headers.get_list("set-cookie"),
+                    "body": response.text[:5000] if response.text else "",
+                })
                 await context.emit(
                     EventType.RESPONSE_RECEIVED,
                     agent=self.name,
@@ -101,35 +158,92 @@ class HeaderAgent(BaseAgent):
                         if name not in response.headers
                     ]
                     if missing:
-                        findings.append(normalize_finding({
-                            "source": "passive-header-agent",
-                            "vuln_type": "Missing Security Headers",
-                            "title": "Missing Security Headers",
-                            "severity": "MEDIUM",
-                            "confidence": 92,
-                            "url": url,
-                            "method": "GET",
-                            "description": "Important browser security headers are absent.",
-                            "evidence": "Absent: {}".format(", ".join(missing)),
-                            "remediation": "Configure CSP, frame protections, and nosniff headers.",
-                            "cwe": "CWE-16",
-                            "exploitability_status": "probable",
-                            "evidence_strength": "moderate",
-                            "false_positive_risk": "low",
-                            "redaction_status": "redacted",
-                        }, scan_id=context.scan["id"]))
+                        lowered_headers = {
+                            key.lower(): value for key, value in response.headers.items()
+                        }
+                        for header in missing:
+                            title = "Missing {}".format(header)
+                            fp_check = (
+                                "{} absent from final response headers after redirects; "
+                                "case-insensitive header lookup returned no value."
+                            ).format(header)
+                            artifact = write_evidence_artifact(
+                                context.scan,
+                                title=title,
+                                url=url,
+                                raw_request=_raw_request("GET", url),
+                                raw_response=_raw_response(response, body_limit=0),
+                                matched_indicator=header,
+                                indicator_location="response headers",
+                                agent=self.name,
+                                vuln_class="Missing Security Headers",
+                                impact=HEADER_IMPACT.get(
+                                    header,
+                                    "Missing browser security header weakens client-side defenses.",
+                                ),
+                                fp_check=fp_check,
+                                confirmed=header not in lowered_headers,
+                                filename_prefix="header",
+                                metadata={
+                                    "header": header,
+                                    "status_code": response.status_code,
+                                    "final_url": str(response.url),
+                                },
+                            )
+                            confirmed = _artifact_saved(artifact) and header not in lowered_headers
+                            findings.append(normalize_finding({
+                                "source": "passive-header-agent",
+                                "vuln_type": "Missing Security Headers",
+                                "title": title,
+                                "severity": "MEDIUM",
+                                "confidence": 94 if confirmed else 65,
+                                "url": url,
+                                "method": "GET",
+                                "description": "{} is absent from the HTTP response.".format(header),
+                                "evidence": "Missing header: {}".format(header),
+                                "evidence_artifact": artifact,
+                                "business_impact": HEADER_IMPACT.get(header, ""),
+                                "reproduction_steps": [
+                                    "Send GET {}.".format(url),
+                                    "Inspect the final HTTP response headers after redirects.",
+                                    "Confirm `{}` is absent.".format(header),
+                                ],
+                                "remediation": "Configure `{}` with a value appropriate for this application.".format(header),
+                                "cwe": "CWE-16",
+                                "exploitability_status": "confirmed" if confirmed else "candidate",
+                                "evidence_strength": "strong" if confirmed else "weak",
+                                "false_positive_risk": "low" if confirmed else "medium",
+                                "redaction_status": "redacted",
+                            }, scan_id=context.scan["id"]))
                 acao = response.headers.get("access-control-allow-origin", "")
                 if acao == "*":
+                    title = "Wildcard CORS header observed"
+                    artifact = write_evidence_artifact(
+                        context.scan,
+                        title=title,
+                        url=url,
+                        raw_request=_raw_request("GET", url),
+                        raw_response=_raw_response(response, body_limit=0),
+                        matched_indicator="Access-Control-Allow-Origin: *",
+                        indicator_location="response.headers.access-control-allow-origin",
+                        agent=self.name,
+                        vuln_class="CORS Wildcard Observation",
+                        impact="Wildcard CORS can expose sensitive data when combined with credentialed flows.",
+                        fp_check="Observed exact Access-Control-Allow-Origin wildcard in response headers.",
+                        confirmed=False,
+                        filename_prefix="header",
+                    )
                     findings.append(normalize_finding({
                         "source": "passive-header-agent",
                         "vuln_type": "CORS Wildcard Observation",
-                        "title": "Wildcard CORS header observed",
+                        "title": title,
                         "severity": "LOW",
                         "confidence": 65,
                         "url": url,
                         "method": "GET",
                         "description": "The response advertises a wildcard CORS origin.",
                         "evidence": "Access-Control-Allow-Origin: *",
+                        "evidence_artifact": artifact,
                         "remediation": "Restrict allowed origins where sensitive data is returned.",
                         "exploitability_status": "candidate",
                         "evidence_strength": "weak",
@@ -141,16 +255,34 @@ class HeaderAgent(BaseAgent):
                     and response.status_code == 200
                     and "=" in response.text[:4000]
                 ):
+                    title = "Environment configuration file is publicly accessible"
+                    artifact = write_evidence_artifact(
+                        context.scan,
+                        title=title,
+                        url=url,
+                        raw_request=_raw_request("GET", url),
+                        raw_response=_raw_response(response),
+                        matched_indicator="environment-style key/value content",
+                        indicator_location="response.body",
+                        agent=self.name,
+                        vuln_class="Environment File Exposed",
+                        impact="Exposed configuration may reveal credentials, database access, or service secrets.",
+                        fp_check="HTTP 200 response body contains environment-style key/value content.",
+                        confirmed=True,
+                        filename_prefix="header",
+                        metadata={"status_code": response.status_code},
+                    )
                     findings.append(normalize_finding({
                         "source": "passive-header-agent",
                         "vuln_type": "Environment File Exposed",
-                        "title": "Environment configuration file is publicly accessible",
+                        "title": title,
                         "severity": "HIGH",
                         "confidence": 98,
                         "url": url,
                         "method": "GET",
                         "description": "A .env-style configuration response is accessible without authentication.",
                         "evidence": "HTTP 200 with environment-style key/value content (secret values redacted).",
+                        "evidence_artifact": artifact,
                         "business_impact": "Exposed configuration may reveal credentials, database access, or service secrets.",
                         "reproduction_steps": [
                             "Send GET /.env to the affected host.",

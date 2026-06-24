@@ -91,7 +91,7 @@ TECH_PATHS: Dict[str, List[str]] = {
         "/api/auth/csrf", "/__nextjs_original-stack-frame", "/_next/data/",
     ],
     "express": [
-        "/graphql", "/playground", "/api-docs", "/api-docs.json",
+        "/graphql", "/playground",
         "/swagger.json", "/.env", "/status",
     ],
     "rails": [

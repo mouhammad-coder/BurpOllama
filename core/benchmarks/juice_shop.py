@@ -1,9 +1,7 @@
-"""Safe validation probes for intentionally vulnerable local lab targets.
+"""Explicit OWASP Juice Shop benchmark probes.
 
-The agent is conservative and scope-bound: it only sends low-rate GET requests
-to the already-authorized target host and records evidence that is observable
-from HTTP responses. It is especially useful for OWASP Juice Shop regression
-tests where the scanner should prove it can find real issues end to end.
+This module is intentionally lab-specific and must never be imported by the
+normal scanner path. It exists only behind `burpollama benchmark juice-shop`.
 """
 
 from __future__ import annotations
@@ -58,8 +56,8 @@ def _response_summary(response: httpx.Response) -> dict:
     }
 
 
-class LabValidationAgent(BaseAgent):
-    name = "lab-validator"
+class JuiceShopBenchmark(BaseAgent):
+    name = "benchmark-juice-shop"
     phase = "vulnerability_hunt"
 
     async def run(self, context: ScanContext):
@@ -105,7 +103,7 @@ class LabValidationAgent(BaseAgent):
                 finding=finding,
             )
         if findings:
-            context.scan["lab_validation"] = {
+            context.scan["benchmark"] = {
                 "target": "owasp_juice_shop" if is_juice_shop else "local_lab",
                 "findings": len(findings),
                 "confirmed": sum(

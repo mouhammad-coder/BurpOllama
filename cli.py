@@ -28,7 +28,7 @@ import sys
 import time
 import webbrowser
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -47,13 +47,14 @@ from rich.table import Table
 from rich.text import Text
 
 from core import __version__
-from core.config import config_status, load_config
+from core.config import config_status, load_config, ollama_health
 from core.reports import render_report
 from core.scanner import scanner
 from core.storage import scan_store
 
 
 ROOT = Path(__file__).resolve().parent
+FEEDBACK_PATH = ROOT / "data" / "feedback.jsonl"
 DEFAULT_API = "http://127.0.0.1:8888"
 MODE_MAP = {
     "bounty": ("conservative", "Bounty Scan"),
@@ -94,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DOMAIN",
         help="Restrict the scan to this domain. Repeat for multiple domains.",
     )
+    scan.add_argument(
+        "--scope-file",
+        help="Plain-text HackerOne/Bugcrowd scope file with includes and ! exclusions.",
+    )
     scan.add_argument("--concurrency", type=int, default=5)
     scan.add_argument("--rate-limit", type=float, default=2.0)
     scan.add_argument("--timeout", type=float, default=10.0)
@@ -120,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--follow", action="store_true")
     scan.add_argument("--output", default="reports")
 
+    from core.benchmarks import BENCHMARKS
+
+    benchmark = sub.add_parser(
+        "benchmark",
+        help="Run an explicit benchmark harness; never used by normal scans.",
+    )
+    benchmark.add_argument("lab", choices=tuple(BENCHMARKS))
+    benchmark.add_argument("--target", default="")
+    benchmark.add_argument("--yes", action="store_true")
+    benchmark.add_argument("--output", default="reports")
+    benchmark.add_argument("--timeout", type=float, default=10.0)
+
     watch = sub.add_parser("watch", help="Watch an existing scan in real time.")
     watch.add_argument("--scan-id", required=True)
 
@@ -142,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--output")
 
+    train = sub.add_parser("train", help="Label findings for local AI feedback data.")
+    train.add_argument("--scan-id", help="Scan ID to label interactively.")
+    train.add_argument("--stats", action="store_true", help="Show feedback dataset stats.")
+
+    scope_check = sub.add_parser("scope-check", help="Check a URL against a scope file.")
+    scope_check.add_argument("--scope-file", required=True)
+    scope_check.add_argument("url")
+
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
     sub.add_parser("history", help="List locally stored scans.")
     sub.add_parser("doctor", help="Diagnose the local CLI installation.")
@@ -162,6 +187,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Send captured Burp traffic JSON to passive analysis.",
     )
     analyze.add_argument("--file", help="JSON object/list file. Defaults to stdin.")
+
+    skills = sub.add_parser("skills", help="Manage and run modular CLI skills.")
+    skill_sub = skills.add_subparsers(dest="skill_command", required=True)
+    skill_sub.add_parser("list", help="Show installed skills.")
+    show = skill_sub.add_parser("show", help="Show skill details.")
+    show.add_argument("skill")
+    validate_skill = skill_sub.add_parser("validate", help="Validate skill structure.")
+    validate_skill.add_argument("skill")
+    refresh = skill_sub.add_parser(
+        "refresh-knowledge",
+        help="Refresh local cached fingerprints/knowledge.",
+    )
+    refresh.add_argument("skill")
+    run_skill = skill_sub.add_parser("run", help="Run a skill explicitly.")
+    run_skill.add_argument("skill")
+    run_skill.add_argument("--target", required=True)
+    run_skill.add_argument("--mode", choices=("passive", "validate", "report"), default="passive")
+    run_skill.add_argument("--scope", action="append", default=None)
+    run_skill.add_argument("--scope-file")
+    run_skill.add_argument("--yes", action="store_true", help="Confirm authorization and scope non-interactively.")
+    run_skill.add_argument("--active-permission", action="store_true")
+    run_skill.add_argument("--proof-of-control", action="store_true")
+    run_skill.add_argument("--proof-confirmed", action="store_true")
+    run_skill.add_argument("--output", default="runs/skills")
+    run_skill.add_argument("--timeout", type=float, default=8.0)
     return parser
 
 
@@ -192,6 +242,19 @@ def normalized_target(value: str) -> str:
     if "://" not in value:
         value = "https://" + value
     return value
+
+
+def _combined_scope_entries(args) -> list[str]:
+    entries = list(getattr(args, "scope", None) or [])
+    scope_file = getattr(args, "scope_file", None)
+    if scope_file:
+        from core.scope import load_scope_file
+
+        loaded, warnings = load_scope_file(scope_file)
+        entries.extend(loaded)
+        for warning in warnings:
+            console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+    return entries
 
 
 def authorized(args, target: str) -> bool:
@@ -845,6 +908,7 @@ async def command_scan(args) -> int:
     target = normalized_target(args.target)
     if not authorized(args, target):
         return 2
+    scope_entries = _combined_scope_entries(args)
     availability = await _ai_status(args.ai_provider, args.model)
     ai_enabled = _scan_ai_enabled(args, availability)
     if args.ai and not availability.get("triage_capable"):
@@ -857,7 +921,7 @@ async def command_scan(args) -> int:
         target,
         args.mode,
         authorization_confirmed=True,
-        allowed_domains=args.scope,
+        allowed_domains=scope_entries,
         concurrency=args.concurrency,
         rate_limit=args.rate_limit,
         timeout=args.timeout,
@@ -908,6 +972,111 @@ async def command_scan(args) -> int:
         print(json.dumps({"type": "result", "scan": current}, default=str))
     else:
         print_results(current, started)
+    return 0
+
+
+async def command_benchmark(args) -> int:
+    from core.benchmarks import BENCHMARKS
+
+    benchmark = BENCHMARKS.get(args.lab)
+    if not benchmark:
+        raise RuntimeError("Unsupported benchmark: {}".format(args.lab))
+    target = normalized_target(args.target or benchmark["default_target"])
+    if not getattr(args, "yes", False):
+        console.print(
+            "[red]Benchmark mode is lab-specific. Re-run with --yes only for "
+            "your local authorized {} instance.[/red]".format(
+                escape(str(benchmark["label"]))
+            )
+        )
+        return 2
+
+    from attack_graph import build_attack_graph
+    from coverage_intelligence import compute_coverage
+    from zero_fp_gate import apply_zero_fp_gate
+    from core.agents.base import ScanContext
+    from core.agents.report_agent import ReportAgent
+    from core.benchmarks.juice_shop import JuiceShopBenchmark
+    from core.events import event_bus
+    from core.ratelimit import RateLimiter
+    from core.scheduler import Scheduler
+    from core.scope import ScanScope
+
+    started = time.monotonic()
+    prepared = scanner.prepare(
+        target,
+        "bounty",
+        authorization_confirmed=True,
+        concurrency=2,
+        rate_limit=2.0,
+        timeout=args.timeout,
+        retries=0,
+        ai_enabled=False,
+        output=args.output,
+    )
+    prepared["mode"] = "benchmark"
+    prepared["requested_scan_mode"] = benchmark["requested_scan_mode"]
+    context = ScanContext(
+        scan=prepared,
+        options=type("BenchmarkOptions", (), {
+            "timeout": args.timeout,
+            "concurrency": 2,
+            "rate_limit": 2.0,
+            "retries": 0,
+            "mode": "bounty",
+            "api_key": "",
+            "output": args.output,
+        })(),
+        events=event_bus,
+        scheduler=Scheduler(2),
+        rate_limiter=RateLimiter(2.0),
+        scope=ScanScope(target, []),
+        store=scan_store,
+    )
+    banner()
+    console.print(
+        Panel(
+            "Lab: {}\nTarget: {}\n"
+            "This benchmark path is isolated from normal scans.".format(
+                escape(str(benchmark["label"])),
+                escape(target)
+            ),
+            title="Benchmark mode",
+            border_style="yellow",
+        )
+    )
+    await JuiceShopBenchmark().execute(context)
+    context.triaged_findings = list(context.raw_findings)
+    context.scan["triaged_findings"] = context.triaged_findings
+    graph = build_attack_graph(context.triaged_findings).to_dict()
+    gated = apply_zero_fp_gate(
+        context.triaged_findings,
+        context.scope.to_dict(),
+        graph,
+        tech_stack=[],
+        scan_context={"benchmark": args.lab},
+    )
+    context.analysis["zero_fp_gate"] = gated
+    context.analysis["coverage"] = compute_coverage(
+        context.recon,
+        context.triaged_findings,
+        tested_urls=sorted(context.tested_urls),
+    )
+    context.scan["analysis"] = context.analysis
+    context.scan["confirmed_findings"] = gated.get("valid_bugs", [])
+    context.scan["candidate_findings"] = (
+        gated.get("needs_more_proof", [])
+        + gated.get("candidates", [])
+        + gated.get("informational", [])
+    )
+    await ReportAgent().execute(context)
+    context.scan["status"] = "complete"
+    context.scan["phase"] = "complete"
+    context.scan["finished"] = datetime.utcnow().isoformat()
+    context.scan["agent_status"] = context.scheduler.snapshot()
+    context.scan["rate_limiter"] = context.rate_limiter.snapshot()
+    scan_store.save(context.scan, context.triaged_findings)
+    print_results(context.scan, started)
     return 0
 
 
@@ -1054,6 +1223,193 @@ async def command_history(args) -> int:
     return 0
 
 
+async def command_scope_check(args) -> int:
+    from core.scope import is_in_scope, load_scope_file
+
+    entries, load_warnings = load_scope_file(args.scope_file)
+    result, _parse_warnings = is_in_scope(args.url, entries)
+    for warning in load_warnings:
+        console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+    console.print("IN SCOPE" if result else "OUT OF SCOPE")
+    return 0
+
+
+def _feedback_candidates(scan: dict) -> list[dict]:
+    seen = set()
+    selected = []
+    pools = (
+        scan.get("confirmed_findings", []),
+        scan.get("candidate_findings", []),
+        scan.get("triaged_findings", []),
+        scan.get("findings", []),
+    )
+    for pool in pools:
+        for finding in pool or []:
+            if not isinstance(finding, dict):
+                continue
+            status = str(finding.get("exploitability_status") or "").lower()
+            if status not in {"confirmed", "needs_manual_validation"}:
+                continue
+            key = str(finding.get("id") or id(finding))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(finding)
+    return selected
+
+
+def _feedback_record(scan_id: str, finding: dict, verdict: str) -> dict:
+    artifact = finding.get("evidence_artifact") or {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    ai = finding.get("ai_triage") or {}
+    if not isinstance(ai, dict):
+        ai = {}
+    return {
+        "scan_id": str(scan_id),
+        "vuln_class": str(
+            finding.get("vulnerability_class")
+            or finding.get("vuln_type")
+            or finding.get("title")
+            or ""
+        ),
+        "matched_indicator": str(artifact.get("matched_indicator") or ""),
+        "indicator_location": str(artifact.get("indicator_location") or ""),
+        "ai_exploitability": str(ai.get("exploitability") or ""),
+        "ai_fp_risk": str(ai.get("false_positive_risk") or ""),
+        "human_verdict": verdict,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _append_feedback(record: dict, path: Path | None = None) -> None:
+    path = path or FEEDBACK_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _read_feedback(path: Path | None = None) -> list[dict]:
+    path = path or FEEDBACK_PATH
+    if not path.exists():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return records
+
+
+def _feedback_stats(path: Path | None = None) -> dict:
+    path = path or FEEDBACK_PATH
+    records = _read_feedback(path)
+    verdicts = Counter(record.get("human_verdict", "") for record in records)
+    classes = Counter(str(record.get("vuln_class", "")) for record in records)
+    fp_patterns = Counter(
+        str(record.get("matched_indicator", ""))
+        for record in records
+        if record.get("human_verdict") == "false_positive"
+    )
+    return {
+        "total": len(records),
+        "valid": verdicts.get("valid", 0),
+        "false_positive": verdicts.get("false_positive", 0),
+        "top_vuln_classes": classes.most_common(5),
+        "top_fp_patterns": fp_patterns.most_common(5),
+    }
+
+
+async def command_train(args) -> int:
+    if args.stats:
+        stats = _feedback_stats()
+        table = Table(title="Feedback dataset stats", box=box.ROUNDED)
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Total labeled", str(stats["total"]))
+        table.add_row("Valid", str(stats["valid"]))
+        table.add_row("False positives", str(stats["false_positive"]))
+        table.add_row(
+            "Top vuln classes",
+            "\n".join(
+                "{} ({})".format(label or "unknown", count)
+                for label, count in stats["top_vuln_classes"]
+            ) or "none",
+        )
+        table.add_row(
+            "Top FP patterns",
+            "\n".join(
+                "{} ({})".format(label or "unknown", count)
+                for label, count in stats["top_fp_patterns"]
+            ) or "none",
+        )
+        console.print(table)
+        return 0
+
+    if not args.scan_id:
+        console.print("[red]Pass --scan-id <id> or --stats.[/red]")
+        return 2
+    scan = scan_store.get(args.scan_id)
+    if not scan:
+        raise RuntimeError("Local scan not found: {}".format(args.scan_id))
+    findings = _feedback_candidates(scan)
+    if not findings:
+        console.print("[yellow]No confirmed or needs_manual_validation findings to label.[/yellow]")
+        return 0
+
+    written = 0
+    for index, finding in enumerate(findings, start=1):
+        artifact = finding.get("evidence_artifact") or {}
+        ai = finding.get("ai_triage") or {}
+        note = ""
+        if isinstance(ai, dict):
+            note = ai.get("triage_note") or ai.get("recommended_action") or ""
+        console.print(
+            Panel(
+                "Finding {}/{}\nClass: {}\nTitle: {}\nSeverity: {}\nStatus: {}\n"
+                "Matched indicator: {}\nIndicator location: {}\nAI note: {}".format(
+                    index,
+                    len(findings),
+                    escape(str(
+                        finding.get("vulnerability_class")
+                        or finding.get("vuln_type")
+                        or ""
+                    )),
+                    escape(str(finding.get("title") or "")),
+                    escape(str(finding.get("severity") or "")),
+                    escape(str(finding.get("exploitability_status") or "")),
+                    escape(str(artifact.get("matched_indicator") or "")) if isinstance(artifact, dict) else "",
+                    escape(str(artifact.get("indicator_location") or "")) if isinstance(artifact, dict) else "",
+                    escape(str(note)),
+                ),
+                title="Training label",
+                border_style="cyan",
+            )
+        )
+        try:
+            answer = console.input("[bold cyan][v]alid / [f]alse positive / [s]kip: [/bold cyan]")
+        except EOFError:
+            answer = "s"
+        choice = answer.strip().lower()[:1]
+        if choice == "v":
+            verdict = "valid"
+        elif choice == "f":
+            verdict = "false_positive"
+        else:
+            console.print("[dim]Skipped.[/dim]")
+            continue
+        _append_feedback(_feedback_record(args.scan_id, finding, verdict))
+        written += 1
+        console.print("[green]Recorded {} label.[/green]".format(verdict))
+    console.print("[green]Wrote {} feedback record(s) to {}[/green]".format(written, FEEDBACK_PATH))
+    return 0
+
+
 async def command_analyze(args) -> int:
     if args.file:
         raw = Path(args.file).read_text(encoding="utf-8")
@@ -1087,6 +1443,139 @@ async def command_analyze(args) -> int:
     return 0
 
 
+async def command_skills(args) -> int:
+    from core.skills.knowledge_base import SkillKnowledgeBase
+    from core.skills.registry import SkillRegistry
+    from core.skills.runner import SkillRunOptions, SkillRunner, SkillSafetyError
+    from core.skills.validator import SkillValidator
+
+    registry = SkillRegistry()
+    validator = SkillValidator()
+    knowledge = SkillKnowledgeBase()
+
+    if args.skill_command == "list":
+        table = Table(title="Installed skills", box=box.ROUNDED)
+        table.add_column("Skill")
+        table.add_column("Description")
+        table.add_column("Modes")
+        for skill in registry.list():
+            table.add_row(
+                skill.name,
+                skill.description[:120],
+                ", ".join(skill.supported_modes),
+            )
+        console.print(table)
+        return 0
+
+    if args.skill_command == "show":
+        skill = registry.get(args.skill)
+        result = validator.validate(args.skill)
+        table = Table(title="Skill: {}".format(skill.name), box=box.ROUNDED)
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_row("Name", skill.name)
+        table.add_row("Purpose", skill.purpose[:500])
+        table.add_row("Safety", skill.safety_summary[:500])
+        table.add_row("Required inputs", "\n".join(skill.required_inputs))
+        table.add_row("Supported modes", ", ".join(skill.supported_modes))
+        table.add_row("Valid", str(result.valid))
+        if result.errors:
+            table.add_row("Validation errors", "\n".join(result.errors))
+        console.print(table)
+        return 0 if result.valid else 1
+
+    if args.skill_command == "validate":
+        result = validator.validate(args.skill)
+        console.print_json(json.dumps(result.to_dict(), indent=2))
+        return 0 if result.valid else 1
+
+    if args.skill_command == "refresh-knowledge":
+        skill = registry.get(args.skill)
+        path = knowledge.refresh(skill.name)
+        console.print("[green]✓ Refreshed local knowledge cache:[/green] {}".format(path))
+        return 0
+
+    if args.skill_command == "run":
+        skill = registry.get(args.skill)
+        validation = validator.validate(args.skill)
+        if not validation.valid:
+            console.print("[red]Skill validation failed:[/red]")
+            for error in validation.errors:
+                console.print("  - {}".format(escape(error)))
+            return 1
+        if not args.yes and not sys.stdin.isatty():
+            console.print(
+                "[red]Authorization and scope confirmation required. "
+                "Re-run with --yes only for targets you own or are authorized to test.[/red]"
+            )
+            return 2
+        authorized_run = bool(args.yes)
+        if not authorized_run:
+            panel = Panel(
+                "Run only against assets you own or have written authorization for.\n"
+                "Proof-of-control is disabled unless explicitly allowed and confirmed.",
+                title="Skill safety gate",
+                border_style="yellow",
+            )
+            console.print(panel)
+            try:
+                answer = console.input(
+                    "[bold yellow]Confirm authorization and in-scope target {} [y/N]: [/bold yellow]".format(
+                        escape(args.target)
+                    )
+                )
+            except EOFError:
+                console.print(
+                    "\n[red]Authorization confirmation required. Re-run with --yes "
+                    "only for targets you own or are authorized to test.[/red]"
+                )
+                return 2
+            authorized_run = answer.strip().lower() in {"y", "yes"}
+        if not authorized_run:
+            return 2
+        scope_entries = _combined_scope_entries(args)
+        try:
+            result = await SkillRunner().run(
+                skill,
+                SkillRunOptions(
+                    target=args.target,
+                    mode=args.mode,
+                    scope=scope_entries,
+                    authorization_confirmed=True,
+                    scope_confirmed=True,
+                    active_permission=bool(args.active_permission),
+                    proof_of_control_allowed=bool(args.proof_of_control),
+                    proof_of_control_confirmed=bool(args.proof_confirmed),
+                    output_root=args.output,
+                    timeout=args.timeout,
+                ),
+            )
+        except SkillSafetyError as exc:
+            console.print("[red]Safety gate refused run:[/red] {}".format(escape(str(exc))))
+            return 2
+        if result.get("warning"):
+            console.print("[yellow]{}[/yellow]".format(escape(result["warning"])))
+        table = Table(title="Skill run complete", box=box.ROUNDED)
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_row("Skill", result["skill"])
+        table.add_row("Target", result["target"])
+        table.add_row("Mode", result["mode"])
+        table.add_row("Run directory", result["run_dir"])
+        table.add_row("Evidence", result["evidence_path"])
+        table.add_row("Report", result["report_path"])
+        for record in result.get("records", []):
+            table.add_row("Final status", str(record.get("final_status", "")))
+            table.add_row(
+                "Proof performed",
+                str(record.get("proof_performed", False)),
+            )
+        console.print(table)
+        return 0
+
+    return 1
+
+
 def _scan_ai_enabled(args, availability: dict) -> bool:
     if getattr(args, "no_ai", False):
         return False
@@ -1112,12 +1601,12 @@ async def command_doctor(args) -> int:
     load_config()
     checks = []
 
-    def add(name: str, ok: bool, detail: str):
-        checks.append((name, ok, detail))
+    def add(name: str, ok: bool, detail: str, blocking: bool = True):
+        checks.append((name, ok, detail, blocking))
 
     add("Python", sys.version_info >= (3, 10), platform.python_version())
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
-    add("Virtual environment", in_venv, sys.prefix)
+    add("Virtual environment", in_venv, sys.prefix, blocking=False)
     env = config_status()
     add(".env", bool(env.get("env_exists")), env.get("path", ""))
     database = scan_store.status()
@@ -1132,6 +1621,16 @@ async def command_doctor(args) -> int:
     except OSError:
         reports_ok = False
     add("Reports directory", reports_ok, str(report_dir))
+    evidence_dir = ROOT / "evidence"
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        probe = evidence_dir / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        evidence_ok = True
+    except OSError:
+        evidence_ok = False
+    add("Evidence directory writable", evidence_ok, str(evidence_dir))
 
     requirements = {
         "fastapi": "fastapi",
@@ -1165,6 +1664,16 @@ async def command_doctor(args) -> int:
         True,
         "{} available: {}".format(len(available), ", ".join(available) or "none"),
     )
+    try:
+        from core.skills.registry import SkillRegistry
+
+        installed_skills = [skill.name for skill in SkillRegistry().list()]
+        skills_ok = "subdomain-takeover-hunter" in installed_skills
+        skills_detail = ", ".join(installed_skills) or "none"
+    except Exception as exc:
+        skills_ok = False
+        skills_detail = "{}: {}".format(type(exc).__name__, exc)
+    add("Skills installed", skills_ok, skills_detail)
     ai = await _ai_status()
     add(
         "AI provider (optional)",
@@ -1174,16 +1683,30 @@ async def command_doctor(args) -> int:
             ai.get("active_model", "none"),
         ),
     )
-    ollama_enabled = os.getenv("OLLAMA_ENABLED", "0") == "1"
+    ollama = await ollama_health()
     add(
         "Ollama",
         True,
         (
-            "running" if ai.get("ollama_running")
-            else "enabled but unavailable" if ollama_enabled
-            else "not enabled"
+            "{} | model={} | available={} | {} | {}".format(
+                "running" if ollama.get("running") else "not running",
+                ollama.get("model"),
+                ollama.get("model_available"),
+                ollama.get("ram_estimate"),
+                ollama.get("recommendation"),
+            )
         ),
     )
+    if not ollama.get("running"):
+        add(
+            "Ollama setup hint",
+            True,
+            "Install/start Ollama, then run: ollama pull {}".format(
+                ollama.get("model") or "mistral:7b-instruct"
+            ),
+        )
+    elif not ollama.get("model_available"):
+        add("Ollama model", True, ollama.get("setup", "configured model is missing"))
     semgrep_path = ROOT / ".tools" / "semgrep" / "bin" / "semgrep"
     if os.name == "nt":
         semgrep_path = ROOT / ".tools" / "semgrep" / "Scripts" / "semgrep.exe"
@@ -1224,7 +1747,7 @@ async def command_doctor(args) -> int:
             launcher_ok = launcher_path.exists() and "cli.py" in launcher_text
         except OSError:
             launcher_ok = False
-    add("CLI launcher", launcher_ok, launcher or "not found in PATH")
+    add("CLI launcher", launcher_ok, launcher or "not found in PATH", blocking=False)
     add(
         "Dashboard (optional)",
         True,
@@ -1235,13 +1758,19 @@ async def command_doctor(args) -> int:
     table.add_column("Check")
     table.add_column("Result")
     table.add_column("Detail")
-    for name, ok, detail in checks:
-        table.add_row(name, "[green]PASS[/green]" if ok else "[red]FAIL[/red]", str(detail))
+    for name, ok, detail, blocking in checks:
+        if ok:
+            result = "[green]PASS[/green]"
+        elif blocking:
+            result = "[red]FAIL[/red]"
+        else:
+            result = "[yellow]WARN[/yellow]"
+        table.add_row(name, result, str(detail))
     console.print(table)
     console.print(
         "[dim]AI is optional and does not block scanning.[/dim]"
     )
-    return 0 if all(ok for name, ok, _ in checks if name != "Optional external tools") else 1
+    return 0 if all(ok or not blocking for _name, ok, _detail, blocking in checks) else 1
 
 
 async def command_launcher() -> int:
@@ -1345,18 +1874,26 @@ async def command_serve(args, open_browser: bool = False) -> int:
 async def async_main(args) -> int:
     if args.command == "scan":
         return await command_scan(args)
+    if args.command == "benchmark":
+        return await command_benchmark(args)
     if args.command == "watch":
         return await command_watch(args)
     if args.command == "recon":
         return await command_recon(args)
     if args.command == "report":
         return await command_report(args)
+    if args.command == "scope-check":
+        return await command_scope_check(args)
     if args.command == "status":
         return await command_status(args)
     if args.command == "history":
         return await command_history(args)
+    if args.command == "train":
+        return await command_train(args)
     if args.command == "analyze":
         return await command_analyze(args)
+    if args.command == "skills":
+        return await command_skills(args)
     if args.command == "doctor":
         return await command_doctor(args)
     if args.command == "version":

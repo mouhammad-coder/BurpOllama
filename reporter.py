@@ -241,6 +241,13 @@ async def generate_full_report(
             lines.append("| **Rejection Codes** | {} |".format(
                 escape_markdown_table(", ".join(f.get("rejection_reason_codes", [])))
             ))
+        ai_triage = f.get("ai_triage")
+        if isinstance(ai_triage, dict) and ai_triage:
+            lines.append("| **AI** | exploitability={} \\| fp_risk={} \\| {} |".format(
+                escape_markdown_table(ai_triage.get("exploitability", "")),
+                escape_markdown_table(ai_triage.get("false_positive_risk", "")),
+                escape_markdown_table(ai_triage.get("triage_note", "")),
+            ))
         lines.append("")
 
         lines.append("**Description:**")
@@ -491,6 +498,15 @@ def generate_technical_report(target: str, recon_data: dict, findings: list[dict
                 "- **Status:** {}".format(escape_markdown_table(f.get("exploitability_status", ""))),
                 "- **Evidence strength:** {}".format(escape_markdown_table(f.get("evidence_strength", ""))),
                 "- **False positive risk:** {}".format(escape_markdown_table(f.get("false_positive_risk", ""))),
+                *(
+                    ["- **AI:** exploitability={} | fp_risk={} | {}".format(
+                        escape_markdown_table(f.get("ai_triage", {}).get("exploitability", "")),
+                        escape_markdown_table(f.get("ai_triage", {}).get("false_positive_risk", "")),
+                        escape_markdown_table(f.get("ai_triage", {}).get("triage_note", "")),
+                    )]
+                    if isinstance(f.get("ai_triage"), dict) and f.get("ai_triage")
+                    else []
+                ),
                 "- **URL:** `{}`".format(escape_markdown_table(f.get("affected_url", ""))),
                 "- **CWE:** {}".format(escape_markdown_table(f.get("cwe", ""))),
                 "- **OWASP Top 10:** {}".format(escape_markdown_table(f.get("owasp_top_10", ""))),

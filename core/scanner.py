@@ -154,18 +154,32 @@ class Scanner:
                 "or have written permission."
             )
         scope = ScanScope(target, options.allowed_domains)
+        allowed_domains = [
+            ("*." + rule.value if rule.kind == "wildcard" else rule.value)
+            for rule in scope.rules
+            if not rule.excluded and rule.kind in {"host", "wildcard"}
+        ]
+        blocked_domains = [
+            ("*." + rule.value if rule.kind == "wildcard" else rule.value)
+            for rule in scope.rules
+            if rule.excluded and rule.kind in {"host", "wildcard"}
+        ]
+        allowed_url_patterns = [
+            r"^{}".format(re.escape(rule.value.rstrip("/")))
+            for rule in scope.rules
+            if not rule.excluded and rule.kind == "url_prefix"
+        ]
+        blocked_url_patterns = [
+            r"^{}".format(re.escape(rule.value.rstrip("/")))
+            for rule in scope.rules
+            if rule.excluded and rule.kind == "url_prefix"
+        ]
         scope_policy.update(
             {
-                "allowed_domains": scope.allowed_domains,
-                "allowed_url_patterns": (
-                    []
-                    if scope.include_subdomains
-                    else [
-                        r"^https?://{}(?::\d+)?(?:[/?#]|$)".format(
-                            re.escape(scope.allowed_domains[0])
-                        )
-                    ]
-                ),
+                "allowed_domains": allowed_domains,
+                "blocked_domains": blocked_domains,
+                "allowed_url_patterns": allowed_url_patterns,
+                "blocked_url_patterns": blocked_url_patterns,
                 "scan_mode": options.internal_mode,
                 "active_testing_enabled": options.active,
                 "passive_only_mode": not options.active,
