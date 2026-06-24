@@ -48,7 +48,7 @@ from rich.text import Text
 
 from core import __version__
 from core.config import config_status, load_config, ollama_health
-from core.reports import render_report
+from core.reports import REPORT_FILENAMES, render_report
 from core.scanner import scanner
 from core.storage import scan_store
 
@@ -1176,9 +1176,18 @@ async def command_report(args) -> int:
     if not scan:
         raise RuntimeError("Local scan not found: {}".format(args.scan_id))
     body = render_report(scan, args.format)
-    if args.output:
-        Path(args.output).write_text(body, encoding="utf-8")
-        console.print("[green]✓ Saved {}[/green]".format(escape(args.output)))
+    output = args.output
+    if not output and args.format in {"hackerone", "bugcrowd"}:
+        output = str(
+            Path("reports")
+            / str(scan.get("id") or args.scan_id)
+            / REPORT_FILENAMES[args.format]
+        )
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        console.print("[green]✓ Saved {}[/green]".format(escape(str(path))))
     else:
         console.print(body, markup=False)
     return 0

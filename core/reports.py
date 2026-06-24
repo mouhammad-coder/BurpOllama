@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bounty_mode import build_bounty_mode, build_bounty_report
 from reporter import generate_csv_report, generate_json_report, generate_sarif_report
-from scope_policy import scope_policy
 
 
 def _findings(scan: dict) -> list[dict]:
@@ -17,6 +15,141 @@ def _findings(scan: dict) -> list[dict]:
         or scan.get("raw_findings")
         or []
     )
+
+
+def _artifact(finding: dict) -> dict:
+    value = finding.get("evidence_artifact") or {}
+    return value if isinstance(value, dict) else {}
+
+
+def _artifact_value(finding: dict, key: str, fallback: str = "") -> str:
+    artifact = _artifact(finding)
+    value = artifact.get(key)
+    if value is None and isinstance(artifact.get("metadata"), dict):
+        value = artifact["metadata"].get(key)
+    if value is None:
+        value = finding.get(key, fallback)
+    return str(value or fallback)
+
+
+def _artifact_path(finding: dict) -> str:
+    return _artifact_value(finding, "artifact_path", "not available")
+
+
+def _severity(value: str) -> str:
+    normalized = str(value or "Low").strip().lower()
+    return {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+        "info": "Low",
+        "informational": "Low",
+    }.get(normalized, normalized.title() or "Low")
+
+
+def _is_confirmed(finding: dict) -> bool:
+    return str(finding.get("exploitability_status", "")).lower() == "confirmed"
+
+
+def _needs_manual_review(finding: dict) -> bool:
+    return str(finding.get("exploitability_status", "")).lower() in {
+        "candidate",
+        "needs_manual_validation",
+    }
+
+
+def _remediation(finding: dict) -> str:
+    label = " ".join(
+        str(finding.get(key, ""))
+        for key in ("vuln_type", "title")
+    ).lower()
+    indicator = _artifact_value(finding, "matched_indicator", "").strip()
+    header = indicator.split(":", 1)[0].strip() if indicator else "required"
+    if "missing" in label and "header" in label:
+        return "Add the {} response header.".format(header)
+    if "cors" in label:
+        return "Restrict ACAO to trusted origins."
+    if "rate limit" in label or "rate-limit" in label:
+        return "Implement rate limiting on this endpoint."
+    if "ssrf" in label:
+        return "Validate and whitelist server-side URL inputs."
+    if "open redirect" in label or "redirect" in label:
+        return "Validate redirect targets against an allowlist."
+    if "jwt" in label or "alg=none" in label:
+        return "Reject tokens with alg=none."
+    if "cookie" in label or "session" in label:
+        return "Set HttpOnly, Secure, and SameSite on session cookies."
+    return "Validate the vulnerable behavior and apply a targeted server-side fix."
+
+
+def render_marketplace_report(scan: dict, platform: str) -> str:
+    target = str(scan.get("target") or "")
+    findings = _findings(scan)
+    confirmed = [finding for finding in findings if _is_confirmed(finding)]
+    candidates = [finding for finding in findings if not _is_confirmed(finding) and _needs_manual_review(finding)]
+    platform_name = "HackerOne" if platform == "hackerone" else "Bugcrowd"
+    lines = [
+        "# {} Submission Report".format(platform_name),
+        "",
+        "Target: {}".format(target or "not recorded"),
+        "",
+    ]
+    if not confirmed:
+        lines.extend([
+            "No confirmed findings are ready for submission.",
+            "",
+        ])
+    for finding in confirmed:
+        artifact = _artifact(finding)
+        indicator = _artifact_value(finding, "matched_indicator", finding.get("evidence", ""))
+        location = _artifact_value(finding, "indicator_location", "evidence artifact")
+        artifact_path = _artifact_path(finding)
+        vuln_class = str(artifact.get("vuln_class") or finding.get("vuln_type") or "vulnerability")
+        title = str(finding.get("title") or vuln_class)
+        severity = _severity(finding.get("severity", "Low"))
+        impact = str(artifact.get("impact") or finding.get("business_impact") or finding.get("impact") or "Impact requires review.")
+        url = str(finding.get("url") or finding.get("affected_url") or target)
+        lines.extend([
+            "## [{}] {}".format(severity, title),
+            "",
+            "### Summary",
+            "{} was observed at {} with indicator {}.".format(vuln_class, location, indicator),
+            "",
+            "### Severity",
+            severity,
+            "",
+            "### Steps to Reproduce",
+            "1. Navigate to: {}".format(url),
+            "2. Observe: {} in {}".format(indicator, location),
+            "3. Evidence artifact: {}".format(artifact_path),
+            "",
+            "### Impact",
+            impact,
+            "",
+            "### Supporting Evidence",
+            "- Artifact file: {}".format(artifact_path),
+            "- Indicator: {}".format(indicator),
+            "- Location: {}".format(location),
+            "",
+            "### Remediation",
+            _remediation(finding),
+            "",
+        ])
+    if candidates:
+        lines.extend([
+            "## Candidates Requiring Manual Validation",
+            "",
+        ])
+        for finding in candidates:
+            lines.append("- {} | URL: {} | Confidence: {} | Artifact: {}".format(
+                finding.get("title") or finding.get("vuln_type") or "Finding",
+                finding.get("url") or finding.get("affected_url") or target,
+                finding.get("confidence", ""),
+                _artifact_path(finding),
+            ))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def render_report(scan: dict, report_format: str) -> str:
@@ -50,14 +183,7 @@ def render_report(scan: dict, report_format: str) -> str:
             ensure_ascii=False,
         )
     if report_format in {"hackerone", "bugcrowd"}:
-        coverage = analysis.get("coverage_v2") or analysis.get("coverage") or {}
-        bounty = build_bounty_mode(
-            scan,
-            scan.get("scope") or scope_policy.to_dict(),
-            scan.get("session_status", {}),
-            coverage,
-        )
-        return build_bounty_report(bounty, platform=report_format)
+        return render_marketplace_report(scan, report_format)
     raise ValueError("Unsupported report format: {}".format(report_format))
 
 
@@ -66,8 +192,8 @@ REPORT_FILENAMES = {
     "json": "report.json",
     "csv": "report.csv",
     "sarif": "report.sarif",
-    "hackerone": "report-hackerone.md",
-    "bugcrowd": "report-bugcrowd.md",
+    "hackerone": "hackerone-report.md",
+    "bugcrowd": "bugcrowd-report.md",
 }
 
 
