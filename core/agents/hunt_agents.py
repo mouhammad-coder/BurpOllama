@@ -227,8 +227,8 @@ class HuntCoordinatorAgent(BaseAgent):
         from core.agents.rate_limit_agent import RateLimitAgent
         from core.agents.xss_agent import XSSAgent
 
+        await context.scheduler.run("header", lambda: HeaderAgent().execute(context))
         await context.scheduler.gather_safe([
-            ("header", lambda: HeaderAgent().execute(context)),
             ("auth", lambda: AuthAgent().execute(context)),
             (
                 "access-control",

@@ -130,6 +130,13 @@ class HeaderAgent(BaseAgent):
                     )
                     continue
                 context.tested_urls.add(url)
+                context.recon.setdefault("http_observations", []).append({
+                    "url": url,
+                    "status_code": response.status_code,
+                    "headers": dict(response.headers),
+                    "set_cookie_headers": response.headers.get_list("set-cookie"),
+                    "body": response.text[:5000] if response.text else "",
+                })
                 await context.emit(
                     EventType.RESPONSE_RECEIVED,
                     agent=self.name,
