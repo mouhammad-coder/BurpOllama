@@ -124,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", action="store_true", dest="json_output")
     scan.add_argument("--follow", action="store_true")
     scan.add_argument("--output", default="reports")
+    scan.add_argument(
+        "--oob-server",
+        default="",
+        help="Explicit OOB callback URL for authorized bounty/deep SSRF validation.",
+    )
 
     from core.benchmarks import BENCHMARKS
 
@@ -930,6 +935,7 @@ async def command_scan(args) -> int:
         ai_enabled=ai_enabled,
         model=args.model,
         output=args.output,
+        oob_server=args.oob_server,
     )
     prepared["ai"] = {
         **prepared.get("ai", {}),

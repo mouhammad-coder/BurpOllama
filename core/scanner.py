@@ -63,6 +63,7 @@ class ScanOptions:
     api_key: str = ""
     output: str = "reports"
     time_budget: int = 900
+    oob_server: str = ""
 
     def __post_init__(self):
         mode = str(self.mode or "passive").lower()
@@ -132,6 +133,7 @@ class Scanner:
         model: str = "",
         output: str = "reports",
         time_budget: int = 900,
+        oob_server: str = "",
     ) -> dict[str, Any]:
         load_config()
         options = ScanOptions(
@@ -147,6 +149,7 @@ class Scanner:
             api_key=api_key,
             output=output,
             time_budget=time_budget,
+            oob_server=oob_server,
         )
         if options.active and not authorization_confirmed:
             raise PermissionError(
