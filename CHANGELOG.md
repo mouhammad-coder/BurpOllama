@@ -1,3 +1,8 @@
+## v1.1
+- Access control passive observation: IDOR candidates, auth coverage gaps, HTTP method observations
+- Rate limit passive observation and safe 5-request probe
+- All v1.0 features included
+
 ## v1.0
 - Passive auth observation: JWT, cookie flags, OAuth redirect_uri
 - Local AI feedback loop: burpollama train
