@@ -59,6 +59,56 @@ def _artifact_saved(artifact: dict) -> bool:
     ).exists()
 
 
+def _observation_headers(headers: dict | list | None) -> dict[str, str]:
+    if not headers:
+        return {}
+    if isinstance(headers, dict):
+        items = headers.items()
+    else:
+        items = headers
+    return {str(key).lower(): str(value) for key, value in items}
+
+
+def _request_origin(observation: dict) -> str:
+    request_headers = observation.get("request_headers") or observation.get("request") or {}
+    if isinstance(request_headers, dict):
+        for key, value in request_headers.items():
+            if str(key).lower() == "origin":
+                return str(value)
+    elif isinstance(request_headers, list):
+        for key, value in request_headers:
+            if str(key).lower() == "origin":
+                return str(value)
+    headers = observation.get("headers") or {}
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key).lower() == "origin":
+                return str(value)
+    elif isinstance(headers, list):
+        for key, value in headers:
+            if str(key).lower() == "origin":
+                return str(value)
+    return ""
+
+
+def _raw_observation_response(observation: dict, body_limit: int = 2000) -> str:
+    headers = "\n".join(
+        "{}: {}".format(key, value)
+        for key, value in _observation_headers(observation.get("headers")).items()
+    )
+    body = str(observation.get("body") or "")[:body_limit]
+    status = observation.get("status_code") or observation.get("status") or "observed"
+    return "HTTP/1.1 {}\n{}\n\n{}".format(status, headers, body)
+
+
+def _observation_request(observation: dict) -> str:
+    url = str(observation.get("url") or "")
+    method = str(observation.get("method") or "GET").upper()
+    origin = _request_origin(observation)
+    headers = {"Origin": origin} if origin else REQUEST_HEADERS
+    return _raw_request(method, url, headers=headers)
+
+
 class HeaderAgent(BaseAgent):
     name = "header"
     phase = "vulnerability_hunt"
@@ -296,6 +346,7 @@ class HeaderAgent(BaseAgent):
                         "false_positive_risk": "low",
                         "redaction_status": "redacted",
                     }, scan_id=context.scan["id"]))
+        findings.extend(self._cors_findings(context))
         context.raw_findings.extend(findings)
         context.scan["raw_findings"] = context.raw_findings
         for finding in findings:
@@ -307,4 +358,92 @@ class HeaderAgent(BaseAgent):
                 message=finding.get("title", "Header finding"),
                 finding=finding,
             )
+        return findings
+
+    def _cors_findings(self, context: ScanContext) -> list[dict]:
+        findings = []
+        seen = set()
+        for observation in context.recon.get("http_observations", []) or []:
+            if not isinstance(observation, dict):
+                continue
+            url = str(observation.get("url") or "")
+            if not url or not context.scope.allows(url):
+                continue
+            headers = _observation_headers(observation.get("headers"))
+            acao = headers.get("access-control-allow-origin", "").strip()
+            acc = headers.get("access-control-allow-credentials", "").strip().lower()
+            request_origin = _request_origin(observation).strip()
+            status = ""
+            title = ""
+            evidence = ""
+            fp_check = ""
+            confidence = 0
+            if acao == "*" and acc == "true":
+                status = "confirmed"
+                title = "CORS wildcard origin with credentials enabled"
+                evidence = "Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true"
+                fp_check = "Observed spec-invalid wildcard ACAO combined with credentialed CORS."
+                confidence = 98
+            elif acao.lower() == "null":
+                status = "candidate"
+                title = "CORS allows null origin"
+                evidence = "Access-Control-Allow-Origin: null"
+                fp_check = "Observed exact null ACAO value; sandboxed/null-origin scenarios require manual validation."
+                confidence = 72
+            elif request_origin and acao == request_origin and acc == "true" and acao != "*":
+                status = "candidate"
+                title = "CORS reflects request origin with credentials enabled"
+                evidence = "Origin {} reflected in Access-Control-Allow-Origin with credentials".format(request_origin)
+                fp_check = "Observed request Origin reflected exactly with credentialed CORS; allowlist behavior must be validated manually."
+                confidence = 74
+            elif acao == "*":
+                continue
+            else:
+                continue
+            key = (url, title, acao, request_origin)
+            if key in seen:
+                continue
+            seen.add(key)
+            artifact = write_evidence_artifact(
+                context.scan,
+                title=title,
+                url=url,
+                raw_request=_observation_request(observation),
+                raw_response=_raw_observation_response(observation, body_limit=0),
+                matched_indicator=evidence,
+                indicator_location="response headers",
+                agent=self.name,
+                vuln_class="CORS Misconfiguration",
+                impact="Misconfigured CORS can expose authenticated responses to unintended origins.",
+                fp_check=fp_check,
+                confirmed=status == "confirmed",
+                filename_prefix="header-cors",
+                metadata={
+                    "acao": acao,
+                    "allow_credentials": acc,
+                    "request_origin": request_origin,
+                    "status_code": observation.get("status_code") or observation.get("status"),
+                },
+            )
+            saved = _artifact_saved(artifact)
+            final_status = status if saved else "candidate"
+            findings.append(normalize_finding({
+                "source": "passive-header-agent",
+                "vuln_type": "CORS Misconfiguration",
+                "title": title,
+                "severity": "MEDIUM",
+                "confidence": confidence if saved else 45,
+                "url": url,
+                "method": str(observation.get("method") or "PASSIVE").upper(),
+                "description": "Passive CORS header analysis identified a potentially unsafe origin policy.",
+                "evidence": evidence,
+                "evidence_artifact": artifact,
+                "business_impact": "Cross-origin reads may become possible for sensitive responses depending on browser and application behavior.",
+                "remediation": "Use a strict explicit origin allowlist and avoid credentialed cross-origin access unless necessary.",
+                "cwe": "CWE-942",
+                "exploitability_status": final_status,
+                "evidence_strength": "strong" if final_status == "confirmed" else "weak",
+                "false_positive_risk": "low" if final_status == "confirmed" else "medium",
+                "redaction_status": "redacted",
+            }, scan_id=context.scan["id"]))
         return findings
