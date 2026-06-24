@@ -157,7 +157,7 @@ class SkillSystemTests(unittest.TestCase):
                                 skill,
                                 SkillRunOptions(
                                     target="sub.example.com",
-                                    scope=["example.com"],
+                                    scope=["*.example.com"],
                                     authorization_confirmed=True,
                                     scope_confirmed=True,
                                     output_root=temp,

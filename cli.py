@@ -95,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DOMAIN",
         help="Restrict the scan to this domain. Repeat for multiple domains.",
     )
+    scan.add_argument(
+        "--scope-file",
+        help="Plain-text HackerOne/Bugcrowd scope file with includes and ! exclusions.",
+    )
     scan.add_argument("--concurrency", type=int, default=5)
     scan.add_argument("--rate-limit", type=float, default=2.0)
     scan.add_argument("--timeout", type=float, default=10.0)
@@ -159,6 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--scan-id", help="Scan ID to label interactively.")
     train.add_argument("--stats", action="store_true", help="Show feedback dataset stats.")
 
+    scope_check = sub.add_parser("scope-check", help="Check a URL against a scope file.")
+    scope_check.add_argument("--scope-file", required=True)
+    scope_check.add_argument("url")
+
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
     sub.add_parser("history", help="List locally stored scans.")
     sub.add_parser("doctor", help="Diagnose the local CLI installation.")
@@ -197,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_skill.add_argument("--target", required=True)
     run_skill.add_argument("--mode", choices=("passive", "validate", "report"), default="passive")
     run_skill.add_argument("--scope", action="append", default=None)
+    run_skill.add_argument("--scope-file")
     run_skill.add_argument("--yes", action="store_true", help="Confirm authorization and scope non-interactively.")
     run_skill.add_argument("--active-permission", action="store_true")
     run_skill.add_argument("--proof-of-control", action="store_true")
@@ -233,6 +242,19 @@ def normalized_target(value: str) -> str:
     if "://" not in value:
         value = "https://" + value
     return value
+
+
+def _combined_scope_entries(args) -> list[str]:
+    entries = list(getattr(args, "scope", None) or [])
+    scope_file = getattr(args, "scope_file", None)
+    if scope_file:
+        from core.scope import load_scope_file
+
+        loaded, warnings = load_scope_file(scope_file)
+        entries.extend(loaded)
+        for warning in warnings:
+            console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+    return entries
 
 
 def authorized(args, target: str) -> bool:
@@ -886,6 +908,7 @@ async def command_scan(args) -> int:
     target = normalized_target(args.target)
     if not authorized(args, target):
         return 2
+    scope_entries = _combined_scope_entries(args)
     availability = await _ai_status(args.ai_provider, args.model)
     ai_enabled = _scan_ai_enabled(args, availability)
     if args.ai and not availability.get("triage_capable"):
@@ -898,7 +921,7 @@ async def command_scan(args) -> int:
         target,
         args.mode,
         authorization_confirmed=True,
-        allowed_domains=args.scope,
+        allowed_domains=scope_entries,
         concurrency=args.concurrency,
         rate_limit=args.rate_limit,
         timeout=args.timeout,
@@ -1197,6 +1220,17 @@ async def command_history(args) -> int:
             str(scan.get("started_at", "")),
         )
     console.print(table)
+    return 0
+
+
+async def command_scope_check(args) -> int:
+    from core.scope import is_in_scope, load_scope_file
+
+    entries, load_warnings = load_scope_file(args.scope_file)
+    result, _parse_warnings = is_in_scope(args.url, entries)
+    for warning in load_warnings:
+        console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+    console.print("IN SCOPE" if result else "OUT OF SCOPE")
     return 0
 
 
@@ -1499,13 +1533,14 @@ async def command_skills(args) -> int:
             authorized_run = answer.strip().lower() in {"y", "yes"}
         if not authorized_run:
             return 2
+        scope_entries = _combined_scope_entries(args)
         try:
             result = await SkillRunner().run(
                 skill,
                 SkillRunOptions(
                     target=args.target,
                     mode=args.mode,
-                    scope=args.scope,
+                    scope=scope_entries,
                     authorization_confirmed=True,
                     scope_confirmed=True,
                     active_permission=bool(args.active_permission),
@@ -1847,6 +1882,8 @@ async def async_main(args) -> int:
         return await command_recon(args)
     if args.command == "report":
         return await command_report(args)
+    if args.command == "scope-check":
+        return await command_scope_check(args)
     if args.command == "status":
         return await command_status(args)
     if args.command == "history":

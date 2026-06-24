@@ -82,6 +82,7 @@ class HeaderAgent(BaseAgent):
                         phase=self.phase,
                         message="Skipped out-of-scope URL",
                         url=url,
+                        reason="out_of_scope",
                     )
                     continue
                 waited = await context.rate_limiter.acquire()

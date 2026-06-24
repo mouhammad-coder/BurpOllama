@@ -16,6 +16,7 @@ import httpx
 from core.skills.evidence import SkillEvidenceWriter
 from core.skills.knowledge_base import SkillKnowledgeBase
 from core.skills.loader import ROOT, Skill
+from core.scope import is_in_scope
 
 
 RUNS_ROOT = ROOT / "runs" / "skills"
@@ -67,8 +68,9 @@ class SkillRunner:
             raise SkillSafetyError("authorization confirmation is required")
         if not options.scope_confirmed:
             raise SkillSafetyError("scope confirmation is required")
-        scope = [normalize_domain(item) for item in (options.scope or [target])]
-        if not any(target == item or target.endswith("." + item) for item in scope):
+        scope = list(options.scope or [target])
+        in_scope, _warnings = is_in_scope(target, scope)
+        if not in_scope:
             raise SkillSafetyError("target is out of confirmed scope")
         mode = str(options.mode or "passive").lower()
         if mode not in skill.supported_modes:

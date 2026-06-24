@@ -26,12 +26,14 @@ class CoreRuntimeTests(unittest.TestCase):
         self.assertEqual(len(allowed), 1)
         self.assertEqual(len(skipped), 1)
 
-    def test_explicit_scope_includes_subdomains(self):
+    def test_explicit_scope_uses_exact_and_wildcard_rules(self):
         scope = ScanScope(
             "https://app.example.test",
-            ["example.test"],
+            ["app.example.test", "*.example.test"],
         )
         self.assertTrue(scope.allows("https://cdn.example.test/app.js"))
+        self.assertTrue(scope.allows("https://app.example.test/app.js"))
+        self.assertFalse(scope.allows("https://example.test/app.js"))
         self.assertFalse(scope.allows("https://example.invalid/app.js"))
 
     def test_event_bus_delivers_typed_events(self):
