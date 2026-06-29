@@ -1,3 +1,8 @@
+## v1.3
+- GraphQL passive observation and introspection check
+- File upload endpoint passive detection
+- All v1.2 features included
+
 ## v1.2
 - Access control: IDOR candidates, auth coverage gaps
 - Rate limit: passive observation + safe 5-request probe
