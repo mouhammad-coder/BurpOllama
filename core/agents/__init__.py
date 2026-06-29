@@ -20,6 +20,7 @@ from core.agents.rate_limit_agent import RateLimitAgent
 from core.agents.recon_agent import ReconAgent
 from core.agents.report_agent import ReportAgent
 from core.agents.ssrf_agent import SSRFAgent
+from core.agents.upload_agent import UploadAgent
 from core.agents.xss_agent import XSSAgent
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "ReconAgent",
     "ReportAgent",
     "SSRFAgent",
+    "UploadAgent",
     "SPECIALIST_AGENTS",
     "XSSAgent",
 ]
