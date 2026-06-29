@@ -11,6 +11,7 @@ from core.agents.access_control_agent import AccessControlAgent
 from core.agents.auth_agent import AuthAgent
 from core.agents.crawler_agent import CrawlerAgent
 from core.agents.header_agent import HeaderAgent
+from core.agents.graphql_agent import GraphQLAgent
 from core.agents.hunt_agents import HuntCoordinatorAgent, SPECIALIST_AGENTS
 from core.agents.injection_agent import InjectionAgent
 from core.agents.javascript_agent import JavaScriptAgent
@@ -31,6 +32,7 @@ __all__ = [
     "AuthAgent",
     "CrawlerAgent",
     "HeaderAgent",
+    "GraphQLAgent",
     "HuntCoordinatorAgent",
     "InjectionAgent",
     "JavaScriptAgent",
