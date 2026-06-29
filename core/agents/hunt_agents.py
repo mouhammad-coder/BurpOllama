@@ -24,6 +24,13 @@ SPECIALIST_AGENTS = {
     "access-control": {
         "IDOR", "GraphQL Authorization", "Business Logic", "Race Conditions",
     },
+    "graphql": {
+        "GraphQL Endpoint Candidate", "GraphQL Error Observation",
+        "GraphQL Introspection Enabled",
+    },
+    "upload": {
+        "File Upload Endpoint Candidate", "Upload Server Path Disclosure",
+    },
     "open-redirect": {"Open Redirect", "Open Redirect Candidate"},
     "ssrf": {"SSRF Candidate", "SSRF"},
     "injection": {
@@ -75,7 +82,11 @@ class HuntCoordinatorAgent(BaseAgent):
             context.scan.get("ai_strategy", {}).get("priority_classes", [])
         )
         from core.agents.ssrf_agent import SSRFAgent
+        from core.agents.graphql_agent import GraphQLAgent
+        from core.agents.upload_agent import UploadAgent
 
+        await context.scheduler.run("graphql", lambda: GraphQLAgent().execute(context))
+        await context.scheduler.run("upload", lambda: UploadAgent().execute(context))
         await context.scheduler.run("ssrf", lambda: SSRFAgent().execute(context))
         passive_findings = list(context.raw_findings)
 
@@ -229,10 +240,12 @@ class HuntCoordinatorAgent(BaseAgent):
         from core.agents.access_control_agent import AccessControlAgent
         from core.agents.auth_agent import AuthAgent
         from core.agents.header_agent import HeaderAgent
+        from core.agents.graphql_agent import GraphQLAgent
         from core.agents.injection_agent import InjectionAgent
         from core.agents.open_redirect_agent import OpenRedirectAgent
         from core.agents.rate_limit_agent import RateLimitAgent
         from core.agents.ssrf_agent import SSRFAgent
+        from core.agents.upload_agent import UploadAgent
         from core.agents.xss_agent import XSSAgent
 
         await context.scheduler.run("header", lambda: HeaderAgent().execute(context))
@@ -246,6 +259,8 @@ class HuntCoordinatorAgent(BaseAgent):
             ("xss", lambda: XSSAgent().execute(context)),
             ("rate-limit", lambda: RateLimitAgent().execute(context)),
             ("ssrf", lambda: SSRFAgent().execute(context)),
+            ("graphql", lambda: GraphQLAgent().execute(context)),
+            ("upload", lambda: UploadAgent().execute(context)),
             ("open-redirect", lambda: OpenRedirectAgent().execute(context)),
         ])
         context.scan["raw_findings"] = context.raw_findings
