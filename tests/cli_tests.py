@@ -1,6 +1,8 @@
 import io
+import json
 import sys
 import asyncio
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -57,6 +59,10 @@ class CliTests(unittest.TestCase):
             parser.parse_args(["report", "--latest", "--format", "readiness"]).latest
         )
         self.assertTrue(parser.parse_args(["history", "--ready-only"]).ready_only)
+        self.assertTrue(
+            parser.parse_args(["readiness-check", "--latest", "--require-report-ready"]).require_report_ready
+        )
+        self.assertTrue(parser.parse_args(["readiness-check", "--latest", "--json"]).json)
         self.assertEqual(parser.parse_args(["doctor"]).command, "doctor")
         self.assertEqual(parser.parse_args(["serve"]).command, "serve")
         self.assertTrue(
@@ -237,6 +243,131 @@ class CliTests(unittest.TestCase):
             code = asyncio.run(cli.command_report(args))
         self.assertEqual(code, 0)
         self.assertIn("Bounty Readiness Audit", stream.getvalue())
+
+    def test_readiness_check_passes_with_available_report_ready_artifact(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        with tempfile.TemporaryDirectory() as temp:
+            artifact = Path(temp) / "readiness-artifact.json"
+            artifact.write_text("{}", encoding="utf-8")
+
+            class _Store:
+                def get(self, scan_id):
+                    if scan_id != "scan-ready":
+                        raise AssertionError(scan_id)
+                    return {
+                        "target": "https://example.test",
+                        "analysis": {
+                            "zero_fp_gate": {
+                                "valid_bugs": [{
+                                    "title": "Missing CSP",
+                                    "vuln_type": "Header",
+                                    "severity": "MEDIUM",
+                                    "evidence_artifact": {"artifact_path": str(artifact)},
+                                }],
+                                "needs_more_proof": [],
+                                "candidates": [],
+                                "informational": [],
+                            }
+                        },
+                    }
+
+            args = SimpleNamespace(scan_id="scan-ready", latest=False, require_report_ready=True)
+            with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+                code = asyncio.run(cli.command_readiness_check(args))
+        self.assertEqual(code, 0)
+        output = stream.getvalue()
+        self.assertIn("PASS", output)
+        self.assertIn("Missing report-ready artifacts", output)
+
+    def test_readiness_check_fails_when_report_ready_artifact_missing(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def get(self, scan_id):
+                return {
+                    "target": "https://example.test",
+                    "analysis": {
+                        "zero_fp_gate": {
+                            "valid_bugs": [{
+                                "title": "Missing CSP",
+                                "vuln_type": "Header",
+                                "severity": "MEDIUM",
+                                "evidence_artifact": {"artifact_path": "missing-artifact.json"},
+                            }],
+                            "needs_more_proof": [],
+                            "candidates": [],
+                            "informational": [],
+                        }
+                    },
+                }
+
+        args = SimpleNamespace(scan_id="scan-ready", latest=False, require_report_ready=False)
+        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            code = asyncio.run(cli.command_readiness_check(args))
+        self.assertEqual(code, 3)
+        self.assertIn("FAIL", stream.getvalue())
+
+    def test_readiness_check_require_report_ready_fails_on_manual_only_scan(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def get(self, scan_id):
+                return {
+                    "target": "https://example.test",
+                    "analysis": {
+                        "zero_fp_gate": {
+                            "valid_bugs": [],
+                            "needs_more_proof": [{"title": "SSRF candidate"}],
+                            "candidates": [],
+                            "informational": [],
+                        }
+                    },
+                }
+
+        args = SimpleNamespace(scan_id="scan-manual", latest=False, require_report_ready=True)
+        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            code = asyncio.run(cli.command_readiness_check(args))
+        self.assertEqual(code, 3)
+        self.assertIn("no report-ready issues", stream.getvalue())
+
+    def test_readiness_check_writes_json_decision(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def get(self, scan_id):
+                return {
+                    "target": "https://example.test",
+                    "analysis": {
+                        "zero_fp_gate": {
+                            "valid_bugs": [],
+                            "needs_more_proof": [{"title": "SSRF candidate"}],
+                            "candidates": [],
+                            "informational": [],
+                        }
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "readiness.json"
+            args = SimpleNamespace(
+                scan_id="scan-manual",
+                latest=False,
+                require_report_ready=False,
+                json=True,
+                output=str(output),
+            )
+            with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+                code = asyncio.run(cli.command_readiness_check(args))
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["passed"])
+        self.assertEqual(payload["readiness"]["manual_check_findings"], 1)
+        self.assertIn('"passed": true', stream.getvalue())
 
     def test_benchmark_check_reports_unreachable_target(self):
         class _Client:

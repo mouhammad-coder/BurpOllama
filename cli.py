@@ -200,6 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
     history = sub.add_parser("history", help="List locally stored scans.")
     history.add_argument("--ready-only", action="store_true", help="Only show scans with report-ready or manual-check findings.")
     history.add_argument("--limit", type=int, default=100)
+    readiness_check = sub.add_parser("readiness-check", help="Exit nonzero unless a scan has actionable bounty output.")
+    readiness_check.add_argument("--scan-id")
+    readiness_check.add_argument("--latest", action="store_true", help="Use the most recent stored scan.")
+    readiness_check.add_argument(
+        "--require-report-ready",
+        action="store_true",
+        help="Fail unless at least one report-ready issue exists.",
+    )
+    readiness_check.add_argument("--json", action="store_true", help="Print the readiness decision as JSON.")
+    readiness_check.add_argument("--output", help="Write the readiness decision JSON to a file.")
     sub.add_parser("doctor", help="Diagnose the local CLI installation.")
     sub.add_parser("version", help="Print the BurpOllama version.")
 
@@ -967,9 +977,32 @@ def _scan_readiness_summary(scan: dict) -> dict:
         ))
     return {
         "report_ready_issues": len(issue_keys),
+        "report_ready_findings": len(valid),
         "manual_check_findings": len(manual),
         "proof_blocked_findings": len(proof_blocked),
+        "missing_report_ready_artifacts": _missing_report_ready_artifacts(valid),
     }
+
+
+def _finding_artifact_path(finding: dict) -> str:
+    artifact = finding.get("evidence_artifact") or {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    path = artifact.get("artifact_path")
+    if path is None and isinstance(artifact.get("metadata"), dict):
+        path = artifact["metadata"].get("artifact_path")
+    if path is None:
+        path = finding.get("artifact_path", "")
+    return str(path or "").strip()
+
+
+def _missing_report_ready_artifacts(findings: list[dict]) -> int:
+    missing = 0
+    for finding in findings:
+        path = _finding_artifact_path(finding)
+        if not path or not Path(path).exists():
+            missing += 1
+    return missing
 
 
 async def command_scan(args) -> int:
@@ -1379,6 +1412,55 @@ async def command_history(args) -> int:
     return 0
 
 
+async def command_readiness_check(args) -> int:
+    scan_id = _resolve_scan_id(args)
+    scan = scan_store.get(scan_id)
+    if not scan:
+        raise RuntimeError("Local scan not found: {}".format(scan_id))
+    readiness = _scan_readiness_summary(scan)
+    reason = ""
+    if readiness["missing_report_ready_artifacts"]:
+        reason = "report-ready findings are missing evidence artifacts"
+    elif getattr(args, "require_report_ready", False) and not readiness["report_ready_issues"]:
+        reason = "no report-ready issues found"
+    elif not (readiness["report_ready_issues"] or readiness["manual_check_findings"]):
+        reason = "no report-ready or manual-check findings found"
+    passed = not reason
+    decision = {
+        "scan_id": scan_id,
+        "target": str(scan.get("target", "")),
+        "passed": passed,
+        "reason": reason or "scan has actionable bounty output",
+        "require_report_ready": bool(getattr(args, "require_report_ready", False)),
+        "readiness": readiness,
+    }
+    if getattr(args, "output", None):
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
+    if getattr(args, "json", False):
+        console.print(json.dumps(decision, indent=2, sort_keys=True))
+    else:
+        table = Table(title="Readiness check", box=box.ROUNDED)
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Scan ID", scan_id)
+        table.add_row("Target", decision["target"])
+        table.add_row("Report-ready issues", str(readiness["report_ready_issues"]))
+        table.add_row("Report-ready findings", str(readiness["report_ready_findings"]))
+        table.add_row("Manual-check findings", str(readiness["manual_check_findings"]))
+        table.add_row("Proof-blocked findings", str(readiness["proof_blocked_findings"]))
+        table.add_row("Missing report-ready artifacts", str(readiness["missing_report_ready_artifacts"]))
+        console.print(table)
+        if passed:
+            console.print("[green]PASS[/green] {}".format(decision["reason"]))
+        else:
+            console.print("[red]FAIL[/red] {}.".format(decision["reason"]))
+        if getattr(args, "output", None):
+            console.print("[green]✓ Wrote readiness decision {}[/green]".format(escape(str(args.output))))
+    return 0 if passed else 3
+
+
 async def command_scope_check(args) -> int:
     from core.scope import audit_scope, is_in_scope, load_scope_file
 
@@ -1484,6 +1566,7 @@ def _scope_preflight_runbook(target: str, scope_file: str) -> list[str]:
     return [
         scan_command,
         "python cli.py report --latest --format readiness",
+        "python cli.py readiness-check --latest",
         "python cli.py history --ready-only --limit 20",
     ]
 
@@ -2146,6 +2229,8 @@ async def async_main(args) -> int:
         return await command_status(args)
     if args.command == "history":
         return await command_history(args)
+    if args.command == "readiness-check":
+        return await command_readiness_check(args)
     if args.command == "train":
         return await command_train(args)
     if args.command == "analyze":
