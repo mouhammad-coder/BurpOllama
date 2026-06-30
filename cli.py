@@ -176,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--scan-id", required=True)
     report.add_argument(
         "--format",
-        choices=("markdown", "hackerone", "bugcrowd", "json", "csv", "sarif"),
+        choices=("markdown", "hackerone", "bugcrowd", "json", "csv", "sarif", "readiness"),
         default="markdown",
     )
     report.add_argument("--output")

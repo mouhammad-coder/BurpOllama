@@ -97,11 +97,13 @@ burpollama recon https://authorized.example --mode deep
 burpollama report --scan-id <scan-id>
 burpollama report --scan-id <scan-id> --format hackerone
 burpollama report --scan-id <scan-id> --format bugcrowd
+burpollama report --scan-id <scan-id> --format readiness
 burpollama report --scan-id <scan-id> --format sarif --output results.sarif
 ```
 
-Available formats are `markdown`, `hackerone`, `bugcrowd`, `json`, `csv`, and
-`sarif`.
+Available formats are `markdown`, `hackerone`, `bugcrowd`, `json`, `csv`,
+`sarif`, and `readiness`. The readiness audit summarizes report-ready issues,
+manual-check findings, and proof blockers before you decide what to submit.
 
 ## Operations
 

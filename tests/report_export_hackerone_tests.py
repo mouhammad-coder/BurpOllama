@@ -95,6 +95,36 @@ class ReportExportHackerOneTests(unittest.TestCase):
         self.assertIn("Additional artifacts:", body)
         self.assertIn("evidence/scan/header-csp-account.json", body)
 
+    def test_readiness_report_summarizes_ready_and_manual_check_work(self):
+        ready_one = _finding()
+        ready_two = _finding()
+        ready_two["id"] = "finding-2"
+        ready_two["url"] = "https://example.com/account"
+        manual = _finding("candidate", "SSRF-prone parameter observed")
+        manual["zero_fp_failed_checks"] = ["exploitability_not_confirmed_or_probable"]
+        scan = _scan([ready_one, ready_two, manual])
+        scan["analysis"] = {
+            "zero_fp_gate": {
+                "valid_bugs": [ready_one, ready_two],
+                "needs_more_proof": [manual],
+                "candidates": [],
+                "informational": [],
+                "false_positives_removed": [{"title": "Duplicate"}],
+                "skipped_out_of_scope": [],
+            }
+        }
+
+        body = render_report(scan, "readiness")
+
+        self.assertIn("# Bounty Readiness Audit", body)
+        self.assertIn("- Report-ready issues: 1", body)
+        self.assertIn("- Report-ready findings: 2", body)
+        self.assertIn("- Manual-check findings: 1", body)
+        self.assertIn("- Removed/out-of-scope findings: 1", body)
+        self.assertIn("- Grouped findings: 2", body)
+        self.assertIn("SSRF-prone parameter observed", body)
+        self.assertIn("exploitability_not_confirmed_or_probable", body)
+
     def test_candidates_section_lists_unconfirmed_findings(self):
         candidate = _finding("needs_manual_validation", "Open redirect candidate parameter observed")
         candidate["confidence"] = 70

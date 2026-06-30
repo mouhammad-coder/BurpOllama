@@ -215,6 +215,89 @@ def _marketplace_buckets(scan: dict) -> tuple[list[dict], list[dict]]:
     )
 
 
+def render_readiness_report(scan: dict) -> str:
+    target = str(scan.get("target") or "not recorded")
+    gated = _proof_gate(scan)
+    confirmed, candidates = _marketplace_buckets(scan)
+    confirmed_groups = _marketplace_issue_groups(confirmed)
+    summary = {
+        "report_ready_issues": len(confirmed_groups),
+        "report_ready_findings": len(confirmed),
+        "manual_check_findings": len(candidates),
+        "removed_or_out_of_scope": len(gated.get("false_positives_removed", []) or [])
+        + len(gated.get("skipped_out_of_scope", []) or []),
+    }
+    if gated:
+        summary.update({
+            "needs_more_proof": len(gated.get("needs_more_proof", []) or []),
+            "candidates": len(gated.get("candidates", []) or []),
+            "informational": len(gated.get("informational", []) or []),
+        })
+
+    lines = [
+        "# Bounty Readiness Audit",
+        "",
+        "Target: {}".format(target),
+        "",
+        "## Summary",
+        "",
+        "- Report-ready issues: {}".format(summary["report_ready_issues"]),
+        "- Report-ready findings: {}".format(summary["report_ready_findings"]),
+        "- Manual-check findings: {}".format(summary["manual_check_findings"]),
+        "- Removed/out-of-scope findings: {}".format(summary["removed_or_out_of_scope"]),
+    ]
+    if gated:
+        lines.extend([
+            "- Needs more proof: {}".format(summary["needs_more_proof"]),
+            "- Candidate findings: {}".format(summary["candidates"]),
+            "- Informational findings: {}".format(summary["informational"]),
+        ])
+
+    lines.extend(["", "## Report-Ready Issues", ""])
+    if not confirmed_groups:
+        lines.extend([
+            "No findings are currently ready for bounty submission.",
+            "",
+        ])
+    for group in confirmed_groups:
+        finding = group["primary"]
+        urls = _group_urls(group, target)
+        lines.extend([
+            "### [{}] {}".format(
+                _severity(finding.get("severity", "Low")),
+                finding.get("title") or finding.get("vuln_type") or "Finding",
+            ),
+            "",
+            "- Grouped findings: {}".format(len(group.get("findings", []))),
+            "- Affected URLs: {}".format(len(urls)),
+            "- Primary URL: {}".format(urls[0] if urls else target),
+            "- Evidence: {}".format(_artifact_path(finding)),
+            "",
+        ])
+
+    lines.extend(["## Manual-Check Queue", ""])
+    if not candidates:
+        lines.extend(["No manual-check findings remain.", ""])
+    for finding in candidates[:25]:
+        lines.extend([
+            "### {}".format(finding.get("title") or finding.get("vuln_type") or "Finding"),
+            "",
+            "- Severity: {}".format(_severity(finding.get("severity", "Low"))),
+            "- URL: {}".format(finding.get("url") or finding.get("affected_url") or target),
+            "- Artifact: {}".format(_artifact_path(finding)),
+            "- Blockers: {}".format(_manual_blockers(finding)),
+            "",
+        ])
+    if len(candidates) > 25:
+        lines.extend([
+            "{} additional manual-check finding(s) omitted from this audit.".format(
+                len(candidates) - 25
+            ),
+            "",
+        ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _remediation(finding: dict) -> str:
     label = " ".join(
         str(finding.get(key, ""))
@@ -375,6 +458,8 @@ def render_report(scan: dict, report_format: str) -> str:
             indent=2,
             ensure_ascii=False,
         )
+    if report_format == "readiness":
+        return render_readiness_report(scan)
     if report_format in {"hackerone", "bugcrowd"}:
         return render_marketplace_report(scan, report_format)
     raise ValueError("Unsupported report format: {}".format(report_format))
