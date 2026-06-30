@@ -15,6 +15,65 @@ classes, optional AI triage, proof validation, and bounty-ready reports.</b>
 
 ---
 
+## Bug Bounty Readiness
+
+BurpOllama is ready to use as a CLI-first helper for authorized bug bounty
+programs. It has been exercised end-to-end on an explicitly authorized live
+program target and produced:
+
+- report-ready issue groups with durable evidence artifacts
+- manual-check findings with safe validation steps
+- HackerOne/Bugcrowd-ready report drafts
+- a machine-readable readiness decision that passes only when actionable output
+  exists and report-ready evidence files are present
+
+It is not a magic submit button. Program policy still decides what is eligible,
+and low-context findings such as public admin routes, login pages, rate-limit
+signals, or cookie observations should be manually reviewed before submission.
+
+Recommended authorized-program workflow:
+
+```bash
+# 1. Write or import the exact program scope.
+printf "example.com\n*.example.com\n" > scope.txt
+
+# 2. Verify that the target is in scope and generate the CLI runbook.
+burpollama scope-check --scope-file scope.txt \
+  --audit --target https://www.example.com \
+  --write-manifest preflight.json
+
+# 3. Run the bounded passive scan from the runbook.
+burpollama scan https://www.example.com --mode passive --yes \
+  --scope-file scope.txt \
+  --max-urls 100 --time-budget 900 \
+  --no-ai --no-external-tools \
+  --output reports/authorized-program
+
+# 4. Review bounty readiness and marketplace report drafts.
+burpollama report --latest --format readiness
+burpollama report --latest --format hackerone
+
+# 5. Enforce a pass/fail gate for CI or manual workflow.
+burpollama readiness-check --latest \
+  --json --output reports/authorized-program/readiness-decision.json
+```
+
+Use `--require-report-ready` when you want the gate to fail unless at least one
+report-ready issue exists:
+
+```bash
+burpollama readiness-check --latest --require-report-ready
+```
+
+Exit codes:
+
+- `0`: actionable output exists and report-ready artifacts are present
+- `3`: no actionable findings, no report-ready issues when required, or missing
+  report-ready artifacts
+
+Always run only against assets you own or where you have explicit written
+authorization, and keep generated evidence private.
+
 ## Terminal First
 
 BurpOllama now puts the terminal first. Start an authorized scan and watch the
@@ -76,6 +135,7 @@ BurpOllama runs locally and:
 - Scores findings with official CVSS 4.0 and business-aware impact scoring
 - Builds exploit chains connecting related vulnerabilities
 - Exports HackerOne, Bugcrowd, Markdown, JSON, CSV, and SARIF reports
+- Writes readiness audits and pass/fail readiness decision manifests
 - Works with Ollama, Gemini, OpenAI, Anthropic, other compatible providers, or no AI
 
 **No mandatory cloud dependency. No mandatory AI key. Runs on your machine.**
@@ -102,8 +162,12 @@ BurpOllama runs locally and:
 | `burpollama doctor` | Diagnose Python, packages, tools, storage, AI, and launcher |
 | `burpollama version` | Print the installed version |
 | `burpollama history` | List scans stored in local SQLite |
+| `burpollama history --ready-only` | List scans with report-ready/manual-check output |
 | `burpollama report --scan-id <id>` | Print the completed report |
+| `burpollama report --latest --format readiness` | Print the latest bounty readiness audit |
 | `burpollama report --scan-id <id> --format hackerone` | Export HackerOne format |
+| `burpollama readiness-check --latest` | Exit nonzero unless actionable bounty output exists |
+| `burpollama readiness-check --latest --require-report-ready` | Require at least one report-ready issue |
 | `burpollama validate "IDOR on /api/users/{id}"` | Classify a finding candidate |
 | `burpollama analyze --file traffic.json` | Analyze captured Burp traffic |
 | `burpollama serve` | Start the optional FastAPI dashboard |

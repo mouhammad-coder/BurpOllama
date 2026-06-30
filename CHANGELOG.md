@@ -1,3 +1,12 @@
+## v1.4
+- CLI bug bounty readiness workflow verified on an explicitly authorized live program target
+- `scope-check --audit` now emits a CLI runbook for safe passive scan, readiness report, readiness gate, and ready-only history
+- `report --latest` and `history --ready-only` shortcuts for faster report triage
+- Readiness reports show missing report-ready artifact counts and artifact availability
+- New `readiness-check` CLI gate with JSON/output support and nonzero failure codes for automation
+- Evidence artifacts are ignored by default so private scan data is not committed accidentally
+- All v1.3 features included
+
 ## v1.3
 - GraphQL passive observation and introspection check
 - File upload endpoint passive detection

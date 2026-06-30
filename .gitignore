@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build/
 reports/
+evidence/
 data/feedback.jsonl
 .DS_Store
 *.log

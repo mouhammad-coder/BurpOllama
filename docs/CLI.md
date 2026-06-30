@@ -42,7 +42,9 @@ burpollama scope-check --scope-file scope.txt --audit --target https://api.autho
 ```
 
 The audit prints included/excluded rule counts, target scope status, and a safe
-passive scan command when the target is in scope.
+passive scan command when the target is in scope. When `--write-manifest` is
+provided, it also writes a `cli_runbook` with the scan, readiness report,
+readiness gate, and ready-only history commands.
 
 You can also normalize a saved HackerOne/Bugcrowd-style program JSON export
 before scanning:
@@ -132,7 +134,55 @@ burpollama report --scan-id <scan-id> --format sarif --output results.sarif
 
 Available formats are `markdown`, `hackerone`, `bugcrowd`, `json`, `csv`,
 `sarif`, and `readiness`. The readiness audit summarizes report-ready issues,
-manual-check findings, and proof blockers before you decide what to submit.
+manual-check findings, missing report-ready artifacts, and proof blockers
+before you decide what to submit.
+
+Use `--latest` to work with the most recent stored scan:
+
+```bash
+burpollama report --latest --format readiness
+burpollama report --latest --format hackerone
+```
+
+## Bug bounty readiness gate
+
+`readiness-check` is the CLI pass/fail gate for authorized program work. It is
+designed for the final step after a bounded scan:
+
+```bash
+burpollama readiness-check --latest
+burpollama readiness-check --latest --require-report-ready
+burpollama readiness-check --latest --json --output readiness-decision.json
+```
+
+The command exits `0` when the scan has actionable report-ready or manual-check
+output and all report-ready evidence artifacts exist. It exits `3` when:
+
+- no report-ready or manual-check findings exist
+- `--require-report-ready` is used and no report-ready issue exists
+- a report-ready finding references a missing evidence artifact
+
+The JSON output contains:
+
+```json
+{
+  "passed": true,
+  "reason": "scan has actionable bounty output",
+  "scan_id": "scan-id",
+  "target": "https://authorized.example",
+  "readiness": {
+    "report_ready_issues": 1,
+    "report_ready_findings": 1,
+    "manual_check_findings": 3,
+    "proof_blocked_findings": 2,
+    "missing_report_ready_artifacts": 0
+  }
+}
+```
+
+Use the gate as a hard stop before spending time writing a report. A passing
+gate means the scan produced something actionable; it does not replace program
+policy review or manual validation of low-context findings.
 
 ## Operations
 
@@ -141,6 +191,7 @@ burpollama status
 burpollama doctor
 burpollama version
 burpollama history
+burpollama history --ready-only --limit 20
 burpollama validate "IDOR on /api/users/{id}" --url https://authorized.example/api/users/1
 burpollama analyze --file captured-traffic.json
 ```
