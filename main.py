@@ -3377,14 +3377,26 @@ async def get_findings(severity: Optional[str]=None, verdict: Optional[str]=None
 async def get_finding_buckets(scan_id: str):
     findings = [f for f in findings_store if f.get("scan_id") == scan_id]
     scan = scans.get(scan_id, {})
+    if not findings and scan:
+        findings = (
+            scan.get("triaged_findings")
+            or scan.get("raw_findings")
+            or scan.get("findings")
+            or []
+        )
     chain_data = (
         scan.get("exploit_chains")
         or scan.get("analysis", {}).get("exploit_chains")
         or build_exploit_chains(findings)
     )
+    scope = (
+        scan.get("scope")
+        or scan.get("scope_snapshot")
+        or scope_policy.to_dict()
+    )
     gated = apply_zero_fp_gate(
         findings,
-        scope_policy.to_dict(),
+        scope,
         chain_data,
         tech_stack=scan.get("recon", {}).get("tech_stack", []),
         scan_context={"recon": scan.get("recon", {})},

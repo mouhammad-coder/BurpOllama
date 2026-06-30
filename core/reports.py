@@ -17,6 +17,40 @@ def _findings(scan: dict) -> list[dict]:
     )
 
 
+def _proof_gate(scan: dict) -> dict:
+    analysis = scan.get("analysis") or {}
+    gated = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else {}
+    return gated if isinstance(gated, dict) else {}
+
+
+def _structured_findings(scan: dict) -> list[dict]:
+    gated = _proof_gate(scan)
+    if gated:
+        return (
+            list(gated.get("valid_bugs", []) or [])
+            + list(gated.get("needs_more_proof", []) or [])
+            + list(gated.get("candidates", []) or [])
+            + list(gated.get("informational", []) or [])
+            + list(gated.get("false_positives_removed", []) or [])
+            + list(gated.get("skipped_out_of_scope", []) or [])
+        )
+    if "confirmed_findings" in scan or "candidate_findings" in scan:
+        return (
+            list(scan.get("confirmed_findings") or [])
+            + list(scan.get("candidate_findings") or [])
+        )
+    return _findings(scan)
+
+
+def _sarif_findings(scan: dict) -> list[dict]:
+    gated = _proof_gate(scan)
+    if gated:
+        return list(gated.get("valid_bugs", []) or [])
+    if "confirmed_findings" in scan:
+        return list(scan.get("confirmed_findings") or [])
+    return _findings(scan)
+
+
 def _artifact(finding: dict) -> dict:
     value = finding.get("evidence_artifact") or {}
     return value if isinstance(value, dict) else {}
@@ -34,6 +68,67 @@ def _artifact_value(finding: dict, key: str, fallback: str = "") -> str:
 
 def _artifact_path(finding: dict) -> str:
     return _artifact_value(finding, "artifact_path", "not available")
+
+
+def _artifact_available(path: str) -> bool:
+    value = str(path or "").strip()
+    return bool(value and value != "not available" and Path(value).exists())
+
+
+def _manual_validation_steps(finding: dict) -> list[str]:
+    for key in ("safe_manual_validation_steps", "reproduction_steps"):
+        value = finding.get(key)
+        if isinstance(value, list):
+            steps = [str(step).strip() for step in value if str(step).strip()]
+            if steps:
+                return steps
+        text = str(value or "").strip()
+        if text:
+            return [
+                line.strip(" -\t")
+                for line in text.splitlines()
+                if line.strip(" -\t")
+            ]
+    return [
+        "Validate only within the authorized program scope.",
+        "Reproduce with a low-rate request using test accounts or approved data.",
+        "Do not access, modify, or exfiltrate real user data.",
+    ]
+
+
+def _reproduction_steps(
+    finding: dict,
+    url: str,
+    indicator: str,
+    location: str,
+    artifact_path: str,
+) -> list[str]:
+    value = finding.get("reproduction_steps")
+    if isinstance(value, list):
+        steps = [str(step).strip() for step in value if str(step).strip()]
+        if steps:
+            return steps
+    text = str(value or "").strip()
+    if text:
+        steps = [
+            line.strip(" -\t")
+            for line in text.splitlines()
+            if line.strip(" -\t")
+        ]
+        if steps:
+            return steps
+    return [
+        "Navigate to: {}".format(url),
+        "Observe: {} in {}".format(indicator, location),
+        "Review evidence artifact: {}".format(artifact_path),
+    ]
+
+
+def _manual_blockers(finding: dict) -> str:
+    reasons = finding.get("zero_fp_failed_checks") or finding.get("rejection_reason_codes") or []
+    if isinstance(reasons, str):
+        reasons = [item.strip() for item in reasons.split(",") if item.strip()]
+    return ", ".join(str(reason) for reason in reasons if str(reason).strip()) or "manual validation required"
 
 
 def _severity(value: str) -> str:
@@ -56,7 +151,32 @@ def _needs_manual_review(finding: dict) -> bool:
     return str(finding.get("exploitability_status", "")).lower() in {
         "candidate",
         "needs_manual_validation",
+        "probable",
     }
+
+
+def _marketplace_buckets(scan: dict) -> tuple[list[dict], list[dict]]:
+    gated = _proof_gate(scan)
+    if gated:
+        return (
+            list(gated.get("valid_bugs", []) or []),
+            list(gated.get("needs_more_proof", []) or [])
+            + list(gated.get("candidates", []) or [])
+            + list(gated.get("informational", []) or []),
+        )
+    if "confirmed_findings" in scan or "candidate_findings" in scan:
+        return (
+            list(scan.get("confirmed_findings") or []),
+            list(scan.get("candidate_findings") or []),
+        )
+    findings = _findings(scan)
+    return (
+        [finding for finding in findings if _is_confirmed(finding)],
+        [
+            finding for finding in findings
+            if not _is_confirmed(finding) and _needs_manual_review(finding)
+        ],
+    )
 
 
 def _remediation(finding: dict) -> str:
@@ -85,9 +205,7 @@ def _remediation(finding: dict) -> str:
 
 def render_marketplace_report(scan: dict, platform: str) -> str:
     target = str(scan.get("target") or "")
-    findings = _findings(scan)
-    confirmed = [finding for finding in findings if _is_confirmed(finding)]
-    candidates = [finding for finding in findings if not _is_confirmed(finding) and _needs_manual_review(finding)]
+    confirmed, candidates = _marketplace_buckets(scan)
     platform_name = "HackerOne" if platform == "hackerone" else "Bugcrowd"
     lines = [
         "# {} Submission Report".format(platform_name),
@@ -110,6 +228,13 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
         severity = _severity(finding.get("severity", "Low"))
         impact = str(artifact.get("impact") or finding.get("business_impact") or finding.get("impact") or "Impact requires review.")
         url = str(finding.get("url") or finding.get("affected_url") or target)
+        reproduction_steps = _reproduction_steps(
+            finding,
+            url,
+            indicator,
+            location,
+            artifact_path,
+        )
         lines.extend([
             "## [{}] {}".format(severity, title),
             "",
@@ -120,14 +245,16 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
             severity,
             "",
             "### Steps to Reproduce",
-            "1. Navigate to: {}".format(url),
-            "2. Observe: {} in {}".format(indicator, location),
-            "3. Evidence artifact: {}".format(artifact_path),
+        ])
+        for index, step in enumerate(reproduction_steps, start=1):
+            lines.append("{}. {}".format(index, step))
+        lines.extend([
             "",
             "### Impact",
             impact,
             "",
             "### Supporting Evidence",
+            "- Evidence artifact: {}".format(artifact_path),
             "- Artifact file: {}".format(artifact_path),
             "- Indicator: {}".format(indicator),
             "- Location: {}".format(location),
@@ -142,12 +269,24 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
             "",
         ])
         for finding in candidates:
-            lines.append("- {} | URL: {} | Confidence: {} | Artifact: {}".format(
+            artifact_path = _artifact_path(finding)
+            artifact_status = "available" if _artifact_available(artifact_path) else "missing"
+            lines.append("### {}".format(
                 finding.get("title") or finding.get("vuln_type") or "Finding",
-                finding.get("url") or finding.get("affected_url") or target,
-                finding.get("confidence", ""),
-                _artifact_path(finding),
             ))
+            lines.extend([
+                "",
+                "- URL: {}".format(finding.get("url") or finding.get("affected_url") or target),
+                "- Status: {}".format(finding.get("exploitability_status", "")),
+                "- Confidence: {}".format(finding.get("confidence", "")),
+                "- Artifact: {} ({})".format(artifact_path, artifact_status),
+                "- Why not report-ready: {}".format(_manual_blockers(finding)),
+                "",
+                "Safe manual validation:",
+            ])
+            for index, step in enumerate(_manual_validation_steps(finding), start=1):
+                lines.append("{}. {}".format(index, step))
+            lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -164,7 +303,7 @@ def render_report(scan: dict, report_format: str) -> str:
             generate_json_report(
                 scan.get("target", ""),
                 recon,
-                findings,
+                _structured_findings(scan),
                 analysis,
                 scope=scan.get("scope") or scan.get("scope_snapshot") or {},
             ),
@@ -172,12 +311,12 @@ def render_report(scan: dict, report_format: str) -> str:
             ensure_ascii=False,
         )
     if report_format == "csv":
-        return generate_csv_report(findings)
+        return generate_csv_report(_structured_findings(scan))
     if report_format == "sarif":
         return json.dumps(
             generate_sarif_report(
                 scan.get("target", ""),
-                findings,
+                _sarif_findings(scan),
             ),
             indent=2,
             ensure_ascii=False,

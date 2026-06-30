@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import asyncio
+import json
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
 import cli
 from core.reports import render_report, write_report_bundle
+from reporter import generate_full_report
 
 
 def _finding(status="confirmed", title="Missing content-security-policy"):
@@ -19,6 +22,15 @@ def _finding(status="confirmed", title="Missing content-security-policy"):
         "confidence": 94,
         "url": "https://example.com",
         "exploitability_status": status,
+        "reproduction_steps": [
+            "Send GET / with an authorized test session.",
+            "Inspect the response headers.",
+            "Confirm the content-security-policy header is absent.",
+        ],
+        "safe_manual_validation_steps": [
+            "Validate only within authorized scope.",
+            "Reproduce with a low-rate request.",
+        ],
         "evidence_artifact": {
             "artifact_path": "evidence/scan/header-csp.json",
             "matched_indicator": "content-security-policy",
@@ -43,6 +55,8 @@ class ReportExportHackerOneTests(unittest.TestCase):
         self.assertIn("## [Medium] Missing content-security-policy", body)
         self.assertIn("### Summary", body)
         self.assertIn("### Steps to Reproduce", body)
+        self.assertIn("1. Send GET / with an authorized test session.", body)
+        self.assertIn("3. Confirm the content-security-policy header is absent.", body)
         self.assertIn("### Supporting Evidence", body)
         self.assertIn("Add the content-security-policy response header.", body)
 
@@ -54,11 +68,113 @@ class ReportExportHackerOneTests(unittest.TestCase):
     def test_candidates_section_lists_unconfirmed_findings(self):
         candidate = _finding("needs_manual_validation", "Open redirect candidate parameter observed")
         candidate["confidence"] = 70
+        candidate["zero_fp_failed_checks"] = ["exploitability_not_confirmed_or_probable"]
         body = render_report(_scan([_finding(), candidate]), "hackerone")
         self.assertIn("## Candidates Requiring Manual Validation", body)
         self.assertIn("Open redirect candidate parameter observed", body)
         self.assertIn("Confidence: 70", body)
+        self.assertIn("Artifact: evidence/scan/header-csp.json (missing)", body)
+        self.assertIn("Why not report-ready: exploitability_not_confirmed_or_probable", body)
+        self.assertIn("Safe manual validation:", body)
+        self.assertIn("1. Validate only within authorized scope.", body)
         self.assertEqual(body.count("### Summary"), 1)
+
+    def test_marketplace_report_uses_proof_gated_buckets_when_available(self):
+        blocked = _finding("confirmed", "SQL Injection without artifact proof")
+        scan = _scan([blocked])
+        scan["confirmed_findings"] = []
+        scan["candidate_findings"] = [blocked]
+        body = render_report(scan, "hackerone")
+        self.assertIn("No confirmed findings are ready for submission.", body)
+        self.assertIn("## Candidates Requiring Manual Validation", body)
+        self.assertIn("SQL Injection without artifact proof", body)
+        self.assertNotIn("## [Medium] SQL Injection without artifact proof", body)
+
+    def test_marketplace_report_uses_analysis_zero_fp_gate_when_top_level_buckets_absent(self):
+        ready = _finding("confirmed", "Report-ready header finding")
+        ready["zero_fp_label"] = "READY"
+        blocked = _finding("confirmed", "Manual-check header finding")
+        blocked["zero_fp_label"] = "NEEDS PROOF"
+        scan = _scan([ready, blocked])
+        scan["analysis"] = {
+            "zero_fp_gate": {
+                "valid_bugs": [ready],
+                "needs_more_proof": [blocked],
+                "candidates": [],
+                "informational": [],
+                "false_positives_removed": [],
+                "skipped_out_of_scope": [],
+            }
+        }
+        body = render_report(scan, "hackerone")
+        self.assertIn("## [Medium] Report-ready header finding", body)
+        self.assertIn("## Candidates Requiring Manual Validation", body)
+        self.assertIn("Manual-check header finding", body)
+        self.assertNotIn("## [Medium] Manual-check header finding", body)
+
+    def test_full_report_uses_zero_fp_valid_bugs_when_available(self):
+        blocked = _finding("confirmed", "Confirmed-looking finding blocked by proof gate")
+        blocked["verdict"] = "PASS"
+        report = asyncio.run(generate_full_report(
+            "https://example.com",
+            {"stats": {}},
+            [blocked],
+            {
+                "zero_fp_gate": {
+                    "valid_bugs": [],
+                    "needs_more_proof": [blocked],
+                    "candidates": [],
+                    "informational": [],
+                    "false_positives_removed": [],
+                    "skipped_out_of_scope": [],
+                }
+            },
+            scope={"allowed_domains": ["example.com"]},
+        ))
+        self.assertIn("| **Total Findings** | 0 |", report)
+        self.assertNotIn("Confirmed-looking finding blocked by proof gate", report)
+
+    def test_json_csv_and_sarif_respect_zero_fp_buckets(self):
+        ready = _finding("confirmed", "Report-ready SQL injection")
+        ready["zero_fp_label"] = "READY"
+        blocked = _finding("confirmed", "Blocked confirmed-looking finding")
+        blocked["zero_fp_label"] = "NEEDS PROOF"
+        blocked["ready_to_submit"] = True
+        scan = _scan([ready, blocked])
+        scan["analysis"] = {
+            "zero_fp_gate": {
+                "valid_bugs": [ready],
+                "needs_more_proof": [blocked],
+                "candidates": [],
+                "informational": [],
+                "false_positives_removed": [],
+                "skipped_out_of_scope": [],
+            }
+        }
+
+        json_report = json.loads(render_report(scan, "json"))
+        self.assertEqual(
+            [item["title"] for item in json_report["confirmed_findings"]],
+            ["Report-ready SQL injection"],
+        )
+        self.assertEqual(
+            [item["title"] for item in json_report["candidate_findings"]],
+            ["Blocked confirmed-looking finding"],
+        )
+
+        csv_report = render_report(scan, "csv")
+        self.assertIn("Report-ready SQL injection", csv_report)
+        self.assertIn("Blocked confirmed-looking finding", csv_report)
+        self.assertIn("READY", csv_report)
+        self.assertIn("NEEDS PROOF", csv_report)
+
+        sarif = json.loads(render_report(scan, "sarif"))
+        messages = [
+            result["message"]["text"]
+            for result in sarif["runs"][0]["results"]
+        ]
+        self.assertTrue(any("Report-ready SQL injection" in item for item in messages))
+        self.assertFalse(any("Blocked confirmed-looking finding" in item for item in messages))
 
     def test_empty_scan_has_graceful_message(self):
         body = render_report(_scan([]), "hackerone")

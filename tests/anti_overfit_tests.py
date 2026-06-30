@@ -142,11 +142,71 @@ class AntiOverfitBehaviorTests(unittest.TestCase):
                 scan_context={"tmp": temp},
             )
         self.assertEqual(result["valid_bugs"], [])
-        demoted = result["needs_more_proof"] + result["candidates"]
-        self.assertTrue(demoted)
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue(result["needs_more_proof"])
         self.assertIn(
             "missing_evidence_artifact",
-            demoted[0].get("zero_fp_failed_checks", []),
+            result["needs_more_proof"][0].get("zero_fp_failed_checks", []),
+        )
+
+    def test_probable_without_evidence_artifact_is_not_report_ready(self):
+        finding = {
+            "title": "CORS credentialed origin reflection",
+            "vuln_type": "CORS Misconfiguration",
+            "severity": "MEDIUM",
+            "confidence": 82,
+            "url": "https://example.test/api/account",
+            "evidence": "HTTP/1.1 200 OK\nAccess-Control-Allow-Origin: https://attacker.example\nAccess-Control-Allow-Credentials: true",
+            "business_impact": "A malicious allowed origin could read authenticated API responses.",
+            "reproduction_steps": [
+                "Send request with Origin header.",
+                "Observe reflected Access-Control-Allow-Origin.",
+                "Observe Access-Control-Allow-Credentials: true.",
+            ],
+            "remediation": "Use a strict CORS allowlist and avoid credentialed wildcard/reflected origins.",
+            "exploitability_status": "probable",
+            "evidence_strength": "moderate",
+            "false_positive_risk": "medium",
+            "redaction_status": "redacted",
+        }
+        result = apply_zero_fp_gate(
+            [finding],
+            {"allowed_domains": ["example.test"]},
+        )
+        self.assertEqual(result["valid_bugs"], [])
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue(result["needs_more_proof"])
+        self.assertIn(
+            "missing_evidence_artifact",
+            result["needs_more_proof"][0].get("zero_fp_failed_checks", []),
+        )
+
+    def test_medium_candidate_without_evidence_artifact_needs_more_proof(self):
+        finding = {
+            "title": "Upload endpoint candidate",
+            "vuln_type": "File Upload Endpoint Candidate",
+            "severity": "MEDIUM",
+            "confidence": 60,
+            "url": "https://example.test/upload",
+            "evidence": "multipart form observed",
+            "business_impact": "Upload parsing and storage behavior requires manual validation.",
+            "reproduction_steps": ["Visit upload form", "Inspect enctype"],
+            "remediation": "Validate uploaded content and store files safely.",
+            "exploitability_status": "candidate",
+            "evidence_strength": "weak",
+            "false_positive_risk": "medium",
+            "redaction_status": "redacted",
+        }
+        result = apply_zero_fp_gate(
+            [finding],
+            {"allowed_domains": ["example.test"]},
+        )
+        self.assertEqual(result["valid_bugs"], [])
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue(result["needs_more_proof"])
+        self.assertIn(
+            "missing_evidence_artifact",
+            result["needs_more_proof"][0].get("zero_fp_failed_checks", []),
         )
 
 

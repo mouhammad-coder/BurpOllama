@@ -45,6 +45,10 @@ def _with_gate(finding: dict, label: str, failed_checks: list[str]) -> dict:
     return out
 
 
+def _artifact_failure(failed_checks: list[str]) -> bool:
+    return any(str(item).startswith("missing_evidence_artifact") or str(item).startswith("evidence_artifact") for item in failed_checks)
+
+
 def _active_scope_allowed(url: str, policy: ScopePolicy = scope_policy) -> tuple[bool, str]:
     if not _text(url):
         return False, "missing_affected_url"
@@ -81,7 +85,14 @@ def _failed_ready_checks(finding: dict, policy: ScopePolicy = scope_policy) -> l
         failed.append("missing_remediation")
     if _lower(finding.get("redaction_status")) != "redacted":
         failed.append("unredacted_evidence")
-    if exploitability == "confirmed":
+    requires_artifact = (
+        exploitability in READY_EXPLOITABILITY
+        or (
+            severity in READY_SEVERITIES
+            and exploitability not in {"false_positive", "not_vulnerable"}
+        )
+    )
+    if requires_artifact:
         artifact_ok, artifact_reason = valid_evidence_artifact(
             finding.get("evidence_artifact")
         )
@@ -208,6 +219,8 @@ def apply_zero_fp_gate(
                 else "VALID"
             )
             result["valid_bugs"].append(_with_gate(finding, label, []))
+        elif _artifact_failure(failed):
+            result["needs_more_proof"].append(_with_gate(finding, "NEEDS PROOF", failed))
         elif severity in {"INFO", "INFORMATIONAL"} or not _text(finding.get("business_impact")):
             result["informational"].append(_with_gate(finding, "INFO", failed))
         elif exploitability == "candidate" or confidence < 70:

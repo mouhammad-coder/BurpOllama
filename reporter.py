@@ -44,13 +44,29 @@ async def generate_full_report(
 ) -> str:
     """Generate a full Markdown pentest/bug-bounty report."""
 
-    # Only include PASS and DOWNGRADE verdicts
     findings = normalize_findings(findings)
-    reportable = [
-        f for f in findings
-        if f.get("verdict", "PASS") in ("PASS", "DOWNGRADE")
-        and f.get("severity", "INFO") != "INFO"
-    ]
+    gated = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else None
+    if isinstance(gated, dict) and "valid_bugs" in gated:
+        reportable_source = normalize_findings(gated.get("valid_bugs", []))
+        findings = normalize_findings(
+            list(gated.get("valid_bugs", []) or [])
+            + list(gated.get("needs_more_proof", []) or [])
+            + list(gated.get("candidates", []) or [])
+            + list(gated.get("informational", []) or [])
+            + list(gated.get("false_positives_removed", []) or [])
+            + list(gated.get("skipped_out_of_scope", []) or [])
+        )
+        reportable = [
+            f for f in reportable_source
+            if f.get("severity", "INFO") != "INFO"
+        ]
+    else:
+        # Legacy fallback for saved scans that predate zero-FP proof buckets.
+        reportable = [
+            f for f in findings
+            if f.get("verdict", "PASS") in ("PASS", "DOWNGRADE")
+            and f.get("severity", "INFO") != "INFO"
+        ]
     chain_data = analysis.get("exploit_chains") or {}
     for finding in reportable:
         impact_score = score_impact_finding(finding, chain_data)
@@ -403,6 +419,49 @@ def _split_findings(findings: list[dict]) -> tuple[list[dict], list[dict], list[
     return confirmed, candidates, false_pos
 
 
+def _split_findings_with_gate(findings: list[dict], analysis: dict | None) -> tuple[list[dict], list[dict], list[dict]]:
+    gated = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else None
+    if isinstance(gated, dict) and "valid_bugs" in gated:
+        confirmed = normalize_findings(gated.get("valid_bugs", []))
+        candidates = normalize_findings(
+            list(gated.get("needs_more_proof", []) or [])
+            + list(gated.get("candidates", []) or [])
+            + list(gated.get("informational", []) or [])
+        )
+        false_pos = normalize_findings(
+            list(gated.get("false_positives_removed", []) or [])
+            + list(gated.get("skipped_out_of_scope", []) or [])
+        )
+        return confirmed, candidates, false_pos
+    return _split_findings(findings)
+
+
+def _proof_bucket_summary(
+    confirmed: list[dict],
+    candidates: list[dict],
+    false_pos: list[dict],
+    analysis: dict | None,
+) -> dict:
+    gated = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else None
+    if isinstance(gated, dict):
+        return {
+            "valid_bugs": len(gated.get("valid_bugs", []) or []),
+            "needs_more_proof": len(gated.get("needs_more_proof", []) or []),
+            "candidates": len(gated.get("candidates", []) or []),
+            "informational": len(gated.get("informational", []) or []),
+            "false_positives_removed": len(gated.get("false_positives_removed", []) or []),
+            "skipped_out_of_scope": len(gated.get("skipped_out_of_scope", []) or []),
+        }
+    return {
+        "valid_bugs": len(confirmed),
+        "needs_more_proof": 0,
+        "candidates": len(candidates),
+        "informational": 0,
+        "false_positives_removed": len(false_pos),
+        "skipped_out_of_scope": 0,
+    }
+
+
 def _methodology_lines() -> list[str]:
     return [
         "- Passive Burp traffic analysis with response fingerprinting and deduplication.",
@@ -437,7 +496,7 @@ def _scope_block(scope: dict) -> list[str]:
 
 def generate_executive_report(target: str, recon_data: dict, findings: list[dict],
                               analysis: dict, scope: dict) -> str:
-    confirmed, candidates, _ = _split_findings(findings)
+    confirmed, candidates, _ = _split_findings_with_gate(findings, analysis)
     cov = analysis.get("coverage_v2") or analysis.get("coverage") or {}
     graph = analysis.get("attack_graph", {})
     lines = [
@@ -472,7 +531,7 @@ def generate_executive_report(target: str, recon_data: dict, findings: list[dict
 
 def generate_technical_report(target: str, recon_data: dict, findings: list[dict],
                               analysis: dict, scope: dict, review_items: list[dict] = None) -> str:
-    confirmed, candidates, false_pos = _split_findings(findings)
+    confirmed, candidates, false_pos = _split_findings_with_gate(findings, analysis)
     cov = analysis.get("coverage_v2") or analysis.get("coverage") or {}
     graph = analysis.get("attack_graph", {})
     lines = ["# Technical Security Report", ""]
@@ -542,7 +601,8 @@ def generate_technical_report(target: str, recon_data: dict, findings: list[dict
 
 def generate_json_report(target: str, recon_data: dict, findings: list[dict],
                          analysis: dict, scope: dict, review_items: list[dict] = None) -> dict:
-    confirmed, candidates, false_pos = _split_findings(findings)
+    confirmed, candidates, false_pos = _split_findings_with_gate(findings, analysis)
+    proof_summary = _proof_bucket_summary(confirmed, candidates, false_pos, analysis)
     for finding in confirmed + candidates + false_pos:
         cvss_40 = calculate_cvss_40(finding)
         finding.setdefault("cvss_40_score", cvss_40["score"])
@@ -560,6 +620,7 @@ def generate_json_report(target: str, recon_data: dict, findings: list[dict],
         "confirmed_findings": confirmed,
         "candidate_findings": candidates,
         "false_positive_findings": false_pos,
+        "proof_gate_summary": proof_summary,
         "review_appendix": review_items or [],
         "redaction_notice": "Evidence is redacted for credentials, tokens, session identifiers, personal data, and secret-looking values where detected.",
     }
@@ -575,7 +636,8 @@ def generate_csv_report(findings: list[dict]) -> str:
         "cvss_40_score", "cvss_40_vector", "cvss_40_severity",
         "cvss_40_official", "cvss_plus_plus",
         "quality_score", "ready_to_submit", "duplicate_of",
-        "rejection_reason_codes", "raw_evidence_id", "redaction_status",
+        "zero_fp_label", "zero_fp_failed_checks", "rejection_reason_codes",
+        "raw_evidence_id", "redaction_status",
         "created_at", "updated_at",
     ]
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
@@ -591,14 +653,19 @@ def generate_csv_report(findings: list[dict]) -> str:
         export_row.setdefault(
             "cvss_40_official", cvss_40["cvss_40_official"]
         )
-        if isinstance(export_row.get("rejection_reason_codes"), list):
-            export_row["rejection_reason_codes"] = ",".join(
-                export_row["rejection_reason_codes"]
+        for list_field in ("rejection_reason_codes", "zero_fp_failed_checks"):
+            if isinstance(export_row.get(list_field), list):
+                export_row[list_field] = ",".join(
+                    str(item) for item in export_row[list_field]
+                )
+        gate_label = str(export_row.get("zero_fp_label") or "").upper()
+        if gate_label:
+            export_row["ready_to_submit"] = gate_label in {"READY", "VALID"}
+        else:
+            export_row["ready_to_submit"] = bool(
+                export_row.get("report_readiness", {}).get("ready")
+                or export_row.get("ready_to_submit")
             )
-        export_row["ready_to_submit"] = bool(
-            export_row.get("report_readiness", {}).get("ready")
-            or export_row.get("ready_to_submit")
-        )
         writer.writerow(export_row)
     return output.getvalue()
 
@@ -613,7 +680,13 @@ def generate_sarif_report(
     rows = normalize_findings(findings)
     reportable = [
         row for row in rows
-        if row.get("verdict", "PASS") in ("PASS", "DOWNGRADE", "CONFIRMED")
+        if (
+            str(row.get("zero_fp_label") or "").upper() in {"READY", "VALID"}
+            or (
+                not row.get("zero_fp_label")
+                and row.get("verdict", "PASS") in ("PASS", "DOWNGRADE", "CONFIRMED")
+            )
+        )
         and row.get("severity", "INFO") != "INFO"
     ]
     rules = {}

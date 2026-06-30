@@ -9,9 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reporter import (
     generate_csv_report,
+    generate_executive_report,
     generate_full_report,
     generate_json_report,
     generate_sarif_report,
+    generate_technical_report,
 )
 from validation_enhancements import calculate_cvss_40, report_readiness
 
@@ -92,6 +94,60 @@ def run_tests():
     serialized = json.dumps(json_report)
     assert "cvss_40_score" in serialized
     assert "report_readiness" in serialized
+    assert json_report["proof_gate_summary"]["valid_bugs"] == 1
+    assert json_report["proof_gate_summary"]["candidates"] == 0
+
+    blocked = dict(finding)
+    blocked["id"] = "F-REPORT-2"
+    blocked["title"] = "Confirmed-looking but missing proof"
+    blocked["evidence_artifact"] = {}
+    blocked["zero_fp_label"] = "NEEDS PROOF"
+    blocked["zero_fp_failed_checks"] = ["missing_evidence_artifact"]
+    gated = {
+        "zero_fp_gate": {
+            "valid_bugs": [finding],
+            "needs_more_proof": [blocked],
+            "candidates": [],
+            "informational": [],
+            "false_positives_removed": [],
+            "skipped_out_of_scope": [],
+        }
+    }
+    gated_json = generate_json_report(
+        "https://example.test",
+        {},
+        [finding, blocked],
+        gated,
+        {"allowed_domains": ["example.test"]},
+    )
+    assert gated_json["proof_gate_summary"]["valid_bugs"] == 1
+    assert gated_json["proof_gate_summary"]["needs_more_proof"] == 1
+    assert gated_json["proof_gate_summary"]["candidates"] == 0
+    assert gated_json["candidate_findings"][0]["zero_fp_label"] == "NEEDS PROOF"
+
+    executive = generate_executive_report(
+        "https://example.test",
+        {},
+        [finding, blocked],
+        gated,
+        {"allowed_domains": ["example.test"]},
+    )
+    assert "| Confirmed findings | 1 |" in executive
+    assert "| Candidate findings | 1 |" in executive
+    assert "Confirmed-looking but missing proof" not in executive.split("## Candidate Risk", 1)[0]
+
+    technical = generate_technical_report(
+        "https://example.test",
+        {},
+        [finding, blocked],
+        gated,
+        {"allowed_domains": ["example.test"]},
+    )
+    confirmed_section = technical.split("## Candidate Findings", 1)[0]
+    candidate_section = technical.split("## Candidate Findings", 1)[1]
+    assert "Confirmed IDOR" in confirmed_section
+    assert "Confirmed-looking but missing proof" not in confirmed_section
+    assert "Confirmed-looking but missing proof" in candidate_section
 
     csv_report = generate_csv_report([finding])
     rows = list(csv.DictReader(io.StringIO(csv_report)))
@@ -99,6 +155,12 @@ def run_tests():
     assert rows[0]["cvss_40_vector"].startswith("CVSS:4.0/")
     assert rows[0]["cvss_40_official"] == "True"
     assert rows[0]["ready_to_submit"] == "True"
+
+    blocked_csv = generate_csv_report([blocked])
+    blocked_rows = list(csv.DictReader(io.StringIO(blocked_csv)))
+    assert blocked_rows[0]["zero_fp_label"] == "NEEDS PROOF"
+    assert blocked_rows[0]["zero_fp_failed_checks"] == "missing_evidence_artifact"
+    assert blocked_rows[0]["ready_to_submit"] == "False"
 
     sarif = generate_sarif_report("https://example.test", [finding])
     assert sarif["version"] == "2.1.0"
