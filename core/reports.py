@@ -476,6 +476,7 @@ REPORT_FILENAMES = {
     "sarif": "report.sarif",
     "hackerone": "hackerone-report.md",
     "bugcrowd": "bugcrowd-report.md",
+    "readiness": "readiness-audit.md",
 }
 
 
@@ -490,6 +491,7 @@ def write_report_bundle(
         "sarif",
         "hackerone",
         "bugcrowd",
+        "readiness",
     ),
 ) -> dict[str, str]:
     directory = Path(output_root).expanduser() / str(scan.get("id", "scan"))

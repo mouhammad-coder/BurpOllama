@@ -924,8 +924,9 @@ def print_results(scan: dict, started: float) -> None:
             console.print("  {}: {}".format(report_format, path))
     console.print(
         "\nNext:\n[cyan]burpollama report --scan-id {}[/cyan]\n"
+        "[cyan]burpollama report --scan-id {} --format readiness[/cyan]\n"
         "[cyan]burpollama report --scan-id {} --format hackerone[/cyan]".format(
-            scan_id, scan_id
+            scan_id, scan_id, scan_id
         )
     )
 

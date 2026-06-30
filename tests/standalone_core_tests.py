@@ -235,6 +235,11 @@ class StandaloneCoreTests(unittest.TestCase):
             self.assertIn("Confirmed-looking CORS finding without artifact", h1_report)
             self.assertNotIn("## [Medium] Confirmed-looking CORS finding without artifact", h1_report)
 
+            readiness_report = Path(result["report_paths"]["readiness"]).read_text()
+            self.assertIn("# Bounty Readiness Audit", readiness_report)
+            self.assertIn("- Report-ready issues: 1", readiness_report)
+            self.assertIn("Confirmed-looking CORS finding without artifact", readiness_report)
+
             sarif = json.loads(Path(result["report_paths"]["sarif"]).read_text())
             sarif_messages = [
                 item["message"]["text"]

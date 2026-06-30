@@ -263,6 +263,13 @@ class ReportExportHackerOneTests(unittest.TestCase):
             self.assertTrue(paths["bugcrowd"].endswith("bugcrowd-report.md"))
             self.assertTrue(Path(paths["hackerone"]).exists())
 
+    def test_default_bundle_writes_readiness_audit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = write_report_bundle(_scan([_finding()]), temp)
+            self.assertTrue(paths["readiness"].endswith("readiness-audit.md"))
+            body = Path(paths["readiness"]).read_text()
+            self.assertIn("# Bounty Readiness Audit", body)
+
     def test_cli_hackerone_format_writes_default_report_path(self):
         with tempfile.TemporaryDirectory() as temp:
             scan = _scan([_finding()])
