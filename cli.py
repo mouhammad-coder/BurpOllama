@@ -174,7 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--evidence", default="")
 
     report = sub.add_parser("report", help="Print or save a completed scan report.")
-    report.add_argument("--scan-id", required=True)
+    report.add_argument("--scan-id")
+    report.add_argument("--latest", action="store_true", help="Use the most recent stored scan.")
     report.add_argument(
         "--format",
         choices=("markdown", "hackerone", "bugcrowd", "json", "csv", "sarif", "readiness"),
@@ -196,7 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
     scope_check.add_argument("url", nargs="?")
 
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
-    sub.add_parser("history", help="List locally stored scans.")
+    history = sub.add_parser("history", help="List locally stored scans.")
+    history.add_argument("--ready-only", action="store_true", help="Only show scans with report-ready or manual-check findings.")
+    history.add_argument("--limit", type=int, default=100)
     sub.add_parser("doctor", help="Diagnose the local CLI installation.")
     sub.add_parser("version", help="Print the BurpOllama version.")
 
@@ -1286,15 +1289,16 @@ def command_validate(args) -> int:
 
 
 async def command_report(args) -> int:
-    scan = scan_store.get(args.scan_id)
+    scan_id = _resolve_scan_id(args)
+    scan = scan_store.get(scan_id)
     if not scan:
-        raise RuntimeError("Local scan not found: {}".format(args.scan_id))
+        raise RuntimeError("Local scan not found: {}".format(scan_id))
     body = render_report(scan, args.format)
     output = args.output
     if not output and args.format in {"hackerone", "bugcrowd"}:
         output = str(
             Path("reports")
-            / str(scan.get("id") or args.scan_id)
+            / str(scan.get("id") or scan_id)
             / REPORT_FILENAMES[args.format]
         )
     if output:
@@ -1305,6 +1309,18 @@ async def command_report(args) -> int:
     else:
         console.print(body, markup=False)
     return 0
+
+
+def _resolve_scan_id(args) -> str:
+    scan_id = str(getattr(args, "scan_id", "") or "").strip()
+    if scan_id:
+        return scan_id
+    if getattr(args, "latest", False):
+        scans = scan_store.list(1)
+        if not scans:
+            raise RuntimeError("No stored scans found.")
+        return str(scans[0].get("scan_id", ""))
+    raise RuntimeError("Pass --scan-id <id> or --latest.")
 
 
 async def command_status(args) -> int:
@@ -1336,7 +1352,7 @@ async def command_status(args) -> int:
 
 
 async def command_history(args) -> int:
-    scans = scan_store.list()
+    scans = scan_store.list(getattr(args, "limit", 100))
     table = Table(title="Scan history", box=box.ROUNDED)
     for column in ("Scan ID", "Target", "Status", "Ready", "Manual", "Proof", "Started"):
         table.add_column(column)
@@ -1344,6 +1360,12 @@ async def command_history(args) -> int:
         scan_id = str(scan.get("scan_id", ""))
         stored = scan_store.get(scan_id) or scan
         readiness = _scan_readiness_summary(stored)
+        if getattr(args, "ready_only", False) and not (
+            readiness["report_ready_issues"]
+            or readiness["manual_check_findings"]
+            or readiness["proof_blocked_findings"]
+        ):
+            continue
         table.add_row(
             scan_id,
             str(scan.get("target", "")),

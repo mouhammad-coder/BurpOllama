@@ -53,6 +53,10 @@ class CliTests(unittest.TestCase):
             ).format,
             "sarif",
         )
+        self.assertTrue(
+            parser.parse_args(["report", "--latest", "--format", "readiness"]).latest
+        )
+        self.assertTrue(parser.parse_args(["history", "--ready-only"]).ready_only)
         self.assertEqual(parser.parse_args(["doctor"]).command, "doctor")
         self.assertEqual(parser.parse_args(["serve"]).command, "serve")
         self.assertTrue(
@@ -142,7 +146,7 @@ class CliTests(unittest.TestCase):
         console = Console(file=stream, force_terminal=False, width=120)
 
         class _Store:
-            def list(self):
+            def list(self, limit=100):
                 return [{
                     "scan_id": "scan-1",
                     "target": "https://example.test",
@@ -177,6 +181,62 @@ class CliTests(unittest.TestCase):
         self.assertIn("Manual", output)
         self.assertIn("Proof", output)
         self.assertIn("scan-1", output)
+
+    def test_history_ready_only_filters_empty_scans(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def list(self, limit=100):
+                return [
+                    {"scan_id": "empty", "target": "https://empty.test", "status": "complete", "started_at": "1"},
+                    {"scan_id": "ready", "target": "https://ready.test", "status": "complete", "started_at": "2"},
+                ][:limit]
+
+            def get(self, scan_id):
+                if scan_id == "ready":
+                    return {
+                        "analysis": {
+                            "zero_fp_gate": {
+                                "valid_bugs": [{"title": "Ready", "severity": "MEDIUM"}],
+                                "needs_more_proof": [],
+                                "candidates": [],
+                                "informational": [],
+                            }
+                        }
+                    }
+                return {"analysis": {"zero_fp_gate": {}}}
+
+        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            code = asyncio.run(cli.command_history(SimpleNamespace(ready_only=True, limit=100)))
+        output = stream.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ready", output)
+        self.assertNotIn("empty", output)
+
+    def test_report_latest_uses_most_recent_scan(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def list(self, limit=100):
+                return [{"scan_id": "latest"}]
+
+            def get(self, scan_id):
+                if scan_id != "latest":
+                    raise AssertionError(scan_id)
+                return {
+                    "id": "latest",
+                    "target": "https://example.test",
+                    "analysis": {"zero_fp_gate": {}},
+                    "triaged_findings": [],
+                }
+
+        args = SimpleNamespace(scan_id=None, latest=True, format="readiness", output=None)
+        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            code = asyncio.run(cli.command_report(args))
+        self.assertEqual(code, 0)
+        self.assertIn("Bounty Readiness Audit", stream.getvalue())
 
     def test_benchmark_check_reports_unreachable_target(self):
         class _Client:
