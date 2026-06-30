@@ -186,7 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--stats", action="store_true", help="Show feedback dataset stats.")
 
     scope_check = sub.add_parser("scope-check", help="Check a URL against a scope file.")
-    scope_check.add_argument("--scope-file", required=True)
+    scope_check.add_argument("--scope-file")
+    scope_check.add_argument("--program-json", help="Import a saved HackerOne/Bugcrowd-style program scope JSON export.")
+    scope_check.add_argument("--write-scope", help="Write normalized scope entries from --program-json.")
     scope_check.add_argument("--audit", action="store_true", help="Print a full scope preflight audit.")
     scope_check.add_argument("--target", default="", help="Target URL to audit against the scope file.")
     scope_check.add_argument("url", nargs="?")
@@ -1263,16 +1265,37 @@ async def command_history(args) -> int:
 async def command_scope_check(args) -> int:
     from core.scope import audit_scope, is_in_scope, load_scope_file
 
-    entries, load_warnings = load_scope_file(args.scope_file)
+    entries = []
+    load_warnings = []
+    if getattr(args, "scope_file", None):
+        entries, load_warnings = load_scope_file(args.scope_file)
+    if getattr(args, "program_json", None):
+        from discovery_workflows import aggregate_scope_documents
+
+        program_path = Path(args.program_json)
+        aggregate = aggregate_scope_documents([
+            (str(program_path), program_path.read_text(encoding="utf-8"))
+        ])
+        entries.extend(aggregate.get("allowed_assets", []))
+        entries.extend("!" + asset for asset in aggregate.get("disallowed_assets", []))
+        load_warnings.append(str(aggregate.get("warning", "")))
+        if getattr(args, "write_scope", None):
+            output = Path(args.write_scope)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("\n".join(entries) + "\n", encoding="utf-8")
+            console.print("[green]✓ Wrote normalized scope {}[/green]".format(escape(str(output))))
+    if not entries:
+        raise RuntimeError("Pass --scope-file or --program-json.")
     for warning in load_warnings:
-        console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+        if warning:
+            console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
     target = getattr(args, "target", "") or getattr(args, "url", "") or ""
     if getattr(args, "audit", False):
         audit = audit_scope(entries, target)
         table = Table(title="Scope preflight")
         table.add_column("Metric")
         table.add_column("Value")
-        table.add_row("Scope file", str(args.scope_file))
+        table.add_row("Scope source", str(args.scope_file or args.program_json))
         table.add_row("Included rules", str(audit["included_rules"]))
         table.add_row("Excluded rules", str(audit["excluded_rules"]))
         table.add_row("Wildcard rules", str(audit["wildcard_rules"]))
@@ -1292,10 +1315,11 @@ async def command_scope_check(args) -> int:
             for rule in audit["excluded"][:20]:
                 console.print("- {}".format(escape(rule["raw"])))
         if target and audit["target_in_scope"]:
+            command_scope = getattr(args, "write_scope", None) or getattr(args, "scope_file", None)
             console.print(
                 "\nSafe passive command:\n[cyan]python cli.py scan {} --mode passive --scope-file {} --max-urls 100 --time-budget 900[/cyan]".format(
                     escape(target),
-                    escape(str(args.scope_file)),
+                    escape(str(command_scope)),
                 )
             )
         return 0 if not target or audit["target_in_scope"] else 2

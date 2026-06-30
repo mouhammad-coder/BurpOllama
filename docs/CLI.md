@@ -44,6 +44,14 @@ burpollama scope-check --scope-file scope.txt --audit --target https://api.autho
 The audit prints included/excluded rule counts, target scope status, and a safe
 passive scan command when the target is in scope.
 
+You can also normalize a saved HackerOne/Bugcrowd-style program JSON export
+before scanning:
+
+```bash
+burpollama scope-check --program-json program-policy.json \
+  --write-scope scope.txt --audit --target https://api.authorized.example
+```
+
 Additional controls:
 
 ```text

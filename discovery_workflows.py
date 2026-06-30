@@ -69,6 +69,17 @@ def aggregate_scope_documents(documents: list[tuple[str, str]]) -> dict:
             continue
         if isinstance(payload, list):
             payload = {"allowed_assets": payload}
+        structured = payload.get("structured_scopes", []) if isinstance(payload, dict) else []
+        for item in structured if isinstance(structured, list) else []:
+            asset = _asset_text(item)
+            if not asset:
+                continue
+            eligible = True
+            if isinstance(item, dict):
+                eligible = bool(
+                    item.get("eligible_for_submission", item.get("eligible", True))
+                )
+            (result.allowed_assets if eligible else result.disallowed_assets).add(asset)
         for key in ("allowed_assets", "in_scope", "targets", "assets"):
             for item in payload.get(key, []) if isinstance(payload, dict) else []:
                 asset = _asset_text(item)

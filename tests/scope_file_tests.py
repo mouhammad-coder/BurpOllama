@@ -80,6 +80,38 @@ class ScopeFileTests(unittest.TestCase):
             self.assertIn("IN SCOPE", output)
             self.assertIn("Safe passive command", output)
 
+    def test_scope_check_imports_program_json_and_writes_scope_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            program = Path(temp) / "program.json"
+            output_scope = Path(temp) / "scope.txt"
+            program.write_text(
+                '{"structured_scopes":['
+                '{"asset_identifier":"api.example.com","eligible_for_submission":true},'
+                '{"asset_identifier":"admin.example.com","eligible_for_submission":false}'
+                ']}',
+                encoding="utf-8",
+            )
+            stream = io.StringIO()
+            console = Console(file=stream, force_terminal=False, width=120)
+            args = Namespace(
+                scope_file=None,
+                program_json=str(program),
+                write_scope=str(output_scope),
+                audit=True,
+                target="https://api.example.com",
+                url=None,
+            )
+            with patch.object(cli, "console", console):
+                code = asyncio.run(cli.command_scope_check(args))
+            self.assertEqual(code, 0)
+            self.assertIn("IN SCOPE", stream.getvalue())
+            self.assertIn(str(output_scope), stream.getvalue())
+            self.assertNotIn("--scope-file None", stream.getvalue())
+            self.assertEqual(
+                output_scope.read_text(encoding="utf-8").splitlines(),
+                ["api.example.com", "!admin.example.com"],
+            )
+
     def test_malformed_scope_file_line_warns_without_crash(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scope.txt"

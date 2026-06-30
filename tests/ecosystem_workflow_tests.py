@@ -18,6 +18,19 @@ class ScopeAggregationTests(unittest.TestCase):
         self.assertEqual(result["allowed_assets"], ["*.example.com"])
         self.assertFalse(result["confirmed"])
 
+    def test_structured_scopes_respect_submission_eligibility(self):
+        result = aggregate_scope_documents([
+            (
+                "h1-policy.json",
+                '{"structured_scopes":['
+                '{"asset_identifier":"api.example.com","eligible_for_submission":true},'
+                '{"asset_identifier":"admin.example.com","eligible_for_submission":false}'
+                ']}',
+            )
+        ])
+        self.assertEqual(result["allowed_assets"], ["api.example.com"])
+        self.assertEqual(result["disallowed_assets"], ["admin.example.com"])
+
 
 class ToolExpansionTests(unittest.TestCase):
     def test_network_tls_cms_and_kubernetes_tools_are_registered(self):
