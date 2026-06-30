@@ -119,20 +119,24 @@ class CliTests(unittest.TestCase):
             "candidate_findings": [],
             "analysis": {
                 "coverage": {"coverage_percent": 12.5},
-                "zero_fp_gate": {
-                    "valid_bugs": [
-                        {
-                            "title": "Missing content-security-policy",
-                            "vuln_type": "Missing Security Headers",
-                            "severity": "MEDIUM",
-                        },
-                        {
-                            "title": "Missing content-security-policy",
-                            "vuln_type": "Missing Security Headers",
-                            "severity": "MEDIUM",
-                        },
-                    ],
-                    "needs_more_proof": [{"title": "SSRF candidate"}],
+                    "zero_fp_gate": {
+                        "valid_bugs": [
+                            {
+                                "title": "Missing content-security-policy",
+                                "vuln_type": "Missing Security Headers",
+                                "severity": "MEDIUM",
+                                "url": "https://example.test/admin",
+                                "confidence": 94,
+                                "evidence_artifact": {"artifact_path": "evidence/scan/header-csp.json"},
+                            },
+                            {
+                                "title": "Missing content-security-policy",
+                                "vuln_type": "Missing Security Headers",
+                                "severity": "MEDIUM",
+                                "url": "https://example.test/account",
+                            },
+                        ],
+                    "needs_more_proof": [{"title": "SSRF candidate", "url": "https://example.test/fetch"}],
                     "candidates": [{"title": "Open redirect candidate"}],
                     "informational": [],
                 },
@@ -144,6 +148,11 @@ class CliTests(unittest.TestCase):
         self.assertIn("Report-ready issues", output)
         self.assertIn("Manual-check findings", output)
         self.assertIn("Proof-blocked findings", output)
+        self.assertIn("Bounty findings", output)
+        self.assertIn("content-security-policy", output)
+        self.assertIn("https://example.test/adm", output)
+        self.assertIn("Ready", output)
+        self.assertIn("Manual", output)
         self.assertIn("1", output)
         self.assertIn("2", output)
 

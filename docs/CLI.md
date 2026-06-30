@@ -85,6 +85,8 @@ During a scan, the terminal displays:
 - A persistent specialist-agent status table
 - Overall and per-agent progress bars
 - A live findings ticker
+- A final bounty findings table with finding name, target URL, severity,
+  readiness, and confidence
 
 When Cloudflare JavaScript challenges are detected, BurpOllama warns
 immediately and switches that scan to passive-only mode.

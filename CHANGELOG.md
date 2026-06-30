@@ -4,6 +4,7 @@
 - `report --latest` and `history --ready-only` shortcuts for faster report triage
 - Readiness reports show missing report-ready artifact counts and artifact availability
 - New `readiness-check` CLI gate with JSON/output support and nonzero failure codes for automation
+- Final scan output now includes a compact bounty findings table in the terminal
 - Evidence artifacts are ignored by default so private scan data is not committed accidentally
 - All v1.3 features included
 

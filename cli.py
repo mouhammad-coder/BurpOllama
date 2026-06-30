@@ -936,6 +936,7 @@ def print_results(scan: dict, started: float) -> None:
     for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
         table.add_row(severity, str(counts.get(severity, 0)))
     console.print(table)
+    _print_findings_table(scan)
     report_paths = scan.get("report_paths", {})
     if report_paths:
         console.print("[bold]Reports:[/bold]")
@@ -948,6 +949,116 @@ def print_results(scan: dict, started: float) -> None:
             scan_id, scan_id, scan_id
         )
     )
+
+
+def _finding_url(finding: dict, fallback: str = "") -> str:
+    return str(
+        finding.get("url")
+        or finding.get("affected_url")
+        or finding.get("target")
+        or fallback
+        or ""
+    )
+
+
+def _finding_confidence(finding: dict) -> str:
+    value = finding.get("confidence")
+    if value is None:
+        value = finding.get("confidence_score")
+    if value is None:
+        return ""
+    return "{}%".format(value)
+
+
+def _findings_table_rows(scan: dict) -> list[dict]:
+    target = str(scan.get("target", ""))
+    analysis = scan.get("analysis", {})
+    gate = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else {}
+    rows = []
+    if isinstance(gate, dict) and gate:
+        buckets = (
+            ("Report-ready", gate.get("valid_bugs", []) or []),
+            ("Manual-check", gate.get("needs_more_proof", []) or []),
+            ("Manual-check", gate.get("candidates", []) or []),
+            ("Info", gate.get("informational", []) or []),
+        )
+    elif "confirmed_findings" in scan or "candidate_findings" in scan:
+        buckets = (
+            ("Report-ready", scan.get("confirmed_findings", []) or []),
+            ("Manual-check", scan.get("candidate_findings", []) or []),
+        )
+    else:
+        buckets = (("Observed", scan.get("triaged_findings") or scan.get("findings") or scan.get("raw_findings") or []),)
+    for readiness, findings in buckets:
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            rows.append({
+                "finding": _clip("[{}] {}".format(
+                    _finding_badge(finding, readiness),
+                    str(finding.get("title") or finding.get("vuln_type") or "Finding"),
+                ), 48),
+                "url": _clip(_finding_url(finding, target), 44),
+            })
+    return rows
+
+
+def _short_severity(finding: dict) -> str:
+    severity = str(finding.get("severity", "INFO")).upper()
+    return {
+        "CRITICAL": "CRIT",
+        "HIGH": "HIGH",
+        "MEDIUM": "MED",
+        "LOW": "LOW",
+        "INFO": "INFO",
+        "INFORMATIONAL": "INFO",
+    }.get(severity, severity[:4] or "INFO")
+
+
+def _finding_badge(finding: dict, readiness: str) -> str:
+    parts = [_short_severity(finding), _short_readiness(readiness)]
+    confidence = _finding_confidence(finding)
+    if confidence:
+        parts.append(confidence)
+    return " ".join(parts)
+
+
+def _short_readiness(readiness: str) -> str:
+    return {
+        "Report-ready": "Ready",
+        "Manual-check": "Manual",
+        "Observed": "Observed",
+        "Info": "Info",
+    }.get(readiness, readiness)
+
+
+def _clip(value: str, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    keep = max(1, (limit - 3) // 2)
+    tail = max(1, limit - 3 - keep)
+    return "{}...{}".format(text[:keep], text[-tail:])
+
+
+def _print_findings_table(scan: dict, limit: int = 15) -> None:
+    rows = _findings_table_rows(scan)
+    if not rows:
+        console.print("[dim]No findings table to display.[/dim]")
+        return
+    table = Table(box=box.ROUNDED, title="Bounty findings", expand=True)
+    table.add_column("Finding", no_wrap=True, overflow="ellipsis")
+    table.add_column("Target / URL", no_wrap=True, overflow="ellipsis")
+    for row in rows[:limit]:
+        table.add_row(
+            row["finding"],
+            row["url"],
+        )
+    console.print(table)
+    if len(rows) > limit:
+        console.print("[dim]{} additional finding(s) omitted; use readiness or marketplace reports for the full list.[/dim]".format(len(rows) - limit))
 
 
 def _scan_readiness_summary(scan: dict) -> dict:

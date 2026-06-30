@@ -132,6 +132,8 @@ BurpOllama runs locally and:
 - Streams every scan phase, tested URL, and key response to the terminal
 - Tests 39 specialized vulnerability classes
 - Confirms findings with actual proof (not just detection)
+- Prints a final terminal findings table with finding, target URL, severity,
+  readiness, and confidence
 - Scores findings with official CVSS 4.0 and business-aware impact scoring
 - Builds exploit chains connecting related vulnerabilities
 - Exports HackerOne, Bugcrowd, Markdown, JSON, CSV, and SARIF reports
