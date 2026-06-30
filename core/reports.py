@@ -287,7 +287,11 @@ def render_readiness_report(scan: dict) -> str:
             "- Artifact: {}".format(_artifact_path(finding)),
             "- Blockers: {}".format(_manual_blockers(finding)),
             "",
+            "Safe validation steps:",
         ])
+        for index, step in enumerate(_manual_validation_steps(finding), start=1):
+            lines.append("{}. {}".format(index, step))
+        lines.append("")
     if len(candidates) > 25:
         lines.extend([
             "{} additional manual-check finding(s) omitted from this audit.".format(

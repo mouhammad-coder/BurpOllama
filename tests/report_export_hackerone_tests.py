@@ -124,6 +124,8 @@ class ReportExportHackerOneTests(unittest.TestCase):
         self.assertIn("- Grouped findings: 2", body)
         self.assertIn("SSRF-prone parameter observed", body)
         self.assertIn("exploitability_not_confirmed_or_probable", body)
+        self.assertIn("Safe validation steps:", body)
+        self.assertIn("1. Validate only within authorized scope.", body)
 
     def test_candidates_section_lists_unconfirmed_findings(self):
         candidate = _finding("needs_manual_validation", "Open redirect candidate parameter observed")
