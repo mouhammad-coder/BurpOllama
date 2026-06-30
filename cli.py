@@ -190,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     scope_check.add_argument("--scope-file")
     scope_check.add_argument("--program-json", help="Import a saved HackerOne/Bugcrowd-style program scope JSON export.")
     scope_check.add_argument("--write-scope", help="Write normalized scope entries from --program-json.")
+    scope_check.add_argument("--write-manifest", help="Write the scope preflight audit as JSON.")
     scope_check.add_argument("--audit", action="store_true", help="Print a full scope preflight audit.")
     scope_check.add_argument("--target", default="", help="Target URL to audit against the scope file.")
     scope_check.add_argument("url", nargs="?")
@@ -1345,6 +1346,34 @@ async def command_scope_check(args) -> int:
     target = getattr(args, "target", "") or getattr(args, "url", "") or ""
     if getattr(args, "audit", False):
         audit = audit_scope(entries, target)
+        command_scope = getattr(args, "write_scope", None) or getattr(args, "scope_file", None)
+        safe_passive_command = (
+            "python cli.py scan {} --mode passive --scope-file {} --max-urls 100 --time-budget 900".format(
+                target,
+                command_scope,
+            )
+            if target and audit["target_in_scope"] and command_scope
+            else ""
+        )
+        if getattr(args, "write_manifest", None):
+            manifest_path = Path(args.write_manifest)
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "scope_source": str(args.scope_file or args.program_json),
+                "normalized_scope_file": str(command_scope or ""),
+                "target": target,
+                "target_in_scope": audit["target_in_scope"],
+                "entries": entries,
+                "audit": audit,
+                "safe_passive_command": safe_passive_command,
+                "warning": "Preflight is advisory; verify current program policy and authorization before scanning.",
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            console.print("[green]✓ Wrote preflight manifest {}[/green]".format(escape(str(manifest_path))))
         table = Table(title="Scope preflight")
         table.add_column("Metric")
         table.add_column("Value")
@@ -1367,12 +1396,10 @@ async def command_scope_check(args) -> int:
             console.print("[bold]Excluded rules:[/bold]")
             for rule in audit["excluded"][:20]:
                 console.print("- {}".format(escape(rule["raw"])))
-        if target and audit["target_in_scope"]:
-            command_scope = getattr(args, "write_scope", None) or getattr(args, "scope_file", None)
+        if safe_passive_command:
             console.print(
-                "\nSafe passive command:\n[cyan]python cli.py scan {} --mode passive --scope-file {} --max-urls 100 --time-budget 900[/cyan]".format(
-                    escape(target),
-                    escape(str(command_scope)),
+                "\nSafe passive command:\n[cyan]{}[/cyan]".format(
+                    escape(safe_passive_command)
                 )
             )
         return 0 if not target or audit["target_in_scope"] else 2

@@ -49,7 +49,9 @@ before scanning:
 
 ```bash
 burpollama scope-check --program-json program-policy.json \
-  --write-scope scope.txt --audit --target https://api.authorized.example
+  --write-scope scope.txt \
+  --write-manifest preflight.json \
+  --audit --target https://api.authorized.example
 ```
 
 Additional controls:

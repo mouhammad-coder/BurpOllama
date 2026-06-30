@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import tempfile
 import unittest
 from argparse import Namespace
@@ -84,6 +85,7 @@ class ScopeFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             program = Path(temp) / "program.json"
             output_scope = Path(temp) / "scope.txt"
+            manifest = Path(temp) / "preflight.json"
             program.write_text(
                 '{"structured_scopes":['
                 '{"asset_identifier":"api.example.com","eligible_for_submission":true},'
@@ -97,6 +99,7 @@ class ScopeFileTests(unittest.TestCase):
                 scope_file=None,
                 program_json=str(program),
                 write_scope=str(output_scope),
+                write_manifest=str(manifest),
                 audit=True,
                 target="https://api.example.com",
                 url=None,
@@ -111,6 +114,11 @@ class ScopeFileTests(unittest.TestCase):
                 output_scope.read_text(encoding="utf-8").splitlines(),
                 ["api.example.com", "!admin.example.com"],
             )
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(payload["target"], "https://api.example.com")
+            self.assertTrue(payload["target_in_scope"])
+            self.assertEqual(payload["entries"], ["api.example.com", "!admin.example.com"])
+            self.assertIn(str(output_scope), payload["safe_passive_command"])
 
     def test_malformed_scope_file_line_warns_without_crash(self):
         with tempfile.TemporaryDirectory() as temp:
