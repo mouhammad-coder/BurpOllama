@@ -65,6 +65,36 @@ class ReportExportHackerOneTests(unittest.TestCase):
         self.assertIn("evidence/scan/header-csp.json", body)
         self.assertIn("Evidence artifact: evidence/scan/header-csp.json", body)
 
+    def test_marketplace_report_groups_repeated_confirmed_issue_by_affected_urls(self):
+        first = _finding()
+        second = _finding()
+        second["id"] = "finding-2"
+        second["url"] = "https://example.com/account"
+        second["evidence_artifact"] = {
+            **second["evidence_artifact"],
+            "artifact_path": "evidence/scan/header-csp-account.json",
+        }
+        scan = _scan([first, second])
+        scan["analysis"] = {
+            "zero_fp_gate": {
+                "valid_bugs": [first, second],
+                "needs_more_proof": [],
+                "candidates": [],
+                "informational": [],
+                "false_positives_removed": [],
+                "skipped_out_of_scope": [],
+            }
+        }
+
+        body = render_report(scan, "hackerone")
+
+        self.assertEqual(body.count("## [Medium] Missing content-security-policy"), 1)
+        self.assertIn("### Affected URLs", body)
+        self.assertIn("- https://example.com", body)
+        self.assertIn("- https://example.com/account", body)
+        self.assertIn("Additional artifacts:", body)
+        self.assertIn("evidence/scan/header-csp-account.json", body)
+
     def test_candidates_section_lists_unconfirmed_findings(self):
         candidate = _finding("needs_manual_validation", "Open redirect candidate parameter observed")
         candidate["confidence"] = 70

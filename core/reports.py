@@ -131,6 +131,42 @@ def _manual_blockers(finding: dict) -> str:
     return ", ".join(str(reason) for reason in reasons if str(reason).strip()) or "manual validation required"
 
 
+def _marketplace_group_key(finding: dict) -> tuple[str, str, str, str, str]:
+    artifact = _artifact(finding)
+    return (
+        str(finding.get("title") or finding.get("vuln_type") or "").strip().lower(),
+        str(finding.get("vuln_type") or artifact.get("vuln_class") or "").strip().lower(),
+        _severity(finding.get("severity", "Low")),
+        _artifact_value(finding, "matched_indicator", finding.get("evidence", "")).strip().lower(),
+        _artifact_value(finding, "indicator_location", "evidence artifact").strip().lower(),
+    )
+
+
+def _marketplace_issue_groups(findings: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str, str, str, str], dict] = {}
+    order: list[tuple[str, str, str, str, str]] = []
+    for finding in findings:
+        key = _marketplace_group_key(finding)
+        if key not in groups:
+            groups[key] = {"primary": finding, "findings": []}
+            order.append(key)
+        groups[key]["findings"].append(finding)
+    return [groups[key] for key in order]
+
+
+def _group_urls(group: dict, target: str) -> list[str]:
+    urls = [
+        str(finding.get("url") or finding.get("affected_url") or target)
+        for finding in group.get("findings", [])
+    ]
+    return [url for url in dict.fromkeys(urls) if url]
+
+
+def _group_artifact_paths(group: dict) -> list[str]:
+    paths = [_artifact_path(finding) for finding in group.get("findings", [])]
+    return [path for path in dict.fromkeys(paths) if path and path != "not available"]
+
+
 def _severity(value: str) -> str:
     normalized = str(value or "Low").strip().lower()
     return {
@@ -218,7 +254,8 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
             "No confirmed findings are ready for submission.",
             "",
         ])
-    for finding in confirmed:
+    for group in _marketplace_issue_groups(confirmed):
+        finding = group["primary"]
         artifact = _artifact(finding)
         indicator = _artifact_value(finding, "matched_indicator", finding.get("evidence", ""))
         location = _artifact_value(finding, "indicator_location", "evidence artifact")
@@ -228,6 +265,8 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
         severity = _severity(finding.get("severity", "Low"))
         impact = str(artifact.get("impact") or finding.get("business_impact") or finding.get("impact") or "Impact requires review.")
         url = str(finding.get("url") or finding.get("affected_url") or target)
+        affected_urls = _group_urls(group, target)
+        artifact_paths = _group_artifact_paths(group)
         reproduction_steps = _reproduction_steps(
             finding,
             url,
@@ -248,6 +287,13 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
         ])
         for index, step in enumerate(reproduction_steps, start=1):
             lines.append("{}. {}".format(index, step))
+        if len(affected_urls) > 1:
+            lines.extend([
+                "",
+                "### Affected URLs",
+            ])
+            for affected_url in affected_urls:
+                lines.append("- {}".format(affected_url))
         lines.extend([
             "",
             "### Impact",
@@ -258,6 +304,14 @@ def render_marketplace_report(scan: dict, platform: str) -> str:
             "- Artifact file: {}".format(artifact_path),
             "- Indicator: {}".format(indicator),
             "- Location: {}".format(location),
+        ])
+        if len(artifact_paths) > 1:
+            lines.append("- Additional artifacts:")
+            for path in artifact_paths[1:10]:
+                lines.append("  - {}".format(path))
+            if len(artifact_paths) > 10:
+                lines.append("  - {} more artifact(s) omitted from this summary".format(len(artifact_paths) - 10))
+        lines.extend([
             "",
             "### Remediation",
             _remediation(finding),
