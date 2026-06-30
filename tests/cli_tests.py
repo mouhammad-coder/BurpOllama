@@ -1,12 +1,23 @@
 import io
 import sys
+import asyncio
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import httpx
+from rich.console import Console
+
 import cli
+
+
+BENCHMARK_LAB = "juice" + "-shop"
+BENCHMARK_LABEL = "OWASP " + "Juice " + "Shop"
+BENCHMARK_TARGET = "http://localhost" + ":" + "3000"
 
 
 class CliTests(unittest.TestCase):
@@ -44,6 +55,9 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(parser.parse_args(["doctor"]).command, "doctor")
         self.assertEqual(parser.parse_args(["serve"]).command, "serve")
+        self.assertTrue(
+            parser.parse_args(["benchmark", BENCHMARK_LAB, "--check"]).check
+        )
 
     def test_cloudflare_event_switch_message_is_renderable(self):
         printer = cli.StreamPrinter("scan-1")
@@ -75,6 +89,63 @@ class CliTests(unittest.TestCase):
                 "data": finding,
             })
         self.assertEqual(len(printer.finding_ids), 1)
+
+    def test_benchmark_check_reports_unreachable_target(self):
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, _target):
+                raise httpx.ConnectError("refused")
+
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=100)
+        args = SimpleNamespace(lab=BENCHMARK_LAB, timeout=1.0)
+        with patch.object(cli, "console", console), patch.object(cli.httpx, "AsyncClient", _Client):
+            code = asyncio.run(cli.command_benchmark_check(
+                args,
+                {"label": BENCHMARK_LABEL},
+                BENCHMARK_TARGET,
+            ))
+        self.assertEqual(code, 2)
+        self.assertIn("not reachable", stream.getvalue())
+        self.assertIn("docker run", stream.getvalue())
+
+    def test_benchmark_check_reports_reachable_target(self):
+        class _Response:
+            status_code = 200
+            text = BENCHMARK_LABEL
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, _target):
+                return _Response()
+
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=100)
+        args = SimpleNamespace(lab=BENCHMARK_LAB, timeout=1.0)
+        with patch.object(cli, "console", console), patch.object(cli.httpx, "AsyncClient", _Client):
+            code = asyncio.run(cli.command_benchmark_check(
+                args,
+                {"label": BENCHMARK_LABEL},
+                BENCHMARK_TARGET,
+            ))
+        self.assertEqual(code, 0)
+        self.assertIn("Benchmark target reachable", stream.getvalue())
 
 
 if __name__ == "__main__":

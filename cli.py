@@ -158,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--yes", action="store_true")
     benchmark.add_argument("--output", default="reports")
     benchmark.add_argument("--timeout", type=float, default=10.0)
+    benchmark.add_argument("--check", action="store_true", help="Check whether the benchmark target is reachable without running probes.")
 
     watch = sub.add_parser("watch", help="Watch an existing scan in real time.")
     watch.add_argument("--scan-id", required=True)
@@ -1013,6 +1014,8 @@ async def command_benchmark(args) -> int:
     if not benchmark:
         raise RuntimeError("Unsupported benchmark: {}".format(args.lab))
     target = normalized_target(args.target or benchmark["default_target"])
+    if getattr(args, "check", False):
+        return await command_benchmark_check(args, benchmark, target)
     if not getattr(args, "yes", False):
         console.print(
             "[red]Benchmark mode is lab-specific. Re-run with --yes only for "
@@ -1108,6 +1111,55 @@ async def command_benchmark(args) -> int:
     context.scan["rate_limiter"] = context.rate_limiter.snapshot()
     scan_store.save(context.scan, context.triaged_findings)
     print_results(context.scan, started)
+    return 0
+
+
+async def command_benchmark_check(args, benchmark: dict, target: str) -> int:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(float(args.timeout), connect=min(float(args.timeout), 3.0)),
+        ) as client:
+            response = await client.get(target)
+    except httpx.HTTPError as exc:
+        console.print(
+            "[red]Benchmark target is not reachable: {}[/red]".format(
+                escape(str(exc))
+            )
+        )
+        console.print(
+            "Start OWASP Juice Shop locally, for example:\n"
+            "[cyan]docker run --rm -p 3000:3000 bkimminich/juice-shop[/cyan]\n"
+            "Then run:\n"
+            "[cyan]python cli.py benchmark {} --yes[/cyan]".format(
+                escape(str(args.lab))
+            )
+        )
+        return 2
+    body = response.text[:1000]
+    looks_expected = (
+        "OWASP Juice Shop" in body
+        or "juice-shop" in body.lower()
+        or response.status_code in {200, 301, 302}
+    )
+    console.print(
+        "[green]Benchmark target reachable[/green]: {} HTTP {}".format(
+            escape(target),
+            response.status_code,
+        )
+    )
+    console.print("Lab: {}".format(escape(str(benchmark["label"]))))
+    if not looks_expected:
+        console.print(
+            "[yellow]Warning: response did not look like the expected lab. "
+            "Confirm this is your authorized benchmark target before running probes.[/yellow]"
+        )
+    console.print(
+        "Run benchmark:\n[cyan]python cli.py benchmark {} --target {} --yes[/cyan]".format(
+            escape(str(args.lab)),
+            escape(target),
+        )
+    )
     return 0
 
 

@@ -108,6 +108,16 @@ burpollama recon https://authorized.example
 burpollama recon https://authorized.example --mode deep
 ```
 
+## Benchmarks
+
+Use benchmark mode only for local authorized labs. Check that OWASP Juice Shop
+is reachable before running validation probes:
+
+```bash
+burpollama benchmark juice-shop --check
+burpollama benchmark juice-shop --yes
+```
+
 ## Reports
 
 ```bash
