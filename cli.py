@@ -890,6 +890,7 @@ def print_results(scan: dict, started: float) -> None:
     elapsed = max(0, int(time.monotonic() - started))
     analysis = scan.get("analysis", {})
     coverage = analysis.get("coverage", {})
+    readiness = _scan_readiness_summary(scan)
     table = Table(box=box.ROUNDED, title="Scan summary")
     table.add_column("Metric")
     table.add_column("Value")
@@ -913,6 +914,9 @@ def print_results(scan: dict, started: float) -> None:
     table.add_row(
         "Candidate findings", str(len(scan.get("candidate_findings", [])))
     )
+    table.add_row("Report-ready issues", str(readiness["report_ready_issues"]))
+    table.add_row("Manual-check findings", str(readiness["manual_check_findings"]))
+    table.add_row("Proof-blocked findings", str(readiness["proof_blocked_findings"]))
     table.add_row(
         "Coverage", "{}%".format(coverage.get("coverage_percent", 0))
     )
@@ -931,6 +935,38 @@ def print_results(scan: dict, started: float) -> None:
             scan_id, scan_id, scan_id
         )
     )
+
+
+def _scan_readiness_summary(scan: dict) -> dict:
+    analysis = scan.get("analysis", {})
+    gate = analysis.get("zero_fp_gate") if isinstance(analysis, dict) else {}
+    if isinstance(gate, dict) and gate:
+        valid = list(gate.get("valid_bugs", []) or [])
+        manual = (
+            list(gate.get("needs_more_proof", []) or [])
+            + list(gate.get("candidates", []) or [])
+            + list(gate.get("informational", []) or [])
+        )
+        proof_blocked = list(gate.get("needs_more_proof", []) or [])
+    else:
+        valid = list(scan.get("confirmed_findings", []) or [])
+        manual = list(scan.get("candidate_findings", []) or [])
+        proof_blocked = [
+            finding for finding in manual
+            if str(finding.get("zero_fp_label") or "").upper() == "NEEDS PROOF"
+        ]
+    issue_keys = set()
+    for finding in valid:
+        issue_keys.add((
+            str(finding.get("title") or finding.get("vuln_type") or "").strip().lower(),
+            str(finding.get("severity") or "").strip().upper(),
+            str(finding.get("vuln_type") or "").strip().lower(),
+        ))
+    return {
+        "report_ready_issues": len(issue_keys),
+        "manual_check_findings": len(manual),
+        "proof_blocked_findings": len(proof_blocked),
+    }
 
 
 async def command_scan(args) -> int:

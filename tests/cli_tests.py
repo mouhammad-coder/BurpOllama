@@ -90,6 +90,53 @@ class CliTests(unittest.TestCase):
             })
         self.assertEqual(len(printer.finding_ids), 1)
 
+    def test_print_results_includes_readiness_summary(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+        scan = {
+            "id": "scan-ready",
+            "target": "https://example.test",
+            "mode": "passive",
+            "status": "complete",
+            "recon": {"urls": ["https://example.test"]},
+            "rate_limiter": {"total_requests": 3},
+            "triaged_findings": [
+                {"severity": "MEDIUM"},
+                {"severity": "MEDIUM"},
+                {"severity": "LOW"},
+            ],
+            "confirmed_findings": [],
+            "candidate_findings": [],
+            "analysis": {
+                "coverage": {"coverage_percent": 12.5},
+                "zero_fp_gate": {
+                    "valid_bugs": [
+                        {
+                            "title": "Missing content-security-policy",
+                            "vuln_type": "Missing Security Headers",
+                            "severity": "MEDIUM",
+                        },
+                        {
+                            "title": "Missing content-security-policy",
+                            "vuln_type": "Missing Security Headers",
+                            "severity": "MEDIUM",
+                        },
+                    ],
+                    "needs_more_proof": [{"title": "SSRF candidate"}],
+                    "candidates": [{"title": "Open redirect candidate"}],
+                    "informational": [],
+                },
+            },
+        }
+        with patch.object(cli, "console", console):
+            cli.print_results(scan, started=0)
+        output = stream.getvalue()
+        self.assertIn("Report-ready issues", output)
+        self.assertIn("Manual-check findings", output)
+        self.assertIn("Proof-blocked findings", output)
+        self.assertIn("1", output)
+        self.assertIn("2", output)
+
     def test_benchmark_check_reports_unreachable_target(self):
         class _Client:
             def __init__(self, *args, **kwargs):
