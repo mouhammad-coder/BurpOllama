@@ -1410,14 +1410,12 @@ async def command_scope_check(args) -> int:
     if getattr(args, "audit", False):
         audit = audit_scope(entries, target)
         command_scope = getattr(args, "write_scope", None) or getattr(args, "scope_file", None)
-        safe_passive_command = (
-            "python cli.py scan {} --mode passive --scope-file {} --max-urls 100 --time-budget 900".format(
-                target,
-                command_scope,
-            )
+        cli_runbook = (
+            _scope_preflight_runbook(target, command_scope)
             if target and audit["target_in_scope"] and command_scope
-            else ""
+            else []
         )
+        safe_passive_command = cli_runbook[0] if cli_runbook else ""
         if getattr(args, "write_manifest", None):
             manifest_path = Path(args.write_manifest)
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1430,6 +1428,7 @@ async def command_scope_check(args) -> int:
                 "entries": entries,
                 "audit": audit,
                 "safe_passive_command": safe_passive_command,
+                "cli_runbook": cli_runbook,
                 "warning": "Preflight is advisory; verify current program policy and authorization before scanning.",
             }
             manifest_path.write_text(
@@ -1465,12 +1464,28 @@ async def command_scope_check(args) -> int:
                     escape(safe_passive_command)
                 )
             )
+            console.print("\nCLI runbook:")
+            for index, command in enumerate(cli_runbook, start=1):
+                console.print("[cyan]{}. {}[/cyan]".format(index, escape(command)))
         return 0 if not target or audit["target_in_scope"] else 2
     if not target:
         raise RuntimeError("Pass a URL to check or use --audit --target <url>.")
     result, _parse_warnings = is_in_scope(target, entries)
     console.print("IN SCOPE" if result else "OUT OF SCOPE")
     return 0
+
+
+def _scope_preflight_runbook(target: str, scope_file: str) -> list[str]:
+    scan_command = (
+        "python cli.py scan {} --mode passive --yes --scope-file {} "
+        "--max-urls 100 --time-budget 900 --no-ai --no-external-tools "
+        "--output reports\\authorized-program"
+    ).format(target, scope_file)
+    return [
+        scan_command,
+        "python cli.py report --latest --format readiness",
+        "python cli.py history --ready-only --limit 20",
+    ]
 
 
 def _feedback_candidates(scan: dict) -> list[dict]:

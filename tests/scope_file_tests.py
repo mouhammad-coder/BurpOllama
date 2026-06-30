@@ -80,6 +80,9 @@ class ScopeFileTests(unittest.TestCase):
             self.assertIn("Scope preflight", output)
             self.assertIn("IN SCOPE", output)
             self.assertIn("Safe passive command", output)
+            self.assertIn("CLI runbook", output)
+            self.assertIn("report --latest --format readiness", output)
+            self.assertIn("history --ready-only --limit 20", output)
 
     def test_scope_check_imports_program_json_and_writes_scope_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -119,6 +122,11 @@ class ScopeFileTests(unittest.TestCase):
             self.assertTrue(payload["target_in_scope"])
             self.assertEqual(payload["entries"], ["api.example.com", "!admin.example.com"])
             self.assertIn(str(output_scope), payload["safe_passive_command"])
+            self.assertEqual(payload["safe_passive_command"], payload["cli_runbook"][0])
+            self.assertIn("--yes", payload["cli_runbook"][0])
+            self.assertIn("--no-external-tools", payload["cli_runbook"][0])
+            self.assertEqual(payload["cli_runbook"][1], "python cli.py report --latest --format readiness")
+            self.assertEqual(payload["cli_runbook"][2], "python cli.py history --ready-only --limit 20")
 
     def test_malformed_scope_file_line_warns_without_crash(self):
         with tempfile.TemporaryDirectory() as temp:
