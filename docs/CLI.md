@@ -35,6 +35,15 @@ burpollama scan https://authorized.example --mode bounty --yes
 Use `--scope authorized.example` to enforce an explicit domain allowlist. The
 option can be repeated.
 
+Before scanning a program scope file, run a preflight audit:
+
+```bash
+burpollama scope-check --scope-file scope.txt --audit --target https://api.authorized.example
+```
+
+The audit prints included/excluded rule counts, target scope status, and a safe
+passive scan command when the target is in scope.
+
 Additional controls:
 
 ```text

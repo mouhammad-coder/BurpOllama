@@ -14,7 +14,7 @@ from rich.console import Console
 import cli
 from core.agents.header_agent import HeaderAgent
 from core.events import EventType
-from core.scope import ScanScope, is_in_scope, load_scope_file
+from core.scope import ScanScope, audit_scope, is_in_scope, load_scope_file
 
 
 class ScopeFileTests(unittest.TestCase):
@@ -47,6 +47,38 @@ class ScopeFileTests(unittest.TestCase):
                 code = asyncio.run(cli.command_scope_check(args))
             self.assertEqual(code, 0)
             self.assertIn("IN SCOPE", stream.getvalue())
+
+    def test_scope_audit_summarizes_rules_and_target_status(self):
+        audit = audit_scope(
+            ["*.example.com", "api.example.com", "!excluded.example.com", "https://app.example.com/api"],
+            "https://api.example.com/v1",
+        )
+        self.assertEqual(audit["included_rules"], 3)
+        self.assertEqual(audit["excluded_rules"], 1)
+        self.assertEqual(audit["wildcard_rules"], 1)
+        self.assertEqual(audit["host_rules"], 2)
+        self.assertEqual(audit["url_prefix_rules"], 1)
+        self.assertTrue(audit["target_in_scope"])
+
+    def test_scope_check_audit_prints_preflight_and_safe_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scope.txt"
+            path.write_text("*.example.com\n!excluded.example.com\n", encoding="utf-8")
+            stream = io.StringIO()
+            console = Console(file=stream, force_terminal=False, width=120)
+            args = Namespace(
+                scope_file=str(path),
+                audit=True,
+                target="https://api.example.com",
+                url=None,
+            )
+            with patch.object(cli, "console", console):
+                code = asyncio.run(cli.command_scope_check(args))
+            output = stream.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("Scope preflight", output)
+            self.assertIn("IN SCOPE", output)
+            self.assertIn("Safe passive command", output)
 
     def test_malformed_scope_file_line_warns_without_crash(self):
         with tempfile.TemporaryDirectory() as temp:

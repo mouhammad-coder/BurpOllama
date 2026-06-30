@@ -187,7 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     scope_check = sub.add_parser("scope-check", help="Check a URL against a scope file.")
     scope_check.add_argument("--scope-file", required=True)
-    scope_check.add_argument("url")
+    scope_check.add_argument("--audit", action="store_true", help="Print a full scope preflight audit.")
+    scope_check.add_argument("--target", default="", help="Target URL to audit against the scope file.")
+    scope_check.add_argument("url", nargs="?")
 
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
     sub.add_parser("history", help="List locally stored scans.")
@@ -1259,12 +1261,47 @@ async def command_history(args) -> int:
 
 
 async def command_scope_check(args) -> int:
-    from core.scope import is_in_scope, load_scope_file
+    from core.scope import audit_scope, is_in_scope, load_scope_file
 
     entries, load_warnings = load_scope_file(args.scope_file)
-    result, _parse_warnings = is_in_scope(args.url, entries)
     for warning in load_warnings:
         console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+    target = getattr(args, "target", "") or getattr(args, "url", "") or ""
+    if getattr(args, "audit", False):
+        audit = audit_scope(entries, target)
+        table = Table(title="Scope preflight")
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Scope file", str(args.scope_file))
+        table.add_row("Included rules", str(audit["included_rules"]))
+        table.add_row("Excluded rules", str(audit["excluded_rules"]))
+        table.add_row("Wildcard rules", str(audit["wildcard_rules"]))
+        table.add_row("Host rules", str(audit["host_rules"]))
+        table.add_row("URL-prefix rules", str(audit["url_prefix_rules"]))
+        if target:
+            table.add_row(
+                "Target status",
+                "IN SCOPE" if audit["target_in_scope"] else "OUT OF SCOPE",
+            )
+        console.print(table)
+        if audit["warnings"]:
+            for warning in audit["warnings"]:
+                console.print("[yellow]Scope warning: {}[/yellow]".format(escape(warning)))
+        if audit["excluded"]:
+            console.print("[bold]Excluded rules:[/bold]")
+            for rule in audit["excluded"][:20]:
+                console.print("- {}".format(escape(rule["raw"])))
+        if target and audit["target_in_scope"]:
+            console.print(
+                "\nSafe passive command:\n[cyan]python cli.py scan {} --mode passive --scope-file {} --max-urls 100 --time-budget 900[/cyan]".format(
+                    escape(target),
+                    escape(str(args.scope_file)),
+                )
+            )
+        return 0 if not target or audit["target_in_scope"] else 2
+    if not target:
+        raise RuntimeError("Pass a URL to check or use --audit --target <url>.")
+    result, _parse_warnings = is_in_scope(target, entries)
     console.print("IN SCOPE" if result else "OUT OF SCOPE")
     return 0
 

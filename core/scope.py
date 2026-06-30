@@ -106,6 +106,46 @@ def is_in_scope(url: str, entries: list[str]) -> tuple[bool, list[str]]:
     return any(not rule.excluded and rule.matches(url) for rule in rules), warnings
 
 
+def audit_scope(entries: list[str], target: str = "") -> dict:
+    rules, warnings = parse_scope_entries(entries)
+    included = [rule for rule in rules if not rule.excluded]
+    excluded = [rule for rule in rules if rule.excluded]
+    target_in_scope = None
+    if target:
+        target_in_scope = (
+            False
+            if any(rule.excluded and rule.matches(target) for rule in rules)
+            else any(rule.matches(target) for rule in included)
+        )
+    return {
+        "total_rules": len(rules),
+        "included_rules": len(included),
+        "excluded_rules": len(excluded),
+        "wildcard_rules": sum(1 for rule in rules if rule.kind == "wildcard"),
+        "host_rules": sum(1 for rule in rules if rule.kind == "host"),
+        "url_prefix_rules": sum(1 for rule in rules if rule.kind == "url_prefix"),
+        "warnings": warnings,
+        "target": target,
+        "target_in_scope": target_in_scope,
+        "included": [
+            {
+                "raw": rule.raw,
+                "kind": rule.kind,
+                "value": rule.value,
+            }
+            for rule in included
+        ],
+        "excluded": [
+            {
+                "raw": rule.raw,
+                "kind": rule.kind,
+                "value": rule.value,
+            }
+            for rule in excluded
+        ],
+    }
+
+
 @dataclass
 class ScanScope:
     target: str
