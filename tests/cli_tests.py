@@ -137,6 +137,47 @@ class CliTests(unittest.TestCase):
         self.assertIn("1", output)
         self.assertIn("2", output)
 
+    def test_history_includes_readiness_counts(self):
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, width=120)
+
+        class _Store:
+            def list(self):
+                return [{
+                    "scan_id": "scan-1",
+                    "target": "https://example.test",
+                    "status": "complete",
+                    "phase": "complete",
+                    "started_at": "2026-06-30T00:00:00Z",
+                }]
+
+            def get(self, scan_id):
+                if scan_id != "scan-1":
+                    raise AssertionError(scan_id)
+                return {
+                    "analysis": {
+                        "zero_fp_gate": {
+                            "valid_bugs": [{
+                                "title": "Missing CSP",
+                                "vuln_type": "Header",
+                                "severity": "MEDIUM",
+                            }],
+                            "needs_more_proof": [{"title": "SSRF candidate"}],
+                            "candidates": [{"title": "Open redirect"}],
+                            "informational": [],
+                        }
+                    }
+                }
+
+        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            code = asyncio.run(cli.command_history(SimpleNamespace()))
+        output = stream.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("Ready", output)
+        self.assertIn("Manual", output)
+        self.assertIn("Proof", output)
+        self.assertIn("scan-1", output)
+
     def test_benchmark_check_reports_unreachable_target(self):
         class _Client:
             def __init__(self, *args, **kwargs):

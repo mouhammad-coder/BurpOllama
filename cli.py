@@ -1338,14 +1338,19 @@ async def command_status(args) -> int:
 async def command_history(args) -> int:
     scans = scan_store.list()
     table = Table(title="Scan history", box=box.ROUNDED)
-    for column in ("Scan ID", "Target", "Status", "Phase", "Started"):
+    for column in ("Scan ID", "Target", "Status", "Ready", "Manual", "Proof", "Started"):
         table.add_column(column)
     for scan in scans:
+        scan_id = str(scan.get("scan_id", ""))
+        stored = scan_store.get(scan_id) or scan
+        readiness = _scan_readiness_summary(stored)
         table.add_row(
-            str(scan.get("scan_id", "")),
+            scan_id,
             str(scan.get("target", "")),
             str(scan.get("status", "")),
-            str(scan.get("phase", "")),
+            str(readiness["report_ready_issues"]),
+            str(readiness["manual_check_findings"]),
+            str(readiness["proof_blocked_findings"]),
             str(scan.get("started_at", "")),
         )
     console.print(table)
