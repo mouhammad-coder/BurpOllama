@@ -63,6 +63,7 @@ class ScanOptions:
     api_key: str = ""
     output: str = "reports"
     time_budget: int = 900
+    max_urls: int = 100
     oob_server: str = ""
     no_external_tools: bool = False
 
@@ -79,7 +80,8 @@ class ScanOptions:
         self.rate_limit = max(0.1, min(float(self.rate_limit), 50.0))
         self.timeout = max(1.0, min(float(self.timeout), 120.0))
         self.retries = max(0, min(int(self.retries), 5))
-        self.time_budget = max(30, min(int(self.time_budget), 7200))
+        self.time_budget = max(1, min(int(self.time_budget), 7200))
+        self.max_urls = max(1, min(int(self.max_urls), 2000))
         self.output = str(Path(self.output or "reports").expanduser())
 
     @property
@@ -134,6 +136,7 @@ class Scanner:
         model: str = "",
         output: str = "reports",
         time_budget: int = 900,
+        max_urls: int = 100,
         oob_server: str = "",
         no_external_tools: bool = False,
     ) -> dict[str, Any]:
@@ -151,6 +154,7 @@ class Scanner:
             api_key=api_key,
             output=output,
             time_budget=time_budget,
+            max_urls=max_urls,
             oob_server=oob_server,
             no_external_tools=no_external_tools,
         )
@@ -287,14 +291,10 @@ class Scanner:
         self.store.save(scan, [])
 
         try:
-            await self._phase(context, "target_check", self._target_check)
-            await self._phase(context, "reconnaissance", self._recon)
-            await self._phase(
-                context, "vulnerability_hunt", self._vulnerability_hunt
+            await asyncio.wait_for(
+                self._run_phases(context),
+                timeout=options.time_budget,
             )
-            await self._phase(context, "ai_triage", self._ai_triage)
-            await self._phase(context, "proof_validation", self._proof_validation)
-            await self._phase(context, "report_export", self._report_export)
             scan.update({
                 "status": "complete",
                 "phase": "complete",
@@ -305,6 +305,22 @@ class Scanner:
                 message="Scan complete",
                 findings=len(context.triaged_findings),
             )
+        except TimeoutError:
+            scan.update({
+                "status": "interrupted",
+                "phase": "interrupted",
+                "error": "Scan time budget of {}s exceeded".format(options.time_budget),
+                "finished": datetime.now(timezone.utc).isoformat(),
+            })
+            if not context.triaged_findings:
+                context.triaged_findings = list(context.raw_findings)
+                scan["triaged_findings"] = context.triaged_findings
+            await context.emit(
+                EventType.SCAN_INTERRUPTED,
+                message="Scan time budget exceeded; writing partial reports",
+                time_budget=options.time_budget,
+            )
+            await self._safe_partial_report(context)
         except (ScanCancelled, asyncio.CancelledError, KeyboardInterrupt) as exc:
             scan.update({
                 "status": "interrupted",
@@ -338,6 +354,16 @@ class Scanner:
                 event_bus.unsubscribe(event_subscription)
             self.active_contexts.pop(scan["id"], None)
         return scan
+
+    async def _run_phases(self, context):
+        await self._phase(context, "target_check", self._target_check)
+        await self._phase(context, "reconnaissance", self._recon)
+        await self._phase(
+            context, "vulnerability_hunt", self._vulnerability_hunt
+        )
+        await self._phase(context, "ai_triage", self._ai_triage)
+        await self._phase(context, "proof_validation", self._proof_validation)
+        await self._phase(context, "report_export", self._report_export)
 
     def start_background(
         self,
@@ -412,10 +438,12 @@ class Scanner:
         await context.scheduler.run(
             "recon", lambda: ReconAgent().execute(context)
         )
+        await self._enforce_url_budget(context, agent="recon")
         await context.scheduler.run(
             "crawler", lambda: CrawlerAgent().execute(context)
         )
         await self._external_katana(context)
+        await self._enforce_url_budget(context, agent="katana")
         await context.scheduler.run(
             "javascript", lambda: JavaScriptAgent().execute(context)
         )
@@ -435,6 +463,31 @@ class Scanner:
                 "ai-strategy",
                 lambda: AIStrategyAgent().execute(context),
             )
+
+    async def _enforce_url_budget(self, context, *, agent: str) -> None:
+        max_urls = int(getattr(context.options, "max_urls", 100) or 100)
+        urls = list(dict.fromkeys(context.recon.get("urls", []) or []))
+        if len(urls) <= max_urls:
+            context.recon["urls"] = urls
+            context.scan["recon"] = context.recon
+            return
+        kept = urls[:max_urls]
+        skipped = urls[max_urls:]
+        context.recon["urls"] = kept
+        context.recon.setdefault("skipped_by_budget", []).extend(skipped)
+        context.scan["recon"] = context.recon
+        await context.emit(
+            EventType.SKIPPED,
+            agent=agent,
+            phase="reconnaissance",
+            message="URL budget kept {} of {} discovered URL(s)".format(
+                len(kept),
+                len(urls),
+            ),
+            reason="url_budget_exceeded",
+            max_urls=max_urls,
+            skipped_count=len(skipped),
+        )
 
     async def _external_katana(self, context):
         if context.options.no_external_tools:

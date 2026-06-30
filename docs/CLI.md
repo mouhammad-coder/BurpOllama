@@ -20,7 +20,8 @@ burpollama scan https://authorized.example --mode deep
 
 # Explicit scope and bounded execution
 burpollama scan https://authorized.example --mode bounty \
-  --scope authorized.example --concurrency 5 --rate-limit 2 --yes
+  --scope authorized.example --concurrency 5 --rate-limit 2 \
+  --max-urls 100 --time-budget 900 --yes
 ```
 
 Passive mode does not run active vulnerability tests. Bounty and deep modes ask
@@ -41,6 +42,8 @@ Additional controls:
 --rate-limit N        global requests per second (default 2)
 --timeout SECONDS     request timeout
 --retries N           bounded retry policy
+--max-urls N          maximum discovered URLs carried into scan phases
+--time-budget SECONDS maximum scan runtime before partial reports are written
 --ai PROVIDER         preferred configured AI provider
 --model MODEL         preferred model
 --output DIRECTORY    report root directory

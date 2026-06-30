@@ -104,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--timeout", type=float, default=10.0)
     scan.add_argument("--retries", type=int, default=1)
     scan.add_argument(
+        "--time-budget",
+        type=int,
+        default=900,
+        help="Maximum scan runtime in seconds before writing partial reports.",
+    )
+    scan.add_argument(
+        "--max-urls",
+        type=int,
+        default=100,
+        help="Maximum discovered in-scope URLs to carry into scan phases.",
+    )
+    scan.add_argument(
         "--ai",
         action="store_true",
         help="Enable AI agents from the start if a provider is configured.",
@@ -936,6 +948,8 @@ async def command_scan(args) -> int:
         rate_limit=args.rate_limit,
         timeout=args.timeout,
         retries=args.retries,
+        time_budget=args.time_budget,
+        max_urls=args.max_urls,
         ai_provider=args.ai_provider,
         ai_enabled=ai_enabled,
         model=args.model,
