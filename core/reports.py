@@ -167,6 +167,14 @@ def _group_artifact_paths(group: dict) -> list[str]:
     return [path for path in dict.fromkeys(paths) if path and path != "not available"]
 
 
+def _missing_artifact_count(findings: list[dict]) -> int:
+    return sum(
+        1
+        for finding in findings
+        if not _artifact_available(_artifact_path(finding))
+    )
+
+
 def _severity(value: str) -> str:
     normalized = str(value or "Low").strip().lower()
     return {
@@ -224,6 +232,7 @@ def render_readiness_report(scan: dict) -> str:
         "report_ready_issues": len(confirmed_groups),
         "report_ready_findings": len(confirmed),
         "manual_check_findings": len(candidates),
+        "missing_report_ready_artifacts": _missing_artifact_count(confirmed),
         "removed_or_out_of_scope": len(gated.get("false_positives_removed", []) or [])
         + len(gated.get("skipped_out_of_scope", []) or []),
     }
@@ -243,6 +252,7 @@ def render_readiness_report(scan: dict) -> str:
         "",
         "- Report-ready issues: {}".format(summary["report_ready_issues"]),
         "- Report-ready findings: {}".format(summary["report_ready_findings"]),
+        "- Missing report-ready artifacts: {}".format(summary["missing_report_ready_artifacts"]),
         "- Manual-check findings: {}".format(summary["manual_check_findings"]),
         "- Removed/out-of-scope findings: {}".format(summary["removed_or_out_of_scope"]),
     ]
@@ -262,6 +272,9 @@ def render_readiness_report(scan: dict) -> str:
     for group in confirmed_groups:
         finding = group["primary"]
         urls = _group_urls(group, target)
+        artifact_path = _artifact_path(finding)
+        artifact_status = "available" if _artifact_available(artifact_path) else "missing"
+        group_artifact_paths = _group_artifact_paths(group)
         lines.extend([
             "### [{}] {}".format(
                 _severity(finding.get("severity", "Low")),
@@ -271,9 +284,17 @@ def render_readiness_report(scan: dict) -> str:
             "- Grouped findings: {}".format(len(group.get("findings", []))),
             "- Affected URLs: {}".format(len(urls)),
             "- Primary URL: {}".format(urls[0] if urls else target),
-            "- Evidence: {}".format(_artifact_path(finding)),
+            "- Evidence: {} ({})".format(artifact_path, artifact_status),
             "",
         ])
+        if len(group_artifact_paths) > 1:
+            lines.append("Additional artifacts:")
+            for path in group_artifact_paths[1:10]:
+                status = "available" if _artifact_available(path) else "missing"
+                lines.append("- {} ({})".format(path, status))
+            if len(group_artifact_paths) > 10:
+                lines.append("- {} more artifact(s) omitted from this audit".format(len(group_artifact_paths) - 10))
+            lines.append("")
 
     lines.extend(["## Manual-Check Queue", ""])
     if not candidates:

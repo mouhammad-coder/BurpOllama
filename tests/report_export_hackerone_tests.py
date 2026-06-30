@@ -119,13 +119,41 @@ class ReportExportHackerOneTests(unittest.TestCase):
         self.assertIn("# Bounty Readiness Audit", body)
         self.assertIn("- Report-ready issues: 1", body)
         self.assertIn("- Report-ready findings: 2", body)
+        self.assertIn("- Missing report-ready artifacts: 2", body)
         self.assertIn("- Manual-check findings: 1", body)
         self.assertIn("- Removed/out-of-scope findings: 1", body)
         self.assertIn("- Grouped findings: 2", body)
+        self.assertIn("- Evidence: evidence/scan/header-csp.json (missing)", body)
         self.assertIn("SSRF-prone parameter observed", body)
         self.assertIn("exploitability_not_confirmed_or_probable", body)
         self.assertIn("Safe validation steps:", body)
         self.assertIn("1. Validate only within authorized scope.", body)
+
+    def test_readiness_report_marks_available_report_ready_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            artifact = Path(temp) / "header-csp.json"
+            artifact.write_text('{"ok": true}', encoding="utf-8")
+            ready = _finding()
+            ready["evidence_artifact"] = {
+                **ready["evidence_artifact"],
+                "artifact_path": str(artifact),
+            }
+            scan = _scan([ready])
+            scan["analysis"] = {
+                "zero_fp_gate": {
+                    "valid_bugs": [ready],
+                    "needs_more_proof": [],
+                    "candidates": [],
+                    "informational": [],
+                    "false_positives_removed": [],
+                    "skipped_out_of_scope": [],
+                }
+            }
+
+            body = render_report(scan, "readiness")
+
+            self.assertIn("- Missing report-ready artifacts: 0", body)
+            self.assertIn("- Evidence: {} (available)".format(artifact), body)
 
     def test_candidates_section_lists_unconfirmed_findings(self):
         candidate = _finding("needs_manual_validation", "Open redirect candidate parameter observed")
