@@ -10,7 +10,7 @@ import httpx
 
 from finding_model import normalize_finding
 
-from core.agents.base import BaseAgent, ScanContext
+from core.agents.base import BaseAgent, ScanContext, observe_response
 from core.evidence import write_evidence_artifact
 from core.events import EventType
 
@@ -128,14 +128,15 @@ class RateLimitAgent(BaseAgent):
     async def run(self, context: ScanContext):
         findings = []
         passive_candidates = self._passive_findings(context)
-        if context.options.mode == "passive":
+        goal = str(getattr(context.options, "goal", "") or context.scan.get("goal") or "")
+        if context.options.mode == "passive" or goal in {"bounty-hunt", "api-hunt"}:
             findings.extend(passive_candidates)
             await context.emit(
                 EventType.SKIPPED,
                 agent=self.name,
                 phase=self.phase,
-                message="Skipped active rate-limit test in passive mode",
-                reason="passive_mode",
+                message="Skipped active rate-limit test; observation-only mode",
+                reason="rate_limit_observation_only",
             )
         else:
             findings.extend(await self._probe_findings(context, passive_candidates))
@@ -241,6 +242,13 @@ class RateLimitAgent(BaseAgent):
                     try:
                         response = await client.get(url)
                         elapsed_ms = round((time.monotonic() - start) * 1000, 2)
+                        await observe_response(
+                            context,
+                            response.status_code,
+                            agent=self.name,
+                            phase=self.phase,
+                            body_hint=getattr(response, "text", "")[:512],
+                        )
                         snapshots.append({
                             "status_code": response.status_code,
                             "elapsed_ms": elapsed_ms,

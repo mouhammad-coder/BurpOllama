@@ -79,7 +79,7 @@ class CoreRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(states["recon"]["status"], "complete")
 
-    def test_storage_tracks_reports(self):
+    def test_storage_rejects_report_registry_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ScanStore(Path(directory) / "scans.db")
             report = Path(directory) / "report.md"
@@ -93,8 +93,9 @@ class CoreRuntimeTests(unittest.TestCase):
                 "started": "now",
                 "triaged_findings": [],
             }, [])
-            store.save_report("scan-1", "markdown", report)
-            self.assertEqual(store.reports("scan-1")["markdown"], str(report))
+            with self.assertRaises(RuntimeError):
+                store.save_report("scan-1", "markdown", report)
+            self.assertEqual(store.reports("scan-1"), {})
 
 
 if __name__ == "__main__":

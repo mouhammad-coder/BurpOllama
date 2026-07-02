@@ -1,0 +1,12 @@
+{
+  "name": "userA",
+  "base_url": "https://example.com",
+  "cookies": {
+    "session": "REPLACE_WITH_AUTHORIZED_TEST_ACCOUNT_COOKIE"
+  },
+  "headers": {
+    "Authorization": "Bearer REPLACE_WITH_AUTHORIZED_TEST_ACCOUNT_TOKEN"
+  },
+  "role": "standard-user",
+  "notes": "Example only. Use an owned authorized test account."
+}

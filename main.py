@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-BurpOllama v3.1 — Full Automated Pipeline + WAF Fingerprinting + Adaptive Throttle
-Gemini-powered: Recon → WAF Check → Hunt → Triage (CoT) → Analysis → Report
-+ Burp Suite passive analysis layer
+BurpOllama v3.1 — Authorized scanning + final findings presentation.
 """
 
 import os
@@ -15,7 +13,7 @@ if env_file.exists():
 import asyncio, json, re, sys, time, uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx, uvicorn
@@ -64,7 +62,6 @@ from triage_gate   import batch_triage, run_deep_analysis
 from reporter      import (
     generate_full_report, generate_submission, generate_executive_report,
     generate_technical_report, generate_json_report, generate_csv_report,
-    generate_sarif_report,
 )
 from waf_engine    import fingerprint_waf, fingerprint_waf_v2, throttle
 from utils         import prune_http_for_llm
@@ -109,7 +106,7 @@ from core.evidence import write_evidence_artifact
 from core.events import event_bus
 from core.scanner import scanner as core_scanner
 
-STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
+STARTUP_TIME = datetime.now(timezone.utc).isoformat()
 _startup_banner_printed = False
 from xss_proof_engine import prove_xss
 from graphql_auth_tester import test_graphql_auth
@@ -318,7 +315,7 @@ async def _send_websocket_event(data: dict):
     ws_clients.difference_update(dead)
 
 async def log_broadcast(scan_id: str, msg: str, level: str = "info"):
-    ts    = datetime.utcnow().strftime("%H:%M:%S")
+    ts    = datetime.now(timezone.utc).strftime("%H:%M:%S")
     entry = {"ts": ts, "msg": msg, "level": level}
     if scan_id in scans:
         scans[scan_id].setdefault("logs", []).append(entry)
@@ -387,7 +384,7 @@ async def pattern_scan_traffic(payload: BurpTraffic) -> list[dict]:
                 return redacted
             finding_data = {
                 "id":          "P-{}-{}".format(int(time.time()*1000), len(findings_store)),
-                "timestamp":   datetime.utcnow().isoformat(),
+                "timestamp":   datetime.now(timezone.utc).isoformat(),
                 "source":      "burp-pattern",
                 "vuln_type":   p["name"],
                 "severity":    p["sev"],
@@ -486,7 +483,7 @@ async def burp_worker():
                     continue
                 f = normalize_finding({
                     "id":          "G-{}-{}".format(int(time.time()*1000), len(findings_store)),
-                    "timestamp":   datetime.utcnow().isoformat(),
+                    "timestamp":   datetime.now(timezone.utc).isoformat(),
                     "source":      "burp-gemini",
                     "vuln_type":   r.get("vuln_type","Unknown"),
                     "severity":    r.get("severity","INFO").upper(),
@@ -1164,7 +1161,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             ) else "MEDIUM")
             f = normalize_finding({
                 "id":          "JS-{}-{}".format(int(time.time()*1000), len(findings_store)),
-                "timestamp":   datetime.utcnow().isoformat(),
+                "timestamp":   datetime.now(timezone.utc).isoformat(),
                 "source":      "js-{}".format(jf.get("source","analysis")),
                 "vuln_type":   jf.get("type","JS Finding"),
                 "severity":    sev,
@@ -1448,7 +1445,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
             )
 
         for f in raw_findings:
-            f["timestamp"] = datetime.utcnow().isoformat()
+            f["timestamp"] = datetime.now(timezone.utc).isoformat()
             findings_store.append(f)
             stats[f["severity"]] += 1; stats["total"] += 1
             swarm_write(
@@ -1488,7 +1485,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
                 oob_findings = []
             for f in oob_findings:
                 f["id"]        = "OOB-{}-{}".format(int(time.time()*1000), len(findings_store))
-                f["timestamp"] = datetime.utcnow().isoformat()
+                f["timestamp"] = datetime.now(timezone.utc).isoformat()
                 f.setdefault("method", "GET")
                 f.setdefault("triaged", False)
                 f.setdefault("verdict", "PASS")
@@ -1852,7 +1849,7 @@ async def run_pipeline(scan_id: str, target: str, api_key: str):
         )
         _save_phase_checkpoint(scan_id, "intelligence")
         scan.update({"status": "complete", "phase": "complete",
-                     "finished": datetime.utcnow().isoformat()})
+                     "finished": datetime.now(timezone.utc).isoformat()})
         autopilot_state.update_run(scan_id, status="completed", phase="completed",
                                    checkpoint={"finished": scan["finished"]}, finished=True)
         autopilot_state.upsert_task(scan_id, "full_pipeline", "completed")
@@ -2093,7 +2090,7 @@ async def _resume_pipeline_from_checkpoint(
             for finding in raw_findings:
                 if finding.get("id") in existing_ids:
                     continue
-                finding["timestamp"] = datetime.utcnow().isoformat()
+                finding["timestamp"] = datetime.now(timezone.utc).isoformat()
                 findings_store.append(finding)
                 stats[finding["severity"]] += 1
                 stats["total"] += 1
@@ -2362,7 +2359,7 @@ async def _resume_pipeline_from_checkpoint(
         scan.update({
             "status": "complete",
             "phase": "complete",
-            "finished": datetime.utcnow().isoformat(),
+            "finished": datetime.now(timezone.utc).isoformat(),
         })
         scan.pop("_checkpoint_resume_running", None)
         event_store.append(
@@ -2404,7 +2401,7 @@ async def _show_startup_banner():
     global STARTUP_TIME, _startup_banner_printed
     if _startup_banner_printed:
         return
-    STARTUP_TIME = datetime.utcnow().isoformat() + "Z"
+    STARTUP_TIME = datetime.now(timezone.utc).isoformat()
     _startup_banner_printed = True
     cloud_enabled = os.getenv("CLOUD_AI_ENABLED", "0") == "1"
     ai_privacy_guard.update({"cloud_ai_enabled": cloud_enabled}, persist=False)
@@ -2444,7 +2441,7 @@ async def _launch_fresh_scope_scan(record: dict, target: str) -> Optional[str]:
         "control": "run",
         "requested_scan_mode": scope_policy.config.scan_mode,
         "authorization_warning": "",
-        "started": datetime.utcnow().isoformat(),
+        "started": datetime.now(timezone.utc).isoformat(),
         "logs": [],
         "fresh_scope_source": {
             "platform": record.get("platform", ""),
@@ -2452,7 +2449,7 @@ async def _launch_fresh_scope_scan(record: dict, target: str) -> Optional[str]:
             "program_name": record.get("program_name", ""),
             "program_url": record.get("program_url", ""),
             "asset": record.get("asset", ""),
-            "discovered_at": datetime.utcnow().isoformat(),
+            "discovered_at": datetime.now(timezone.utc).isoformat(),
         },
     }
     resume_token = autopilot_state.create_run(
@@ -2506,12 +2503,6 @@ async def lifespan(app: FastAPI):
     for w in workers: w.cancel()
 
 app = FastAPI(title="BurpOllama", version="3.1.0", lifespan=lifespan)
-
-
-@app.on_event("startup")
-async def startup_event():
-    await _show_startup_banner()
-
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
@@ -2834,7 +2825,7 @@ async def resume_autopilot(req: AutopilotResumeRequest):
         "status": "queued",
         "phase": stored.get("phase", "queued"),
         "control": "run",
-        "started": stored.get("created_at", datetime.utcnow().isoformat()),
+        "started": stored.get("created_at", datetime.now(timezone.utc).isoformat()),
         "logs": [],
         "autopilot_resume_token": stored.get("resume_token"),
     }
@@ -2857,72 +2848,53 @@ async def get_scan(scan_id: str):
 @app.get("/scan/{scan_id}/report")
 async def get_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    report = scans[scan_id].get("report","")
-    if not report: raise HTTPException(404,"Report not ready yet")
-    return PlainTextResponse(report, media_type="text/markdown")
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scan/{scan_id}/report/executive")
 async def get_executive_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    s = scans[scan_id]
-    return PlainTextResponse(generate_executive_report(
-        s.get("target", ""), s.get("recon", {}), s.get("triaged_findings", []),
-        s.get("analysis", {}), scope_policy.to_dict()
-    ), media_type="text/markdown")
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scan/{scan_id}/report/technical")
 async def get_technical_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    s = scans[scan_id]
-    return PlainTextResponse(generate_technical_report(
-        s.get("target", ""), s.get("recon", {}), s.get("triaged_findings", []),
-        s.get("analysis", {}), scope_policy.to_dict(), review_queue.get_all(scan_id, limit=500)
-    ), media_type="text/markdown")
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scan/{scan_id}/report/json")
 async def get_json_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    s = scans[scan_id]
-    return JSONResponse(generate_json_report(
-        s.get("target", ""), s.get("recon", {}), s.get("triaged_findings", []),
-        s.get("analysis", {}), scope_policy.to_dict(), review_queue.get_all(scan_id, limit=500)
-    ))
+    return JSONResponse({"message": "This command is deprecated. Use `burpollama findings --latest` instead."})
 
 @app.get("/scan/{scan_id}/report/csv")
 async def get_csv_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    s = scans[scan_id]
-    csv_text = generate_csv_report(s.get("triaged_findings", []))
-    return Response(csv_text, media_type="text/csv",
-                    headers={"Content-Disposition":"attachment; filename=burpollama_{}_findings.csv".format(scan_id)})
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
-@app.get("/scan/{scan_id}/report/sarif")
-async def get_sarif_report(scan_id: str):
+@app.get("/scan/{scan_id}/findings-data/deprecated-export")
+async def get_deprecated_findings_export(scan_id: str):
     if scan_id not in scans:
         raise HTTPException(404, "Scan not found")
-    scan = scans[scan_id]
-    sarif = generate_sarif_report(
-        scan.get("target", ""),
-        scan.get("triaged_findings", []),
-        tool_version=app.version,
-    )
-    return JSONResponse(
-        sarif,
-        media_type="application/sarif+json",
-        headers={
-            "Content-Disposition": (
-                "attachment; filename=burpollama_{}.sarif".format(scan_id)
-            )
-        },
-    )
+    return JSONResponse({"message": "This command is deprecated. Use `burpollama findings --latest` instead."})
 
 @app.get("/scan/{scan_id}/report/download")
 async def download_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    report = scans[scan_id].get("report","")
-    target = scans[scan_id].get("target","target").replace("https://","").replace("http://","").split("/")[0]
-    return PlainTextResponse(report, media_type="text/markdown",
-        headers={"Content-Disposition":"attachment; filename=burpollama_{}.md".format(target)})
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 def _coverage_v2_for_scan(scan_id: str) -> dict:
     scan = scans[scan_id]
@@ -3037,7 +3009,7 @@ def _autopilot_for_scan(scan_id: str) -> dict:
         "high_risk_untested_urls": coverage.get("high_risk_untested_urls", coverage.get("top_untested", [])),
     }
     return {
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "scan": {
             "id": scan.get("id", ""),
             "target": scan.get("target", ""),
@@ -3101,9 +3073,9 @@ async def get_bounty_mode_json(scan_id: str):
         "generated_at": data.get("generated_at"),
         "selected_scan": data.get("selected_scan", {}),
         "zero_false_positive_mode": True,
-        "note": "Only READY findings are included in bounty reports.",
-        "ready_findings": data.get("ready_findings", []),
-        "ready_count": len(data.get("ready_findings", [])),
+        "note": "Great Findings have strong evidence. Needs Manual Check findings require human validation.",
+        "great_findings": data.get("ready_findings", []),
+        "great_count": len(data.get("ready_findings", [])),
     }
     return JSONResponse(export,
         headers={"Content-Disposition":"attachment; filename=burpollama_{}_bounty.json".format(scan_id)})
@@ -3111,39 +3083,27 @@ async def get_bounty_mode_json(scan_id: str):
 @app.get("/scan/{scan_id}/bounty/markdown")
 async def get_bounty_mode_markdown(scan_id: str, platform: str = "hackerone"):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    platform = platform if platform.lower() in ("hackerone", "bugcrowd") else "hackerone"
-    report = build_bounty_report(_bounty_for_scan(scan_id), platform=platform)
-    return PlainTextResponse(report, media_type="text/markdown",
-        headers={"Content-Disposition":"attachment; filename=burpollama_{}_{}_bounty.md".format(scan_id, platform.lower())})
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scan/{scan_id}/bounty/report")
 async def get_bounty_report(scan_id: str, platform: str = "hackerone"):
     if scan_id not in scans:
         raise HTTPException(404, "Scan not found")
-    scan = scans[scan_id]
-    scope = scope_policy.to_dict()
-    session_status = auth_matrix.stats
-    coverage = compute_coverage_v2(
-        scan_id,
-        scan.get("recon", {}),
-        [finding for finding in findings_store if finding.get("scan_id") == scan_id],
-        scan.get("recon", {}).get("urls", []),
-        scan.get("logs", []),
-    )
-    data = build_bounty_mode(scan, scope, session_status, coverage)
-    selected_platform = platform if platform.lower() in ("hackerone", "bugcrowd") else "hackerone"
     return PlainTextResponse(
-        build_bounty_report(data, selected_platform),
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
         media_type="text/plain",
     )
 
 @app.get("/scan/{scan_id}/bounty/finding/{finding_id}/markdown")
 async def get_single_bounty_finding_markdown(scan_id: str, finding_id: str, platform: str = "hackerone"):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    platform = platform if platform.lower() in ("hackerone", "bugcrowd") else "hackerone"
-    report = build_single_bounty_report(_bounty_for_scan(scan_id), finding_id, platform=platform)
-    if not report: raise HTTPException(404,"Bounty finding not found")
-    return PlainTextResponse(report, media_type="text/markdown")
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scan/{scan_id}/autopilot")
 async def get_autopilot_mode(scan_id: str):
@@ -3255,33 +3215,10 @@ async def get_cve_intelligence(tech: str):
 @app.get("/scan/{scan_id}/autopilot/report")
 async def get_autopilot_report(scan_id: str):
     if scan_id not in scans: raise HTTPException(404,"Scan not found")
-    data = _autopilot_for_scan(scan_id)
-    lines = [
-        "# BurpOllama Autopilot Report",
-        "",
-        "- **Scan:** `{}`".format(data["scan"]["id"]),
-        "- **Target:** `{}`".format(data["scan"]["target"]),
-        "- **State:** `{}`".format(data["progress_state"]),
-        "- **Confirmed findings:** {}".format(len(data["confirmed_findings"])),
-        "- **Candidate findings:** {}".format(len(data["candidate_findings"])),
-        "- **Ready to submit:** {}".format(len(data["ready_to_submit"])),
-        "",
-        "## Ready To Submit",
-        "",
-    ]
-    for f in data["ready_to_submit"]:
-        lines.extend([
-            "### {}".format(f.get("title", "")),
-            "",
-            "- **Affected asset:** `{}`".format(f.get("affected_asset", "")),
-            "- **Severity:** {}".format(f.get("severity", "")),
-            "- **Confidence:** {}%".format(f.get("confidence", "")),
-            "- **Impact:** {}".format(f.get("impact", "")),
-            "- **Why bounty-worthy:** {}".format(f.get("why_bounty_worthy", "")),
-            "",
-        ])
-    return PlainTextResponse("\n".join(lines), media_type="text/markdown",
-        headers={"Content-Disposition":"attachment; filename=burpollama_{}_autopilot.md".format(scan_id)})
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/scans")
 async def list_scans():
@@ -3426,25 +3363,24 @@ async def get_finding_buckets(scan_id: str):
 async def export_findings():
     return JSONResponse(
         {"findings":findings_store,"stats":dict(stats),
-         "exported_at":datetime.utcnow().isoformat()},
+         "exported_at":datetime.now(timezone.utc).isoformat()},
         headers={"Content-Disposition":"attachment; filename=burpollama_findings.json"})
 
 @app.get("/findings/export/csv")
 async def export_findings_csv():
-    return Response(generate_csv_report(findings_store), media_type="text/csv",
-                    headers={"Content-Disposition":"attachment; filename=burpollama_findings.csv"})
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.get("/findings/{finding_id}/submission")
 async def get_submission(finding_id: str, platform: str = "hackerone"):
     f = next((x for x in findings_store if x["id"]==finding_id), None)
     if not f: raise HTTPException(404,"Finding not found")
-    if platform.lower() == "bugcrowd":
-        report = generate_bugcrowd_report(f)
-    elif platform.lower() == "hackerone":
-        report = generate_h1_report(f)
-    else:
-        report = generate_submission(f)
-    return PlainTextResponse(report, media_type="text/markdown")
+    return PlainTextResponse(
+        "This command is deprecated. Use `burpollama findings --latest` instead.",
+        media_type="text/plain",
+    )
 
 @app.delete("/findings")
 async def clear_findings():
@@ -3705,7 +3641,7 @@ def _system_check_results() -> dict:
         "class_38_browser_storage": callable(hunt_browser_storage),
         "swarm_blackboard": callable(swarm_blackboard.write),
         "scope_drift_guard": callable(scope_drift),
-        "sarif_export": callable(generate_sarif_report),
+        "deprecated_export_endpoint": False,
     }
     checks = {
         "backend": _check_status("ok", "FastAPI backend is running."),
@@ -3782,7 +3718,7 @@ async def _complete_system_check_results() -> dict:
 def _create_autopilot_dry_run() -> dict:
     scan_id = "dryrun-" + uuid.uuid4().hex[:8]
     target = "https://example.com"
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     mock_scope = {
         "allowed_domains": ["example.com"],
         "blocked_domains": [],
@@ -4099,7 +4035,7 @@ async def emergency_stop():
     policy = scope_policy.update({"emergency_stop": True})
     stopped_scan_ids = []
     cancelled_task_ids = []
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     for scan_id, scan in scans.items():
         if str(scan.get("status", "")).lower() in ("complete", "completed", "stopped"):
@@ -4320,7 +4256,7 @@ async def resume_scan_from_checkpoint(scan_id: str):
             "status": "queued",
             "phase": "queued",
             "control": "run",
-            "started": datetime.utcnow().isoformat(),
+            "started": datetime.now(timezone.utc).isoformat(),
             "logs": [],
         }
     _restore_checkpoint_findings(scan_id, scans[scan_id])
@@ -4561,3 +4497,4 @@ async def ui_app(route: str = ""):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8888, reload=False, log_level="info")
+

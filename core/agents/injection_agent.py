@@ -10,7 +10,7 @@ import httpx
 
 from finding_model import normalize_finding
 
-from core.agents.base import BaseAgent, ScanContext
+from core.agents.base import BaseAgent, ScanContext, observe_response
 from core.evidence import write_evidence_artifact
 from core.events import EventType
 
@@ -155,6 +155,13 @@ class InjectionAgent(BaseAgent):
                     message="Rate limiter paused {:.2f}s".format(waited),
                 )
             baseline = await client.get(baseline_url)
+            await observe_response(
+                context,
+                baseline.status_code,
+                agent=self.name,
+                phase=self.phase,
+                body_hint=getattr(baseline, "text", "")[:512],
+            )
             context.tested_urls.add(baseline_url)
             waited = await context.rate_limiter.acquire()
             if waited > 0.05:
@@ -173,6 +180,13 @@ class InjectionAgent(BaseAgent):
                 url=payload_url,
             )
             response = await client.get(payload_url)
+            await observe_response(
+                context,
+                response.status_code,
+                agent=self.name,
+                phase=self.phase,
+                body_hint=getattr(response, "text", "")[:512],
+            )
             context.tested_urls.add(payload_url)
             await context.emit(
                 EventType.RESPONSE_RECEIVED,

@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from attack_graph import build_attack_graph
 from coverage_intelligence import compute_coverage
@@ -20,14 +20,13 @@ from zero_fp_gate import apply_zero_fp_gate
 from core.agents import (
     AIHypothesisAgent,
     AIReconRanker,
-    AIReportAgent,
     AIStrategyAgent,
     AITriageAgent,
     CrawlerAgent,
+    FinalFindingsPresenterAgent,
     HuntCoordinatorAgent,
     JavaScriptAgent,
     ReconAgent,
-    ReportAgent,
 )
 from core.agents.base import ScanContext
 from core.config import load_config
@@ -61,11 +60,14 @@ class ScanOptions:
     ai_provider: str = ""
     model: str = ""
     api_key: str = ""
-    output: str = "reports"
+    output: str = "scans"
     time_budget: int = 900
     max_urls: int = 100
     oob_server: str = ""
     no_external_tools: bool = False
+    goal: str = "bounty-hunt"
+    final_output: str = "terminal"
+    program_profile: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         mode = str(self.mode or "passive").lower()
@@ -82,7 +84,9 @@ class ScanOptions:
         self.retries = max(0, min(int(self.retries), 5))
         self.time_budget = max(1, min(int(self.time_budget), 7200))
         self.max_urls = max(1, min(int(self.max_urls), 2000))
-        self.output = str(Path(self.output or "reports").expanduser())
+        self.output = str(Path(self.output or "scans").expanduser())
+        self.goal = str(self.goal or "bounty-hunt")
+        self.final_output = str(self.final_output or "terminal")
 
     @property
     def internal_mode(self) -> str:
@@ -105,6 +109,26 @@ def _scan_id(target: str) -> str:
     )
 
 
+def normalize_scan_url(url: str) -> str:
+    parsed = urlparse(url if "://" in str(url) else "https://" + str(url))
+    scheme = (parsed.scheme or "https").lower()
+    host = (parsed.hostname or "").lower().strip(".")
+    if not host:
+        return str(url).strip()
+    port = ""
+    if parsed.port and not ((scheme == "http" and parsed.port == 80) or (scheme == "https" and parsed.port == 443)):
+        port = ":{}".format(parsed.port)
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    deduped: dict[str, str] = {}
+    for key, value in query_pairs:
+        deduped.setdefault(key, value)
+    query = urlencode(sorted(deduped.items()))
+    return urlunparse((scheme, host + port, path, "", query, ""))
+
+
 class Scanner:
     PHASES = (
         ("target_check", "PHASE 1 — TARGET CHECK"),
@@ -112,7 +136,7 @@ class Scanner:
         ("vulnerability_hunt", "PHASE 3 — VULNERABILITY HUNT"),
         ("ai_triage", "PHASE 4 — AI TRIAGE"),
         ("proof_validation", "PHASE 5 — PROOF VALIDATION"),
-        ("report_export", "PHASE 6 — REPORT EXPORT"),
+        ("final_findings", "PHASE 6 - FINAL FINDINGS"),
     )
 
     def __init__(self, store=scan_store):
@@ -134,11 +158,14 @@ class Scanner:
         ai_provider: str = "",
         ai_enabled: bool | None = None,
         model: str = "",
-        output: str = "reports",
+        output: str = "scans",
         time_budget: int = 900,
         max_urls: int = 100,
         oob_server: str = "",
         no_external_tools: bool = False,
+        goal: str = "bounty-hunt",
+        final_output: str = "terminal",
+        program_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         load_config()
         options = ScanOptions(
@@ -157,6 +184,9 @@ class Scanner:
             max_urls=max_urls,
             oob_server=oob_server,
             no_external_tools=no_external_tools,
+            goal=goal,
+            final_output=final_output,
+            program_profile=dict(program_profile or {}),
         )
         if options.active and not authorization_confirmed:
             raise PermissionError(
@@ -216,12 +246,17 @@ class Scanner:
             "finished": "",
             "requested_scan_mode": options.internal_mode,
             "mode": options.mode,
+            "goal": options.goal,
+            "final_output": options.final_output,
+            "program_profile": options.program_profile,
+            "program": options.program_profile.get("program", "") if isinstance(options.program_profile, dict) else "",
+            "automated_scanning_allowed": options.program_profile.get("automated_scanning_allowed", "unknown") if isinstance(options.program_profile, dict) else "unknown",
             "options": options.to_dict(),
             "scope": scope.to_dict(),
             "logs": [],
             "raw_findings": [],
             "triaged_findings": [],
-            "report_paths": {},
+            "artifact_paths": {},
             "agent_status": {},
             "blackboard": [],
             "ai": {
@@ -317,10 +352,10 @@ class Scanner:
                 scan["triaged_findings"] = context.triaged_findings
             await context.emit(
                 EventType.SCAN_INTERRUPTED,
-                message="Scan time budget exceeded; writing partial reports",
+                message="Scan time budget exceeded; writing partial findings",
                 time_budget=options.time_budget,
             )
-            await self._safe_partial_report(context)
+            await self._safe_partial_findings(context)
         except (ScanCancelled, asyncio.CancelledError, KeyboardInterrupt) as exc:
             scan.update({
                 "status": "interrupted",
@@ -333,9 +368,9 @@ class Scanner:
                 scan["triaged_findings"] = context.triaged_findings
             await context.emit(
                 EventType.SCAN_INTERRUPTED,
-                message="Scan interrupted; writing partial reports",
+                message="Scan interrupted; writing partial findings",
             )
-            await self._safe_partial_report(context)
+            await self._safe_partial_findings(context)
         except Exception as exc:
             scan.update({
                 "status": "failed",
@@ -344,7 +379,7 @@ class Scanner:
                 "finished": datetime.now(timezone.utc).isoformat(),
             })
             await context.emit(EventType.ERROR, message=str(exc))
-            await self._safe_partial_report(context)
+            await self._safe_partial_findings(context)
         finally:
             scan["agent_status"] = scheduler.snapshot()
             scan["rate_limiter"] = context.rate_limiter.snapshot()
@@ -363,7 +398,7 @@ class Scanner:
         )
         await self._phase(context, "ai_triage", self._ai_triage)
         await self._phase(context, "proof_validation", self._proof_validation)
-        await self._phase(context, "report_export", self._report_export)
+        await self._phase(context, "final_findings", self._final_findings)
 
     def start_background(
         self,
@@ -466,7 +501,7 @@ class Scanner:
 
     async def _enforce_url_budget(self, context, *, agent: str) -> None:
         max_urls = int(getattr(context.options, "max_urls", 100) or 100)
-        urls = list(dict.fromkeys(context.recon.get("urls", []) or []))
+        urls = list(dict.fromkeys(normalize_scan_url(url) for url in (context.recon.get("urls", []) or [])))
         if len(urls) <= max_urls:
             context.recon["urls"] = urls
             context.scan["recon"] = context.recon
@@ -661,13 +696,10 @@ class Scanner:
                 finding=finding,
             )
 
-    async def _report_export(self, context):
-        if context.scan.get("ai", {}).get("agents_enabled"):
-            await context.scheduler.run(
-                "ai-report", lambda: AIReportAgent().execute(context)
-            )
+    async def _final_findings(self, context):
         await context.scheduler.run(
-            "report", lambda: ReportAgent().execute(context)
+            "final-findings-presenter",
+            lambda: FinalFindingsPresenterAgent().execute(context),
         )
 
     async def _configure_ai(self, context) -> dict:
@@ -711,7 +743,7 @@ class Scanner:
             )
         return context.scan["ai"]
 
-    async def _safe_partial_report(self, context):
+    async def _safe_partial_findings(self, context):
         try:
             if not context.analysis:
                 context.analysis = {
@@ -722,13 +754,13 @@ class Scanner:
                     )
                 }
                 context.scan["analysis"] = context.analysis
-            await ReportAgent().execute(context)
+            await FinalFindingsPresenterAgent().execute(context)
         except Exception as exc:
             await context.emit(
                 EventType.ERROR,
-                agent="report",
-                phase="report_export",
-                message="Partial report failed: {}".format(exc),
+                agent="final-findings-presenter",
+                phase="final_findings",
+                message="Partial findings failed: {}".format(exc),
             )
 
 

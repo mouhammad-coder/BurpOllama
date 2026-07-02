@@ -83,30 +83,24 @@ class SkillEvidenceWriter:
             json.dumps({"evidence": records}, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        rows = [
-            "| Target | Status | Provider | Evidence |",
-            "|---|---|---|---|",
-        ]
-        for item in records:
+        findings = []
+        for index, item in enumerate(records, start=1):
             provider = item.get("provider_fingerprint", {}).get("provider", "unknown")
-            rows.append(
-                "| {target} | {status} | {provider} | DNS+HTTP+TLS captured |".format(
-                    target=item.get("target_subdomain", ""),
-                    status=item.get("final_status", ""),
-                    provider=provider,
-                )
-            )
-        (self.run_dir / "candidates.md").write_text(
-            "\n".join(rows) + "\n",
+            findings.append({
+                "id": "skill-finding-{}".format(index),
+                "title": "Subdomain takeover candidate",
+                "status": "Needs Manual Check",
+                "rate": "High",
+                "confidence": 70 if item.get("final_status") == "candidate" else 40,
+                "affected_asset": item.get("target_subdomain", ""),
+                "evidence": "DNS, HTTP, and TLS evidence captured for provider {}".format(provider),
+                "missing_proof": "Proof-of-control was not performed",
+                "manual_check_needed": (
+                    "Confirm the program permits proof-of-control, then safely claim "
+                    "the dangling resource with an authorized marker only."
+                ),
+            })
+        (self.run_dir / "findings.json").write_text(
+            json.dumps({"findings": findings}, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        report = [
-            "# Subdomain Takeover Hunter Report",
-            "",
-            "This report contains non-destructive evidence only.",
-            "",
-            *rows,
-            "",
-            "Proof-of-control was not performed unless explicitly shown in evidence.",
-        ]
-        (self.run_dir / "report.md").write_text("\n".join(report), encoding="utf-8")

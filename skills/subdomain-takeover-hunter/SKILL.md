@@ -127,13 +127,13 @@ Acceptable (always): DNS/CNAME/A evidence, HTTP error fingerprint, TLS mismatch,
 
 Only if **explicitly authorized**: claiming the external resource, binding the hostname, hosting a harmless proof token. Template in `references/proof.md`. Never claim when rules are unclear.
 
-### Phase 7: Evidence Artifacts & Report
+### Phase 7: Evidence Artifacts & Final Findings
 
-Produce one evidence block per finding and a final report. Use the templates in `references/templates.md` (evidence block, candidate table, source-coverage table, and full markdown report). After hunting, deliver: executive summary, scope table, source-coverage table, candidate table, confirmed/likely findings, rejected false positives (with reasons), reproduction commands, impact assessment, remediation plan, and a raw-evidence appendix.
+Produce one evidence block per finding and final findings data. Use concise evidence, candidate, source-coverage, Great Findings, Needs Manual Check, Informational, and Rejected sections. After hunting, deliver: scope summary, source coverage, candidate table, Great Findings, Needs Manual Check items with exact manual steps, Rejected false positives with reasons, safe reproduction commands, impact notes, remediation guidance, and raw evidence references.
 
 ## Intelligence-First Rules
 
-Do not blindly trust tools. Compare present vs historical DNS; hunt acquisitions and old product names; check GitHub for old deploy config and Wayback for old hosted apps; verify whether the provider changed takeover behavior or requires exact tenant names; distinguish generic vs service-specific error pages; account for wildcard DNS, DNSSEC, CDN, WAF, and parking; confirm CNAME chains end at a real configured tenant; query multiple resolvers. **A valid report must survive manual review.**
+Do not blindly trust tools. Compare present vs historical DNS; hunt acquisitions and old product names; check GitHub for old deploy config and Wayback for old hosted apps; verify whether the provider changed takeover behavior or requires exact tenant names; distinguish generic vs service-specific error pages; account for wildcard DNS, DNSSEC, CDN, WAF, and parking; confirm CNAME chains end at a real configured tenant; query multiple resolvers. **A Great Finding must survive manual review.**
 
 ## Impact Assessment
 
@@ -146,8 +146,8 @@ Assess realistic impact only — do not exaggerate. Criteria and the Critical→
 - `references/templates.md` — evidence block, tables, and full report template
 - `references/proof.md` — authorized proof-of-control token format
 - `references/impact.md` — impact criteria and severity scale
-- `references/real_reports.md` — curated corpus of 240+ real, disclosed takeover reports & resources (service distribution, top HackerOne reports, fingerprint DBs, tooling)
-- `references/real_reports.json` — structured dataset: 167 detailed disclosed cases (method + PoC + verification), 216 ranked HackerOne reports (URL/program/upvotes/bounty), 24 curated resources
+- `references/real_reports.md` — curated corpus of disclosed takeover cases and resources (service distribution, high-signal public cases, fingerprint DBs, tooling)
+- `references/real_reports.json` — structured dataset of disclosed cases, ranked public references, and curated resources
 
 ## Real-World Evidence Base
 

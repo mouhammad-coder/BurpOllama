@@ -51,16 +51,22 @@ class StandaloneCoreTests(unittest.TestCase):
             async def proof(context):
                 context.scan["analysis"] = {"coverage": {}}
 
-            async def report(context):
-                context.scan["report"] = "# Standalone report"
-                context.scan["report_paths"] = {}
+            async def final_findings_phase(context):
+                context.scan["final_findings"] = {
+                    "great": [],
+                    "manual": [],
+                    "informational": [],
+                    "rejected": [],
+                    "all": [],
+                    "counts": {"great": 0, "manual": 0, "informational": 0, "rejected": 0},
+                }
 
             local_scanner._target_check = target_check
             local_scanner._recon = recon
             local_scanner._vulnerability_hunt = hunt
             local_scanner._ai_triage = triage
             local_scanner._proof_validation = proof
-            local_scanner._report_export = report
+            local_scanner._final_findings = final_findings_phase
 
             result = asyncio.run(local_scanner.run(
                 "https://authorized.example",
@@ -71,7 +77,7 @@ class StandaloneCoreTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete")
             self.assertTrue(events)
             stored = store.get(result["id"])
-            self.assertEqual(stored["report"], "# Standalone report")
+            self.assertEqual(stored["final_findings"]["counts"]["great"], 0)
             self.assertEqual(store.list()[0]["scan_id"], result["id"])
 
     def test_active_scan_requires_confirmation(self):
@@ -97,7 +103,7 @@ class StandaloneCoreTests(unittest.TestCase):
             )
             self.assertFalse(scan["scope"]["include_subdomains"])
 
-    def test_proof_and_reports_split_ready_vs_manual_findings(self):
+    def test_proof_and_final_findings_split_great_vs_manual_findings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ScanStore(Path(temp_dir) / "scans.db")
             local_scanner = Scanner(store=store)
@@ -220,45 +226,25 @@ class StandaloneCoreTests(unittest.TestCase):
             ]
             self.assertIn("Confirmed-looking CORS finding without artifact", manual_titles)
 
-            json_report = json.loads(Path(result["report_paths"]["json"]).read_text())
+            final = result["final_findings"]
             self.assertEqual(
-                [finding["title"] for finding in json_report["confirmed_findings"]],
+                [finding["title"] for finding in final["great"]],
                 ["SQL injection confirmed by response difference"],
             )
             self.assertEqual(
-                [finding["title"] for finding in json_report["candidate_findings"]],
+                [finding["title"] for finding in final["manual"]],
                 ["Confirmed-looking CORS finding without artifact"],
             )
+            findings_path = Path(result["artifact_paths"]["findings.json"])
+            self.assertTrue(findings_path.exists())
+            payload = json.loads(findings_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["counts"]["great"], 1)
+            self.assertFalse((findings_path.parent / "report.md").exists())
 
-            h1_report = Path(result["report_paths"]["hackerone"]).read_text()
-            self.assertIn("## [High] SQL injection confirmed by response difference", h1_report)
-            self.assertIn("Confirmed-looking CORS finding without artifact", h1_report)
-            self.assertNotIn("## [Medium] Confirmed-looking CORS finding without artifact", h1_report)
-
-            readiness_report = Path(result["report_paths"]["readiness"]).read_text()
-            self.assertIn("# Bounty Readiness Audit", readiness_report)
-            self.assertIn("- Report-ready issues: 1", readiness_report)
-            self.assertIn("Confirmed-looking CORS finding without artifact", readiness_report)
-
-            sarif = json.loads(Path(result["report_paths"]["sarif"]).read_text())
-            sarif_messages = [
-                item["message"]["text"]
-                for item in sarif["runs"][0]["results"]
-            ]
-            self.assertTrue(any(
-                "SQL injection confirmed by response difference" in message
-                for message in sarif_messages
-            ))
-            self.assertFalse(any(
-                "Confirmed-looking CORS finding without artifact" in message
-                for message in sarif_messages
-            ))
-
-    def test_stop_writes_partial_report_and_persists_interrupted_scan(self):
+    def test_stop_writes_partial_findings_and_persists_interrupted_scan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ScanStore(Path(temp_dir) / "scans.db")
             local_scanner = Scanner(store=store)
-            partial_report = Path(temp_dir) / "partial.md"
 
             async def target_check(context):
                 return None
@@ -277,17 +263,14 @@ class StandaloneCoreTests(unittest.TestCase):
                 await context.scheduler.run("recon", operation)
 
             async def write_partial(context):
-                partial_report.write_text(
-                    "# Partial report\n\nScan interrupted safely.",
-                    encoding="utf-8",
-                )
-                context.scan["report_paths"] = {
-                    "markdown": str(partial_report)
-                }
+                from core.findings import final_findings, write_scan_artifacts
+
+                context.scan["final_findings"] = final_findings(context.scan)
+                context.scan["artifact_paths"] = write_scan_artifacts(context.scan, temp_dir)
 
             local_scanner._target_check = target_check
             local_scanner._recon = slow_recon
-            local_scanner._safe_partial_report = write_partial
+            local_scanner._safe_partial_findings = write_partial
 
             async def run():
                 scan, task = local_scanner.start_background(
@@ -304,13 +287,10 @@ class StandaloneCoreTests(unittest.TestCase):
 
             result = asyncio.run(run())
             self.assertEqual(result["status"], "interrupted")
-            self.assertTrue(partial_report.exists())
+            self.assertTrue(Path(result["artifact_paths"]["findings.json"]).exists())
             stored = store.get(result["id"])
             self.assertEqual(stored["status"], "interrupted")
-            self.assertEqual(
-                stored["report_paths"]["markdown"],
-                str(partial_report),
-            )
+            self.assertIn("findings.json", stored["artifact_paths"])
 
 
 if __name__ == "__main__":

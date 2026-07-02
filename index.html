@@ -118,7 +118,7 @@
     .timeline{position:relative;display:flex;flex-direction:column;gap:10px}
     .timeline-item{display:grid;grid-template-columns:110px 1fr;gap:12px;align-items:center}
     .timeline-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:8px}
-    .timeline-dot.running,.timeline-dot.validating,.timeline-dot.reporting{background:var(--blue)}
+    .timeline-dot.running,.timeline-dot.validating,.timeline-dot.Findingsing{background:var(--blue)}
     .timeline-dot.completed{background:var(--green)}
     .timeline-dot.failed,.timeline-dot.stopped{background:var(--red)}
     .logbox{height:310px;overflow:auto;background:#0d1218;border:1px solid var(--line);border-radius:7px;padding:12px;font-size:12px}
@@ -223,7 +223,7 @@
         <section id="route-attack-graph" class="route"></section>
         <section id="route-autopilot" class="route"></section>
         <section id="route-bounty" class="route"></section>
-        <section id="route-reports" class="route"></section>
+        <section id="route-findings-data" class="route"></section>
         <section id="route-settings" class="route"></section>
         <section id="route-ai" class="route"></section>
         <section id="route-scope" class="route"></section>
@@ -296,19 +296,19 @@
     const titles = {
       start: ['Guided Start', 'A simple step-by-step setup for your authorized scan.'],
       'active-scan': ['Active Scan', 'Watch progress and control the current scan.'],
-      results: ['Results', 'Review findings and download your report.'],
-      history: ['Scan History', 'Open previous scans, findings, and reports.'],
+      results: ['Results', 'Review final findings directly.'],
+      history: ['Scan History', 'Open previous scans and findings.'],
       'advanced-console': ['Advanced Console', 'The original expert dashboard and technical tools.'],
-      dashboard: ['Home', 'Start here: check status, start a scan, and open reports.'],
+      dashboard: ['Home', 'Start here: check status, start a scan, and review findings.'],
       scans: ['Scans', 'Active and historical scan sessions'],
-      'scan-detail': ['Scan Detail', 'Pipeline state, report links, coverage, and graph'],
-      findings: ['Findings', 'Review what was found and what is ready to submit.'],
+      'scan-detail': ['Scan Detail', 'Pipeline state, findings data, coverage, and graph'],
+      findings: ['Findings', 'Review Great Findings and Needs Manual Check items.'],
       review: ['Review Queue', 'Ambiguous AI triage requiring analyst action'],
       coverage: ['Coverage', 'Tested and untested attack surface'],
       'attack-graph': ['Attack Graph', 'Exploit chains and path prioritization'],
       autopilot: ['Autopilot', 'Start and monitor an automated authorized scan.'],
-      bounty: ['Bounty Mode', 'High-impact findings, proof gaps, and bounty reports'],
-      reports: ['Reports', 'Export clean bounty reports.'],
+      bounty: ['Bounty Mode', 'High-impact findings, proof gaps, and manual checks'],
+      'findings-data': ['findings-data', 'Review internal findings data.'],
       settings: ['Settings', 'Configure sessions and open advanced tools.'],
       ai: ['AI Providers', 'Provider availability, failures, and estimated cost'],
       scope: ['Scope', 'Enforced authorization and safety policy'],
@@ -316,7 +316,7 @@
       storage: ['Storage', 'Durable local state and event store details'],
       help: ['Help', 'Local workflow and endpoint reference']
     };
-    const knownRoutes = new Set(['start','active-scan','results','history','advanced-console','dashboard','scans','scan-detail','findings','review','coverage','attack-graph','autopilot','bounty','reports','settings','ai','scope','storage','system-check','help']);
+    const knownRoutes = new Set(['start','active-scan','results','history','advanced-console','dashboard','scans','scan-detail','findings','review','coverage','attack-graph','autopilot','bounty','findings-data','settings','ai','scope','storage','system-check','help']);
 
     function esc(v){
       return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -350,7 +350,7 @@
       if(phase.includes('hunt') || phase.includes('schema') || phase.includes('oob')) return Math.round(20 + ratio * 50);
       if(phase.includes('triage')) return Math.round(70 + ratio * 15);
       if(phase.includes('analysis')) return Math.round(85 + ratio * 7);
-      if(phase.includes('report') || phase.includes('intelligence')) return Math.round(92 + ratio * 8);
+      if(phase.includes('Findings') || phase.includes('intelligence')) return Math.round(92 + ratio * 8);
       return status === 'running' ? 2 : 0;
     }
     function countsBySeverity(){
@@ -384,7 +384,7 @@
     function workflowStage(){
       const r = state.route;
       const s = selectedScan();
-      if(r === 'reports' || (r === 'results' && s && ['complete','completed'].includes(String(s.status)))) return 'Report';
+      if(r === 'findings-data' || (r === 'results' && s && ['complete','completed'].includes(String(s.status)))) return 'Findings';
       if(r === 'findings' || r === 'review' || r === 'results') return 'Review';
       if(s && ['running','queued','paused'].includes(String(s.status))) return 'Scan';
       if(s && ['complete','completed'].includes(String(s.status))) return 'Validate';
@@ -392,7 +392,7 @@
       return 'Setup';
     }
     function renderWorkflow(){
-      const steps = ['Setup','Scan','Validate','Review','Report'];
+      const steps = ['Setup','Scan','Validate','Review','Findings'];
       const active = workflowStage();
       const activeIdx = steps.indexOf(active);
       document.getElementById('workflow-bar').innerHTML = steps.map((s,i) => `<div class="workflow-step ${s===active?'active':(i<activeIdx?'done':'')}">${s}</div>`).join('');
@@ -848,7 +848,7 @@
       await refreshAll();
     }
     async function resolveReview(id, verdict){
-      const note = prompt('Reviewer note', verdict === 'PASS' ? 'Valid finding' : 'False positive / not reportable') || '';
+      const note = prompt('Reviewer note', verdict === 'PASS' ? 'Valid finding' : 'False positive / Rejected') || '';
       const r = await fetch(endpoint(`/review/${encodeURIComponent(id)}/resolve?verdict=${encodeURIComponent(verdict)}&note=${encodeURIComponent(note)}`), {method:'POST'});
       if(!r.ok) alert(await r.text());
       refreshAll();
@@ -868,8 +868,8 @@
       if(!r.ok) alert(await r.text());
       refreshAll();
     }
-    async function openReport(id){
-      try{ openModal(`Report ${id}`, await text(`/scan/${id}/report`)); }catch(e){ alert('Report is not ready yet.'); }
+    async function openFindings(id){
+      try{ openModal(`Findings ${id}`, await text(`/scan/${id}`)); }catch(e){ alert('Findings are not ready yet.'); }
     }
     async function controlScan(id, action){
       const r = await fetch(endpoint(`/scan/${id}/${action}`), {method:'POST'});
@@ -909,17 +909,17 @@
     async function openSubmission(id){
       try{ openModal(`Submission ${id}`, await text(`/findings/${id}/submission`)); }catch(e){ alert('Submission not available.'); }
     }
-    async function copyBountyReport(platform){
+    async function copyBountyFindings(platform){
       const s = selectedScan();
       if(!s){ alert('Select a scan first.'); return; }
-      const body = await text(`/scan/${s.id}/bounty/report?platform=${encodeURIComponent(platform)}`);
-      openEditableReportModal(
-        `${platform === 'bugcrowd' ? 'Bugcrowd' : 'HackerOne'} Report`,
+      const body = await text(`/scan/${s.id}/bounty?platform=${encodeURIComponent(platform)}`);
+      openEditableFindingsModal(
+        `${platform === 'bugcrowd' ? 'Bugcrowd' : 'HackerOne'} Findings`,
         body
       );
     }
     async function openBountyFinding(scanId, findingId, platform='hackerone'){
-      try{ openModal(`Bounty report ${findingId}`, await text(`/scan/${scanId}/bounty/finding/${findingId}/markdown?platform=${platform}`)); }catch(e){ alert('Bounty report is not available.'); }
+      try{ openModal(`Bounty Findings ${findingId}`, await text(`/scan/${scanId}/bounty/finding/${findingId}/markdown?platform=${platform}`)); }catch(e){ alert('Findings data is not available.'); }
     }
     function openModal(title, body){
       const existing = document.getElementById('modal');
@@ -937,7 +937,7 @@
         </div>`;
       document.body.appendChild(modal);
     }
-    function reportChecklist(body){
+    function FindingsChecklist(body){
       const text = String(body || '');
       const hasValue = pattern => pattern.test(text) && !/TODO|\.\.\./i.test(text.match(pattern)?.[0] || '');
       return [
@@ -948,7 +948,7 @@
         ['Business impact complete', hasValue(/(?:Business Impact|Impact)\s*:?\s*(?!TODO|\.\.\.)\S+/i)]
       ];
     }
-    function highlightedReport(body){
+    function highlightedFindings(body){
       let safe = esc(body);
       safe = safe.replace(/TODO|\.\.\./gi, match => `<mark style="background:#facc15;color:#111;padding:1px 3px">${match}</mark>`);
       safe = safe.replace(
@@ -957,27 +957,27 @@
       );
       return safe;
     }
-    function refreshReportModal(){
-      const editor = document.getElementById('report-editor');
+    function refreshFindingsModal(){
+      const editor = document.getElementById('Findings-editor');
       if(!editor) return;
-      const checklist = reportChecklist(editor.value);
-      document.getElementById('report-preview').innerHTML = highlightedReport(editor.value);
-      document.getElementById('report-checklist').innerHTML = checklist.map(([label, ok]) =>
+      const checklist = FindingsChecklist(editor.value);
+      document.getElementById('Findings-preview').innerHTML = highlightedFindings(editor.value);
+      document.getElementById('Findings-checklist').innerHTML = checklist.map(([label, ok]) =>
         `<div style="color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✓' : '✗'} ${esc(label)}${!ok && label.includes('Business') ? ' (missing)' : ''}</div>`
       ).join('');
-      const copy = document.getElementById('report-copy-final');
+      const copy = document.getElementById('Findings-copy-final');
       copy.disabled = !checklist.every(([, ok]) => ok);
       copy.style.opacity = copy.disabled ? '.45' : '1';
     }
-    async function copyEditedReport(){
-      const editor = document.getElementById('report-editor');
-      if(!editor || document.getElementById('report-copy-final').disabled) return;
+    async function copyEditedFindings(){
+      const editor = document.getElementById('Findings-editor');
+      if(!editor || document.getElementById('Findings-copy-final').disabled) return;
       await navigator.clipboard.writeText(editor.value);
-      const message = document.getElementById('report-copy-message');
+      const message = document.getElementById('Findings-copy-message');
       message.textContent = 'Copied to clipboard. Remember to review before submitting.';
       message.style.color = 'var(--green)';
     }
-    function openEditableReportModal(title, body){
+    function openEditableFindingsModal(title, body){
       document.getElementById('modal')?.remove();
       const modal = document.createElement('div');
       modal.id = 'modal';
@@ -990,23 +990,23 @@
           </div>
           <div class="split" style="padding:16px;overflow:auto;align-items:start">
             <div>
-              <div class="card-title">Editable report</div>
-              <textarea id="report-editor" class="input mono" style="height:54vh;resize:vertical;margin-top:10px" oninput="refreshReportModal()">${esc(body)}</textarea>
+              <div class="card-title">Editable findings note</div>
+              <textarea id="Findings-editor" class="input mono" style="height:54vh;resize:vertical;margin-top:10px" oninput="refreshFindingsModal()">${esc(body)}</textarea>
             </div>
             <div>
               <div class="card-title">Submission checklist</div>
-              <div id="report-checklist" class="list" style="margin-top:10px"></div>
+              <div id="Findings-checklist" class="list" style="margin-top:10px"></div>
               <div class="card-title" style="margin-top:18px">Formatted preview</div>
-              <pre id="report-preview" class="pre" style="max-height:37vh;margin-top:10px;white-space:pre-wrap"></pre>
+              <pre id="Findings-preview" class="pre" style="max-height:37vh;margin-top:10px;white-space:pre-wrap"></pre>
             </div>
           </div>
           <div class="toolbar" style="padding:0 16px 16px">
-            <button id="report-copy-final" class="btn primary" onclick="copyEditedReport()">Copy report</button>
-            <span id="report-copy-message" class="small muted"></span>
+            <button id="Findings-copy-final" class="btn primary" onclick="copyEditedFindings()">Copy findings note</button>
+            <span id="Findings-copy-message" class="small muted"></span>
           </div>
         </div>`;
       document.body.appendChild(modal);
-      refreshReportModal();
+      refreshFindingsModal();
     }
     function lines(id){
       return (document.getElementById(id)?.value || '').split('\n').map(x => x.trim()).filter(Boolean);
@@ -1267,7 +1267,7 @@
             <button class="choice-card ${w.scanMode === 'passive_only' ? 'selected' : ''}" onclick="wizardChoice('scanMode','passive_only')"><span class="choice-title">Quick Scan</span><span class="choice-copy">A lighter, faster first look.</span></button>
             <button class="choice-card ${w.scanMode === 'conservative' ? 'selected' : ''}" onclick="wizardChoice('scanMode','conservative')"><span class="choice-title">Balanced Scan — Recommended</span><span class="choice-copy">Automatically adjusts depth and modules after checking the website.</span></button>
             <button class="choice-card ${w.scanMode === 'intensive_authorized' ? 'selected' : ''}" onclick="wizardChoice('scanMode','intensive_authorized')"><span class="choice-title">Deep Authorized Scan</span><span class="choice-copy">More thorough testing when your written permission allows it.</span></button>
-            <button class="choice-card ${w.scanMode === 'bounty' ? 'selected' : ''}" onclick="wizardChoice('scanMode','bounty')"><span class="choice-title">Bounty Mode</span><span class="choice-copy">Prioritize strong, report-ready bug bounty evidence.</span></button>
+            <button class="choice-card ${w.scanMode === 'bounty' ? 'selected' : ''}" onclick="wizardChoice('scanMode','bounty')"><span class="choice-title">Bounty Mode</span><span class="choice-copy">Prioritize Great Findings with strong evidence.</span></button>
           </div>
           ${wizardActions('Choose AI mode')}
         </div>`;
@@ -1443,7 +1443,7 @@
       renderGraph();
       renderAutopilot();
       renderBounty();
-      renderReports();
+      renderFindingsData();
       renderSettings();
       renderAI();
       renderScope();
@@ -1512,9 +1512,9 @@
         ${done ? `<div class="card pad" style="text-align:center;border-color:var(--green)">
           <div class="card-sub">Scan complete</div>
           <div class="metric" style="font-size:56px;color:var(--green)">${esc(validFindings.length)}</div>
-          <div class="metric-label">Confirmed findings</div>
-          ${readyCount ? `<div style="margin:14px"><span class="tag" style="background:var(--green);color:#08120c;font-size:15px">READY TO SUBMIT · ${readyCount} GRADE A</span></div>` : ''}
-          <div class="toolbar" style="justify-content:center;margin-top:16px"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openReport('${esc(scan.id)}')">Generate Report</button><button class="btn" onclick="resetWizard()">Start New Scan</button></div>
+          <div class="metric-label">Great Findings</div>
+          ${readyCount ? `<div style="margin:14px"><span class="tag" style="background:var(--green);color:#08120c;font-size:15px">GREAT FINDINGS · ${readyCount} GRADE A</span></div>` : ''}
+          <div class="toolbar" style="justify-content:center;margin-top:16px"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openFindings('${esc(scan.id)}')">View Findings</button><button class="btn" onclick="resetWizard()">Start New Scan</button></div>
         </div><div style="height:14px"></div>` : ''}
         <div class="card pad"><div class="card-title">Scan progress</div><div class="card-sub">BurpOllama handles these steps automatically.</div><div style="height:12px"></div>
           <div class="grid cols-3">${progressCards.map(item => `<div class="row-card" style="border-color:${item.state === 'done' ? 'var(--green)' : (item.state === 'active' ? 'var(--blue)' : 'var(--line)')}"><div><strong>${esc(item.label)}</strong><div class="small muted">${item.state === 'done' ? 'Complete' : (item.state === 'active' ? 'In progress' : 'Waiting')}</div></div><span class="dot ${item.state === 'done' ? 'ok' : (item.state === 'active' ? 'warn' : '')}"></span></div>`).join('')}</div>
@@ -1531,7 +1531,7 @@
       else if(phase.includes('hunt')) minutes = Math.max(2, Math.ceil(endpoints / 8));
       else if(phase.includes('triage')) minutes = Math.max(1, Math.ceil((100 - pct) / 8));
       else if(phase.includes('analysis')) minutes = 2;
-      else if(phase.includes('report')) minutes = 1;
+      else if(phase.includes('Findings')) minutes = 1;
       else minutes += 4;
       return `about ${minutes} minute${minutes === 1 ? '' : 's'}`;
     }
@@ -1546,7 +1546,7 @@
         {label:profile.api_heavy ? 'Expanding attack surface (API detected)' : 'Finding interesting endpoints', keys:['schema','content']},
         {label:(plan.level === 'DEEP' && profile.authentication_detected) ? 'Switching to deep analysis (auth system found)' : `Testing selected modules (${(plan.enabled_modules || []).length || 'adaptive'})`, keys:['hunt','oob']},
         {label:'Running AI triage', keys:['triage','analysis']},
-        {label:'Building report', keys:['report','intelligence','complete']}
+        {label:'Building Findings', keys:['Findings','intelligence','complete']}
       ];
       let active = phases.findIndex(item => item.keys.some(key => phase.includes(key)));
       if(active < 0) active = phase === 'queued' ? 0 : 1;
@@ -1563,17 +1563,17 @@
       const valid = buckets.valid_bugs || [];
       const needsProof = buckets.needs_more_proof || [];
       const candidates = buckets.candidates || [];
-      const reportable = valid.filter(f => Number(f.quality_score || 0) >= 70);
+      const greatFindings = valid.filter(f => Number(f.quality_score || 0) >= 70);
       const complete = ['complete','completed'].includes(String(scan.status || '').toLowerCase());
       el.innerHTML = `
-        <div class="notice ${complete ? 'beginner-tip' : ''}">${complete ? 'Scan complete. Start with Valid Bugs, then review anything that needs more proof.' : 'This scan is still running. Results will update as findings are validated.'}</div>
+        <div class="notice ${complete ? 'beginner-tip' : ''}">${complete ? 'Scan complete. Start with Great Findings, then review anything that Needs Manual Check.' : 'This scan is still running. Results will update as findings are validated.'}</div>
         <div style="height:14px"></div>
-        <div class="grid cols-3">${metric('Confirmed findings', valid.length, 'Passed automated validation')}${metric('Candidate findings', needsProof.length + candidates.length, 'May need manual checking')}${metric('Reportable findings', reportable.length, 'Ready for reports')}</div>
+        <div class="grid cols-3">${metric('Great Findings', valid.length, 'Passed automated validation')}${metric('Needs Manual Check', needsProof.length + candidates.length, 'May need manual checking')}${metric('Great Findings', greatFindings.length, 'Shown in final findings')}</div>
         <div style="height:14px"></div>
-        <div class="card pad"><div class="card-head"><div><div class="card-title">Valid bugs</div><div class="card-sub">Highest-confidence findings for this scan.</div></div><button class="btn" onclick="go('/ui/findings')">Open full findings</button></div><div class="list">${valid.slice(0,10).map(findingSimpleCard).join('') || '<div class="empty">No validated bugs are available yet.</div>'}</div></div>
+        <div class="card pad"><div class="card-head"><div><div class="card-title">Great Findings</div><div class="card-sub">Highest-confidence findings for this scan.</div></div><button class="btn" onclick="go('/ui/findings')">Open full findings</button></div><div class="list">${valid.slice(0,10).map(findingSimpleCard).join('') || '<div class="empty">No validated bugs are available yet.</div>'}</div></div>
         <div style="height:14px"></div>
-        <div class="card pad"><div class="card-title">Report</div><div class="card-sub">Reports include only findings with enough evidence.</div><div style="height:12px"></div>
-          <div class="toolbar"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openReport('${esc(scan.id)}')">Generate Markdown Report</button><button class="btn" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><button class="btn primary" onclick="resetWizard()">Start New Scan</button></div>
+        <div class="card pad"><div class="card-title">Findings</div><div class="card-sub">Great Findings have strong evidence. Needs Manual Check items require human validation.</div><div style="height:12px"></div>
+          <div class="toolbar"><button class="btn primary" onclick="go('/ui/findings')">View Findings</button><button class="btn blue" onclick="openFindings('${esc(scan.id)}')">View Findings</button><button class="btn" onclick="copyBountyFindings('hackerone')">Copy findings note</button><button class="btn" onclick="copyBountyFindings('bugcrowd')">Copy findings note</button><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><button class="btn primary" onclick="resetWizard()">Start New Scan</button></div>
         </div>`;
     }
     function renderAdvancedConsole(){
@@ -1589,14 +1589,14 @@
         </div>
         <div style="height:14px"></div>
         <div class="card pad"><div class="card-title">Expert tools</div><div class="card-sub">All previous pages and backend endpoints are preserved.</div><div style="height:12px"></div>
-          <div class="toolbar"><button class="btn" onclick="go('/ui/dashboard')">Original Dashboard</button><button class="btn" onclick="go('/ui/autopilot')">Autopilot</button><button class="btn" onclick="go('/ui/scans')">Scans</button><button class="btn" onclick="go('/ui/findings')">Findings</button><button class="btn" onclick="go('/ui/reports')">Reports</button><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/system-check')">System Check</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div>
+          <div class="toolbar"><button class="btn" onclick="go('/ui/dashboard')">Original Dashboard</button><button class="btn" onclick="go('/ui/autopilot')">Autopilot</button><button class="btn" onclick="go('/ui/scans')">Scans</button><button class="btn" onclick="go('/ui/findings')">Findings</button><button class="btn" onclick="go('/ui/findings-data')">Findings Data</button><button class="btn" onclick="go('/ui/scope')">Scope</button><button class="btn" onclick="go('/ui/ai')">AI</button><button class="btn" onclick="go('/ui/coverage')">Coverage</button><button class="btn" onclick="go('/ui/attack-graph')">Attack Graph</button><button class="btn" onclick="go('/ui/bounty')">Bounty Mode</button><button class="btn" onclick="go('/ui/review')">Review Queue</button><button class="btn" onclick="go('/ui/system-check')">System Check</button><button class="btn" onclick="go('/ui/storage')">Storage</button><button class="btn" onclick="go('/ui/help')">Help</button></div>
           <label class="authorization-box" style="margin-top:12px"><input type="checkbox" ${state.advancedMode ? 'checked' : ''} onchange="toggleAdvancedMode(this.checked)"><span><strong>Show raw technical details</strong><br><span class="muted small">Enables advanced logs, raw finding metadata, and diagnostic exports on expert pages.</span></span></label>
         </div>`;
     }
     function renderDashboard(){
       const el = document.getElementById('route-dashboard');
       el.innerHTML = `
-        <div class="notice">Normal workflow: Website to scan → In-scope websites → Out-of-scope websites → Start Scan → Valid bugs → Export report.</div>
+        <div class="notice">Normal workflow: Website to scan → In-scope websites → Out-of-scope websites → Start Scan → Great Findings → Export Findings.</div>
         <div style="height:14px"></div>
         <div class="grid cols-4">
           ${metric('Total findings', state.stats.total ?? 0, 'Stored findings')}
@@ -1607,8 +1607,8 @@
         <div style="height:14px"></div>
         <div class="grid cols-3">
           <div class="card pad"><div class="card-title">1. Start</div><div class="card-sub">Begin with Autopilot. It will guide you through target, scope, mode, and launch.</div><div style="height:12px"></div><button class="btn primary" onclick="go('/ui/autopilot')">Start New Scan</button></div>
-          <div class="card pad"><div class="card-title">2. Review</div><div class="card-sub">Check Valid Bugs first. Anything uncertain is kept out of bounty reports.</div><div style="height:12px"></div><button class="btn" onclick="go('/ui/findings')">Open Findings</button></div>
-          <div class="card pad"><div class="card-title">3. Export</div><div class="card-sub">Download or copy a clean HackerOne or Bugcrowd report.</div><div style="height:12px"></div><button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
+          <div class="card pad"><div class="card-title">2. Review</div><div class="card-sub">Check Great Findings first. Anything uncertain stays in Needs Manual Check.</div><div style="height:12px"></div><button class="btn" onclick="go('/ui/findings')">Open Findings</button></div>
+          <div class="card pad"><div class="card-title">3. Export</div><div class="card-sub">Review findings data and manual-check steps.</div><div style="height:12px"></div><button class="btn blue" onclick="go('/ui/findings-data')">Open Findings Data</button></div>
         </div>`;
     }
     function metric(label, value, sub){ return `<div class="card pad"><div class="metric">${esc(value)}</div><div class="metric-label">${esc(label)}</div><div class="card-sub">${esc(sub)}</div></div>`; }
@@ -1646,9 +1646,9 @@
       selectScan(id, false);
       refreshSelectedArtifacts().then(() => { go('/ui/findings'); });
     }
-    function historyReport(id){
+    function historyFindings(id){
       selectScan(id, false);
-      openReport(id);
+      openFindings(id);
     }
     function renderHistory(){
       const el = document.getElementById('route-history');
@@ -1658,7 +1658,7 @@
         <div class="table-wrap"><table><thead><tr><th>Scan ID</th><th>Target</th><th>Date/time</th><th>Status</th><th>Confirmed</th><th>Candidates</th><th>Quick actions</th></tr></thead><tbody>
           ${scans.map(scan => {
             const counts = scanFindingCounts(scan.id);
-            return `<tr onclick="openHistoryScan('${esc(scan.id)}')" style="cursor:pointer"><td class="mono">${esc(scan.id)}</td><td>${esc(scan.target)}</td><td>${esc(scan.started || '-')}</td><td><span class="status ${esc(scan.status)}">${esc(scan.status || '-')}</span></td><td>${counts.confirmed}</td><td>${counts.candidates}</td><td><div class="toolbar"><button class="btn" onclick="event.stopPropagation();historyReport('${esc(scan.id)}')">View Report</button><button class="btn" onclick="event.stopPropagation();historyFindings('${esc(scan.id)}')">View Findings</button></div></td></tr>`;
+            return `<tr onclick="openHistoryScan('${esc(scan.id)}')" style="cursor:pointer"><td class="mono">${esc(scan.id)}</td><td>${esc(scan.target)}</td><td>${esc(scan.started || '-')}</td><td><span class="status ${esc(scan.status)}">${esc(scan.status || '-')}</span></td><td>${counts.confirmed}</td><td>${counts.candidates}</td><td><div class="toolbar"><button class="btn" onclick="event.stopPropagation();historyFindings('${esc(scan.id)}')">View Findings</button><button class="btn" onclick="event.stopPropagation();historyFindings('${esc(scan.id)}')">View Findings</button></div></td></tr>`;
           }).join('') || '<tr><td colspan="7"><div class="empty">No past scans yet.</div></td></tr>'}
         </tbody></table></div>`;
     }
@@ -1668,7 +1668,7 @@
       const el = document.getElementById('route-scan-detail');
       if(!s){ el.innerHTML = '<div class="empty">No scan selected.</div>'; return; }
       el.innerHTML = `
-        <div class="toolbar"><button class="btn" onclick="go('/ui/scans')">Back</button><button class="btn" onclick="refreshSelectedArtifacts().then(render)">Refresh artifacts</button><button class="btn" onclick="controlScan('${esc(s.id)}','pause')">Pause</button><button class="btn" onclick="controlScan('${esc(s.id)}','resume')">Resume</button><button class="btn danger" onclick="controlScan('${esc(s.id)}','stop')">Stop</button><button class="btn blue" onclick="openReport('${esc(s.id)}')">Open report</button><a class="btn primary" href="/scan/${esc(s.id)}/report/download" target="_blank">Download report</a></div>
+        <div class="toolbar"><button class="btn" onclick="go('/ui/scans')">Back</button><button class="btn" onclick="refreshSelectedArtifacts().then(render)">Refresh artifacts</button><button class="btn" onclick="controlScan('${esc(s.id)}','pause')">Pause</button><button class="btn" onclick="controlScan('${esc(s.id)}','resume')">Resume</button><button class="btn danger" onclick="controlScan('${esc(s.id)}','stop')">Stop</button><button class="btn blue" onclick="openFindings('${esc(s.id)}')">Open Findings</button><a class="btn primary" href="/findings/export" target="_blank">View Findings Data</a></div>
         <div class="grid cols-3">${metric('Status', s.status || '-', s.phase || '-')}${metric('Coverage', `${state.coverage.coverage_percent ?? 0}%`, 'Endpoint templates')}${metric('Attack paths', state.graph.path_count ?? 0, 'Correlated chains')}</div>
         <div style="height:14px"></div>
         <div class="split"><div class="card pad"><div class="card-title">Pipeline</div><div style="height:12px"></div>${scanProgress(s)}</div><div class="card pad"><div class="card-title">Scan Metadata</div><div style="height:12px"></div><div class="kv"><div>ID</div><div class="mono">${esc(s.id)}</div><div>Target</div><div>${esc(s.target)}</div><div>Started</div><div>${esc(s.started)}</div><div>Error</div><div>${esc(s.error || '-')}</div></div></div></div>`;
@@ -1676,7 +1676,7 @@
     function renderFindings(){
       const buckets = state.findingBuckets || {};
       const tabs = [
-        ['valid_bugs', 'VALID BUGS'],
+        ['valid_bugs', 'Great Findings'],
         ['needs_more_proof', 'NEEDS PROOF'],
         ['candidates', 'CANDIDATE'],
         ['informational', 'INFO'],
@@ -1686,14 +1686,14 @@
       const activeKey = tabs.some(([key]) => key === state.findingTab) ? state.findingTab : 'valid_bugs';
       const activeRows = buckets[activeKey] || [];
       document.getElementById('route-findings').innerHTML = `
-        <div class="toolbar"><button class="btn" onclick="refreshAll()">Refresh</button><button class="btn blue" onclick="go('/ui/reports')">Export Reports</button>${state.advancedMode ? '<a class="btn" href="/findings/export" target="_blank">Raw JSON</a>' : ''}</div>
-        <div class="notice">Zero False Positive Mode is ON. Findings need a quality score of 70+ to become Valid Bugs; only grade A findings scoring 85+ show as READY.</div>
+        <div class="toolbar"><button class="btn" onclick="refreshAll()">Refresh</button><button class="btn blue" onclick="go('/ui/findings-data')">Review findings data</button>${state.advancedMode ? '<a class="btn" href="/findings/export" target="_blank">Raw JSON</a>' : ''}</div>
+        <div class="notice">Zero False Positive Mode is ON. Findings need a quality score of 70+ to become Great Findings; only grade A findings scoring 85+ show as READY.</div>
         <div style="height:10px"></div>
         <div class="toolbar">${newCoverageClassBadges()}</div>
         <div style="height:14px"></div>
         <div class="toolbar">${tabs.map(([key, label]) => `<button class="btn ${activeKey === key ? 'primary' : ''}" onclick="selectFindingTab('${key}')">${label} <span class="tag">${esc((buckets[key] || []).length)}</span></button>`).join('')}</div>
         <div style="height:14px"></div>
-        <div class="grid cols-4">${metric('Valid Bugs', (buckets.valid_bugs || []).length, 'Score 70+')}${metric('Needs More Proof', (buckets.needs_more_proof || []).length, 'Manual validation needed')}${metric('Candidates', (buckets.candidates || []).length, 'Kept out of reports')}${metric('Skipped Websites', (buckets.skipped_out_of_scope || []).length, 'Out of scope or blocked')}</div>
+        <div class="grid cols-4">${metric('Great Findings', (buckets.valid_bugs || []).length, 'Score 70+')}${metric('Needs Manual Check', (buckets.needs_more_proof || []).length, 'Manual validation needed')}${metric('Candidates', (buckets.candidates || []).length, 'Kept as manual or rejected')}${metric('Skipped Websites', (buckets.skipped_out_of_scope || []).length, 'Out of scope or blocked')}</div>
         <div style="height:14px"></div>
         <div class="card pad"><div class="card-head"><div><div class="card-title">${esc(tabs.find(([key]) => key === activeKey)?.[1] || 'READY')}</div><div class="card-sub">${esc(activeRows.length)} finding(s) in this bucket</div></div></div><div class="list">${activeRows.slice(0,50).map(findingSimpleCard).join('') || '<div class="empty">Nothing in this bucket.</div>'}</div></div>`;
     }
@@ -1824,15 +1824,15 @@
         </div>
         <div class="card pad step-card">
           <div class="card-title">Step 6: Review results</div><div class="card-sub">Focus on ready findings first, then proof gaps.</div><div style="height:12px"></div>
-          <div class="grid cols-4">${metric('Valid Bugs', confirmed.length, 'READY only')}${metric('Ready to Submit', ready.length, 'Included in reports')}${metric('Needs More Proof', needsProof.length, 'Not reportable yet')}${metric('Candidate Findings', candidates.length, 'Kept out of reports')}</div>
+          <div class="grid cols-4">${metric('Great Findings', confirmed.length, 'Great only')}${metric('GREAT FINDINGS', ready.length, 'Shown in final findings')}${metric('Needs Manual Check', needsProof.length, 'Manual validation needed')}${metric('Needs Manual Check', candidates.length, 'Kept as manual or rejected')}</div>
           <div style="height:12px"></div>
           <div class="grid cols-2">${metric('False Positives Removed', falseRemoved.length, 'Filtered out')}${metric('Skipped Websites', skippedSites.length, 'Out of scope or blocked')}</div>
           <div style="height:12px"></div><div class="toolbar"><button class="btn" onclick="go('/ui/findings')">Open Findings</button><button class="btn" onclick="go('/ui/bounty')">Open Bounty Mode</button></div>
         </div>
         <div class="card pad step-card">
-          <div class="card-title">Step 7: Export report</div><div class="card-sub">Export once proof is ready.</div><div style="height:12px"></div>
-          <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
-          <div class="toolbar">${scan ? `<a class="btn primary" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(scan.id)}/report/sarif" target="_blank">Download SARIF</a>` : ''}<button class="btn blue" onclick="go('/ui/reports')">Open Reports</button></div>
+          <div class="card-title">Step 7: Final Findings</div><div class="card-sub">Review Great Findings and Needs Manual Check items.</div><div style="height:12px"></div>
+          <div class="notice">Great Findings have strong evidence. Needs Manual Check items require human validation.</div><div style="height:12px"></div>
+          <div class="toolbar">${scan ? `<a class="btn primary" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">View Findings Data</a><a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a><a class="btn" href="/findings/export" target="_blank">Deprecated</a>` : ''}<button class="btn blue" onclick="go('/ui/findings-data')">Open Findings Data</button></div>
         </div>
         ${['complete','completed'].includes(String(scan?.status || '').toLowerCase()) ? analystIntelligencePanel(intelligence) : ''}
         <div class="${state.advancedMode ? '' : 'hidden'}">
@@ -1915,7 +1915,7 @@
       </details>`;
     }
     function autopilotStateStrip(active){
-      const states = ['queued','running','waiting_for_burp_traffic','validating','reporting','completed','paused','stopped','failed'];
+      const states = ['queued','running','waiting_for_burp_traffic','validating','Findingsing','completed','paused','stopped','failed'];
       const doneOrder = states.indexOf(active);
       return states.map((s,i) => `<div class="state-chip ${s===active?'active':(doneOrder > i && !['paused','stopped','failed'].includes(active)?'done':'')}">${esc(s)}</div>`).join('');
     }
@@ -1963,9 +1963,9 @@
       el.innerHTML = `
         <div class="toolbar">
           <button class="btn" onclick="refreshSelectedArtifacts().then(render)">Refresh bounty data</button>
-          <button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne report</button>
-          <button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd report</button>
-          <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">Download Markdown</a>
+          <button class="btn primary" onclick="copyBountyFindings('hackerone')">Copy findings note</button>
+          <button class="btn blue" onclick="copyBountyFindings('bugcrowd')">Copy findings note</button>
+          <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">View Findings Data</a>
           <a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">Download JSON</a>
         </div>
         <div class="grid cols-4">
@@ -2004,10 +2004,10 @@
         </div>
         <div style="height:14px"></div>
         <div class="card pad">
-          <div class="card-head"><div><div class="card-title">HackerOne / Bugcrowd Report Builder</div><div class="card-sub">Exports include impact, evidence, proof status, missing proof, and remediation.</div></div></div>
+          <div class="card-head"><div><div class="card-title">HackerOne / Bugcrowd Findings Builder</div><div class="card-sub">Exports include impact, evidence, proof status, missing proof, and remediation.</div></div></div>
           <div class="toolbar">
-            <button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne report</button>
-            <button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd report</button>
+            <button class="btn primary" onclick="copyBountyFindings('hackerone')">Copy findings note</button>
+            <button class="btn blue" onclick="copyBountyFindings('bugcrowd')">Copy findings note</button>
             <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=hackerone" target="_blank">HackerOne Markdown</a>
             <a class="btn" href="/scan/${esc(scan.id)}/bounty/markdown?platform=bugcrowd" target="_blank">Bugcrowd Markdown</a>
             <a class="btn" href="/scan/${esc(scan.id)}/bounty/json" target="_blank">JSON</a>
@@ -2043,17 +2043,17 @@
       if(!items.length) return '<div class="empty">Manual validation steps appear for candidate bounty findings.</div>';
       return `<div class="list">${items.map(x => `<div class="row-card"><div><strong>${esc(x.title)}</strong><div class="small muted mono">${esc(x.id)}</div><ol>${(x.steps||[]).map(s=>`<li>${esc(s)}</li>`).join('') || '<li>Safely reproduce in scope with Session A and Session B, then capture redacted evidence.</li>'}</ol></div></div>`).join('')}</div>`;
     }
-    function renderReports(){
+    function renderFindingsData(){
       const s = selectedScan();
-      document.getElementById('route-reports').innerHTML = `
+      document.getElementById('route-findings-data').innerHTML = `
         <div class="card pad">
-          <div class="card-head"><div><div class="card-title">Selected report</div><div class="card-sub">${s ? esc(s.target) : 'No scan selected yet.'}</div></div>${s ? `<span class="status ${esc(s.status)}">${esc(s.status)}</span>` : ''}</div>
-          <div class="notice">Only READY findings are included in bounty reports.</div><div style="height:12px"></div>
-          ${s ? `<div class="toolbar"><button class="btn primary" onclick="copyBountyReport('hackerone')">Copy HackerOne Report</button><button class="btn blue" onclick="copyBountyReport('bugcrowd')">Copy Bugcrowd Report</button><a class="btn" href="/scan/${esc(s.id)}/report" target="_blank">Download Markdown</a><a class="btn" href="/findings/export" target="_blank">Download JSON</a><a class="btn" href="/scan/${esc(s.id)}/report/csv" target="_blank">Download CSV</a><a class="btn" href="/scan/${esc(s.id)}/report/sarif" target="_blank">Download SARIF</a></div>` : '<div class="empty">Start or select a scan before exporting.</div>'}
+          <div class="card-head"><div><div class="card-title">Selected Findings</div><div class="card-sub">${s ? esc(s.target) : 'No scan selected yet.'}</div></div>${s ? `<span class="status ${esc(s.status)}">${esc(s.status)}</span>` : ''}</div>
+          <div class="notice">Great Findings have strong evidence. Needs Manual Check items require human validation.</div><div style="height:12px"></div>
+          ${s ? `<div class="toolbar"><button class="btn primary" onclick="copyBountyFindings('hackerone')">Copy findings note</button><button class="btn blue" onclick="copyBountyFindings('bugcrowd')">Copy findings note</button><a class="btn" href="/scan/${esc(s.id)}" target="_blank">View Findings Data</a><a class="btn" href="/findings/export" target="_blank">Download JSON</a><a class="btn" href="/findings/export" target="_blank">Deprecated</a><a class="btn" href="/findings/export" target="_blank">Deprecated</a></div>` : '<div class="empty">Start or select a scan before reviewing findings data.</div>'}
         </div>
         <div style="height:14px"></div>
         <details class="${state.advancedMode ? '' : 'hidden'}"><summary class="btn">Advanced exports</summary><div style="height:12px"></div><div class="table-wrap"><table><thead><tr><th>Scan</th><th>Target</th><th>Status</th><th>Full</th><th>Executive</th><th>Technical</th><th>Raw JSON</th></tr></thead><tbody>
-        ${state.scans.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(x.target)}</td><td><span class="status ${esc(x.status)}">${esc(x.status)}</span></td><td><button class="btn" onclick="openReport('${esc(x.id)}')">Open</button></td><td><a class="btn" href="/scan/${esc(x.id)}/report/executive" target="_blank">Executive</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/technical" target="_blank">Technical</a></td><td><a class="btn" href="/scan/${esc(x.id)}/report/json" target="_blank">JSON</a></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No reports yet.</div></td></tr>'}
+        ${state.scans.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(x.target)}</td><td><span class="status ${esc(x.status)}">${esc(x.status)}</span></td><td><button class="btn" onclick="openFindings('${esc(x.id)}')">Open</button></td><td><a class="btn" href="/scan/${esc(x.id)}" target="_blank">Executive</a></td><td><a class="btn" href="/scan/${esc(x.id)}" target="_blank">Technical</a></td><td><a class="btn" href="/scan/${esc(x.id)}" target="_blank">JSON</a></td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No Findings Data yet.</div></td></tr>'}
         </tbody></table></div></details>`;
     }
     function aiProviderBadge(provider, available){
@@ -2238,7 +2238,7 @@
           <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Server</div><div class="mono">${esc(s.api_url || s.server_url || 'http://127.0.0.1:8888')}</div><div>Dashboard</div><div class="mono">${esc(s.dashboard_url || 'http://127.0.0.1:8888/ui')}</div></div></div>
           <div class="card pad"><div class="card-title">Dry Run</div><div style="height:12px"></div><div class="notice">The dry run creates mock local scan data in memory and durable Autopilot state. It does not scan the internet.</div></div>
         </div>
-        ${dry ? `<div style="height:14px"></div><div class="card pad"><div class="card-head"><div><div class="card-title">Autopilot Dry Run Result</div><div class="card-sub">${esc(dry.target)}</div></div><span class="tag">DRY RUN</span></div><div class="kv"><div>Scan mode</div><div>${esc(dry.scan_mode)}</div></div><div style="height:14px"></div><div class="grid cols-4"><div class="card pad" style="border-color:var(--green)"><div class="metric" style="color:var(--green)">${esc(dry.valid_bugs_count ?? 0)}</div><div class="metric-label">Valid bugs</div></div><div class="card pad" style="border-color:var(--amber)"><div class="metric" style="color:var(--amber)">${esc(dry.needs_more_proof_count ?? 0)}</div><div class="metric-label">Needs more proof</div></div><div class="card pad"><div class="metric">${esc(dry.candidates_count ?? 0)}</div><div class="metric-label">Candidates</div></div><div class="card pad" style="border-color:var(--blue)"><div class="metric" style="color:var(--blue)">${esc(dry.informational_count ?? 0)}</div><div class="metric-label">Informational</div></div></div></div>` : ''}
+        ${dry ? `<div style="height:14px"></div><div class="card pad"><div class="card-head"><div><div class="card-title">Autopilot Dry Run Result</div><div class="card-sub">${esc(dry.target)}</div></div><span class="tag">DRY RUN</span></div><div class="kv"><div>Scan mode</div><div>${esc(dry.scan_mode)}</div></div><div style="height:14px"></div><div class="grid cols-4"><div class="card pad" style="border-color:var(--green)"><div class="metric" style="color:var(--green)">${esc(dry.valid_bugs_count ?? 0)}</div><div class="metric-label">Great Findings</div></div><div class="card pad" style="border-color:var(--amber)"><div class="metric" style="color:var(--amber)">${esc(dry.needs_more_proof_count ?? 0)}</div><div class="metric-label">Needs Manual Check</div></div><div class="card pad"><div class="metric">${esc(dry.candidates_count ?? 0)}</div><div class="metric-label">Candidates</div></div><div class="card pad" style="border-color:var(--blue)"><div class="metric" style="color:var(--blue)">${esc(dry.informational_count ?? 0)}</div><div class="metric-label">Informational</div></div></div></div>` : ''}
         <div style="height:14px"></div>
         <div class="grid cols-3">${checks.map(systemCheckCard).join('') || '<div class="empty" style="grid-column:1/-1">Click Run System Check to verify the local platform.</div>'}</div>`;
     }
@@ -2272,7 +2272,7 @@
       document.getElementById('route-help').innerHTML = `
         <div class="grid cols-2">
           <div class="card pad"><div class="card-title">Local URLs</div><div style="height:12px"></div><div class="kv"><div>Backend</div><div class="mono">http://127.0.0.1:8888</div><div>Dashboard</div><div class="mono">http://127.0.0.1:8888/ui</div><div>Local domain</div><div class="mono">http://burpollama.localhost:8888/ui</div></div></div>
-          <div class="card pad"><div class="card-title">Workflow</div><div style="height:12px"></div><div class="list"><div class="row-card">Configure AI and sessions</div><div class="row-card">Start an authorized scan</div><div class="row-card">Review findings and ambiguous queue</div><div class="row-card">Open coverage, attack graph, and reports</div></div></div>
+          <div class="card pad"><div class="card-title">Workflow</div><div style="height:12px"></div><div class="list"><div class="row-card">Configure AI and sessions</div><div class="row-card">Start an authorized scan</div><div class="row-card">Review findings and ambiguous queue</div><div class="row-card">Open coverage, attack graph, and Findings Data</div></div></div>
           <div class="card pad" style="grid-column:1/-1"><div class="card-title">API Reference</div><div style="height:12px"></div><pre class="pre">POST /scan
 POST /auto/profile-target
 POST /autopilot/start
@@ -2286,12 +2286,12 @@ GET /scan/{scan_id}
 GET /scan/{scan_id}/coverage
 GET /scan/{scan_id}/attack-graph
 GET /scan/{scan_id}/autopilot
-GET /scan/{scan_id}/autopilot/report
+GET /scan/{scan_id}/autopilot
 GET /scan/{scan_id}/bounty
 GET /scan/{scan_id}/bounty/markdown
 GET /scan/{scan_id}/bounty/json
 POST /scan/{scan_id}/retry-failed-task
-GET /scan/{scan_id}/report
+GET /scan/{scan_id}
 GET /findings
 GET /review
 GET /ai/providers
@@ -2338,3 +2338,6 @@ POST /analyze</pre></div>
   </script>
 </body>
 </html>
+
+
+

@@ -41,7 +41,8 @@ class StandaloneScannerE2ETests(unittest.TestCase):
                     finding.get("vuln_type") == "Environment File Exposed"
                     for finding in scan["triaged_findings"]
                 ))
-                self.assertTrue(Path(scan["report_paths"]["markdown"]).exists())
+                self.assertTrue(Path(scan["artifact_paths"]["findings.json"]).exists())
+                self.assertFalse((Path(scan["artifact_paths"]["findings.json"]).parent / "report.md").exists())
                 self.assertTrue(any(
                     event.get("type") == "agent_started"
                     for event in events

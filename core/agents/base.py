@@ -25,7 +25,7 @@ class ScanContext:
     raw_findings: list[dict] = field(default_factory=list)
     triaged_findings: list[dict] = field(default_factory=list)
     analysis: dict[str, Any] = field(default_factory=dict)
-    report_paths: dict[str, str] = field(default_factory=dict)
+    artifact_paths: dict[str, str] = field(default_factory=dict)
     tested_urls: set[str] = field(default_factory=set)
     blackboard: list[dict[str, Any]] = field(default_factory=list)
 
@@ -80,6 +80,34 @@ class ScanContext:
         self.scan.setdefault("logs", []).append(
             {"ts": "", "msg": message, "level": level, "agent": agent}
         )
+
+    async def observe_response(
+        self,
+        status_code: int,
+        *,
+        agent: str = "",
+        phase: str = "",
+        body_hint: str = "",
+    ) -> None:
+        body = str(body_hint or "").lower()
+        block_hint = int(status_code or 0) in {401, 403, 503} and any(
+            marker in body
+            for marker in ("cloudflare", "attention required", "access denied", "blocked", "captcha")
+        )
+        if int(status_code or 0) != 429 and not block_hint:
+            return
+        downshifted = self.rate_limiter.record_response(int(status_code or 0), block_hint=block_hint)
+        if not downshifted:
+            return
+        message = "Target appears to be rate-limiting or blocking requests. Continuing in conservative mode."
+        self.scan.setdefault("program_warnings", []).append(message)
+        await self.emit(
+            EventType.THROTTLED,
+            agent=agent,
+            phase=phase,
+            message=message,
+            status_code=status_code,
+        )
         await self.emit(
             EventType.LOG,
             agent=agent,
@@ -121,3 +149,9 @@ class BaseAgent:
 
     async def run(self, context: ScanContext):
         raise NotImplementedError
+
+
+async def observe_response(context: Any, status_code: int, **kwargs) -> None:
+    observer = getattr(context, "observe_response", None)
+    if observer:
+        await observer(status_code, **kwargs)

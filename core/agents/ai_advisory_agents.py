@@ -345,9 +345,9 @@ class AIStrategyAgent(AIAdvisoryAgent):
         return strategy
 
 
-class AIReportAgent(AIAdvisoryAgent):
-    name = "ai-report"
-    phase = "report_export"
+class AIFinalFindingsAdvisor(AIAdvisoryAgent):
+    name = "ai-final-findings"
+    phase = "final_findings"
 
     async def run(self, context: ScanContext):
         if not await self._enabled(context):
@@ -357,8 +357,8 @@ class AIReportAgent(AIAdvisoryAgent):
             await self._emit_ai(
                 context,
                 EventType.AI_NOTE,
-                "no evidence-backed findings yet; report should stay factual and manual-review oriented",
-                role="report_wording",
+                "no evidence-backed findings yet; final findings should stay factual and manual-review oriented",
+                role="final_findings_wording",
             )
             return {}
         summaries = [
@@ -371,18 +371,18 @@ class AIReportAgent(AIAdvisoryAgent):
             for item in findings[:8]
         ]
         prompt = {
-            "task": "suggest concise bounty report wording after evidence exists",
+            "task": "suggest concise final finding wording after evidence exists",
             "findings": summaries,
             "rule": "do not invent evidence; say needs manual validation when proof is incomplete",
         }
-        fallback = "report wording prepared from existing evidence only"
+        fallback = "final finding wording prepared from existing evidence only"
         wording = await self._complete(
             context,
             _safe_json(prompt),
             fallback=fallback,
             max_tokens=260,
         )
-        context.scan["ai_report_guidance"] = {
+        context.scan["ai_final_findings_guidance"] = {
             "summary": wording,
             "findings_reviewed": len(summaries),
         }
@@ -390,7 +390,7 @@ class AIReportAgent(AIAdvisoryAgent):
             context,
             EventType.AI_NOTE,
             wording,
-            role="report_wording",
+            role="final_findings_wording",
             findings_reviewed=len(summaries),
         )
-        return context.scan["ai_report_guidance"]
+        return context.scan["ai_final_findings_guidance"]

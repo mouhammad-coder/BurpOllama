@@ -81,8 +81,8 @@ class ScopeFileTests(unittest.TestCase):
             self.assertIn("IN SCOPE", output)
             self.assertIn("Safe passive command", output)
             self.assertIn("CLI runbook", output)
-            self.assertIn("report --latest --format readiness", output)
-            self.assertIn("readiness-check --latest", output)
+            self.assertIn("findings --latest", output)
+            self.assertIn("findings --latest --json", output)
             self.assertIn("history --ready-only --limit 20", output)
 
     def test_scope_check_imports_program_json_and_writes_scope_file(self):
@@ -126,8 +126,8 @@ class ScopeFileTests(unittest.TestCase):
             self.assertEqual(payload["safe_passive_command"], payload["cli_runbook"][0])
             self.assertIn("--yes", payload["cli_runbook"][0])
             self.assertIn("--no-external-tools", payload["cli_runbook"][0])
-            self.assertEqual(payload["cli_runbook"][1], "python cli.py report --latest --format readiness")
-            self.assertEqual(payload["cli_runbook"][2], "python cli.py readiness-check --latest")
+            self.assertEqual(payload["cli_runbook"][1], "python cli.py findings --latest")
+            self.assertEqual(payload["cli_runbook"][2], "python cli.py findings --latest --json")
             self.assertEqual(payload["cli_runbook"][3], "python cli.py history --ready-only --limit 20")
 
     def test_malformed_scope_file_line_warns_without_crash(self):

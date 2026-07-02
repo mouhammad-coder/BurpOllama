@@ -9,7 +9,7 @@ Usage:
   python3 cli.py scan https://target.com --mode deep
   python3 cli.py recon https://target.com
   python3 cli.py validate "IDOR on /api/users/{id}"
-  python3 cli.py report --scan-id <id>
+  python3 cli.py findings --latest
   python3 cli.py status
   python3 cli.py history
 """
@@ -22,7 +22,9 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -30,8 +32,10 @@ import webbrowser
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
+from xml.etree import ElementTree
 
 import httpx
 import websockets
@@ -48,7 +52,19 @@ from rich.text import Text
 
 from core import __version__
 from core.config import config_status, load_config, ollama_health
-from core.reports import REPORT_FILENAMES, render_report
+from core.findings import (
+    filter_final_findings,
+    final_findings,
+    render_final_tables,
+    write_scan_artifacts,
+)
+from core.scope import ScanScope
+from core.program_profile import (
+    FINAL_OUTPUTS,
+    GOALS,
+    host_scope_entry,
+    load_program_profile,
+)
 from core.scanner import scanner
 from core.storage import scan_store
 
@@ -107,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--time-budget",
         type=int,
         default=900,
-        help="Maximum scan runtime in seconds before writing partial reports.",
+        help="Maximum scan runtime in seconds before writing partial findings.",
     )
     scan.add_argument(
         "--max-urls",
@@ -135,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--quiet", action="store_true")
     scan.add_argument("--json", action="store_true", dest="json_output")
     scan.add_argument("--follow", action="store_true")
-    scan.add_argument("--output", default="reports")
+    scan.add_argument("--output", default="scans")
     scan.add_argument(
         "--no-external-tools",
         action="store_true",
@@ -147,6 +163,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit OOB callback URL for authorized bounty/deep SSRF validation.",
     )
 
+    autopilot = sub.add_parser(
+        "ai-autopilot",
+        help="Run a goal-based multi-agent workflow from program.yml scope.",
+    )
+    autopilot.add_argument("target", nargs="?")
+    autopilot.add_argument("--from-burp", choices=("latest",), default="")
+    autopilot.add_argument("--program", help="program.yml with scope and scanner permissions.")
+    autopilot.add_argument("--goal", choices=GOALS, default="bounty-hunt")
+    autopilot.add_argument("--mode", choices=tuple(MODE_MAP), default="passive")
+    autopilot.add_argument("--multi-agent", action="store_true")
+    autopilot.add_argument("--final-output", choices=FINAL_OUTPUTS, default="terminal")
+    autopilot.add_argument("--yes", action="store_true", help="Confirm authorization non-interactively.")
+    autopilot.add_argument("--scope", action="append", default=None, metavar="DOMAIN")
+    autopilot.add_argument("--scope-file")
+    autopilot.add_argument("--auth-profile", action="append", default=None)
+    autopilot.add_argument("--concurrency", type=int, default=5)
+    autopilot.add_argument("--rate-limit", type=float, default=2.0)
+    autopilot.add_argument("--timeout", type=float, default=10.0)
+    autopilot.add_argument("--retries", type=int, default=1)
+    autopilot.add_argument("--time-budget", type=int, default=900)
+    autopilot.add_argument("--max-urls", type=int, default=100)
+    autopilot.add_argument("--ai", action="store_true")
+    autopilot.add_argument("--no-ai", action="store_true")
+    autopilot.add_argument("--ai-provider", default="")
+    autopilot.add_argument("--model", default="")
+    autopilot.add_argument("--output", default="scans")
+    autopilot.add_argument("--no-external-tools", action="store_true")
+    autopilot.add_argument("--oob-server", default="")
+    autopilot.add_argument(
+        "--dry-run-plan",
+        action="store_true",
+        help="Print the authorized scan plan without sending scan requests.",
+    )
+
+    burp = sub.add_parser("burp", help="Import or analyze Burp Suite traffic.")
+    burp_sub = burp.add_subparsers(dest="burp_command", required=True)
+    burp_import = burp_sub.add_parser("import", help="Import Burp HTTP history for passive analysis.")
+    burp_import.add_argument("file")
+    burp_import.add_argument("--program")
+
+    preflight = sub.add_parser("preflight", help="Check scope and permission status without vulnerability testing.")
+    preflight.add_argument("target")
+    preflight.add_argument("--program", required=True, help="program.yml with scope and scanner permissions.")
+    preflight.add_argument("--goal", choices=GOALS, default="bounty-hunt")
+    preflight.add_argument("--mode", choices=tuple(MODE_MAP), default="passive")
+
     from core.benchmarks import BENCHMARKS
 
     benchmark = sub.add_parser(
@@ -156,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("lab", choices=tuple(BENCHMARKS))
     benchmark.add_argument("--target", default="")
     benchmark.add_argument("--yes", action="store_true")
-    benchmark.add_argument("--output", default="reports")
+    benchmark.add_argument("--output", default="scans")
     benchmark.add_argument("--timeout", type=float, default=10.0)
     benchmark.add_argument("--check", action="store_true", help="Check whether the benchmark target is reachable without running probes.")
 
@@ -173,15 +235,32 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--url", default="")
     validate.add_argument("--evidence", default="")
 
-    report = sub.add_parser("report", help="Print or save a completed scan report.")
+    report = sub.add_parser(
+        "report",
+        help="Deprecated. Use `burpollama findings --latest` instead.",
+    )
     report.add_argument("--scan-id")
     report.add_argument("--latest", action="store_true", help="Use the most recent stored scan.")
     report.add_argument(
         "--format",
-        choices=("markdown", "hackerone", "bugcrowd", "json", "csv", "sarif", "readiness"),
         default="markdown",
+        help="Deprecated; ignored.",
     )
     report.add_argument("--output")
+
+    findings = sub.add_parser("findings", help="Show final scan findings.")
+    findings.add_argument("--scan-id")
+    findings.add_argument("--latest", action="store_true", help="Use the most recent stored scan.")
+    findings.add_argument("--show-info", action="store_true")
+    findings.add_argument("--show-rejected", action="store_true")
+    findings.add_argument("--show-all", action="store_true")
+    findings.add_argument("--json", action="store_true", dest="json_output")
+    findings.add_argument(
+        "--min-rate",
+        choices=("critical", "high", "medium", "low", "info"),
+        default="",
+    )
+    findings.add_argument("--min-confidence", type=int, default=0)
 
     train = sub.add_parser("train", help="Label findings for local AI feedback data.")
     train.add_argument("--scan-id", help="Scan ID to label interactively.")
@@ -198,18 +277,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Show local scanner, storage, tools, and AI readiness.")
     history = sub.add_parser("history", help="List locally stored scans.")
-    history.add_argument("--ready-only", action="store_true", help="Only show scans with report-ready or manual-check findings.")
+    history.add_argument("--ready-only", action="store_true", help="Only show scans with great or manual-check findings.")
     history.add_argument("--limit", type=int, default=100)
-    readiness_check = sub.add_parser("readiness-check", help="Exit nonzero unless a scan has actionable bounty output.")
+    readiness_check = sub.add_parser(
+        "readiness-check",
+        help="Deprecated. Use `burpollama findings --latest` instead.",
+    )
     readiness_check.add_argument("--scan-id")
     readiness_check.add_argument("--latest", action="store_true", help="Use the most recent stored scan.")
     readiness_check.add_argument(
-        "--require-report-ready",
+        "--require-great-finding",
         action="store_true",
-        help="Fail unless at least one report-ready issue exists.",
+        help="Deprecated; retained for old scripts and ignored.",
     )
-    readiness_check.add_argument("--json", action="store_true", help="Print the readiness decision as JSON.")
-    readiness_check.add_argument("--output", help="Write the readiness decision JSON to a file.")
+    readiness_check.add_argument("--json", action="store_true", help="Deprecated.")
+    readiness_check.add_argument("--output", help="Deprecated; no file is written.")
     sub.add_parser("doctor", help="Diagnose the local CLI installation.")
     sub.add_parser("version", help="Print the BurpOllama version.")
 
@@ -244,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_skill = skill_sub.add_parser("run", help="Run a skill explicitly.")
     run_skill.add_argument("skill")
     run_skill.add_argument("--target", required=True)
-    run_skill.add_argument("--mode", choices=("passive", "validate", "report"), default="passive")
+    run_skill.add_argument("--mode", choices=("passive", "validate", "findings", "report"), default="passive")
     run_skill.add_argument("--scope", action="append", default=None)
     run_skill.add_argument("--scope-file")
     run_skill.add_argument("--yes", action="store_true", help="Confirm authorization and scope non-interactively.")
@@ -390,7 +472,7 @@ class StreamPrinter:
             ("P2:", "PHASE 2 — VULNERABILITY HUNT"),
             ("P3:", "PHASE 3 — TRIAGE"),
             ("P4:", "PHASE 4 — DEEP ANALYSIS"),
-            ("P5:", "PHASE 5 — REPORTING"),
+            ("P5:", "PHASE 5 - FINAL FINDINGS"),
             ("P6:", "PHASE 6 — INTELLIGENCE"),
         )
         for prefix, title in phase_titles:
@@ -554,7 +636,7 @@ class LiveScanUI:
         "vulnerability_hunt": 3,
         "ai_triage": 4,
         "proof_validation": 5,
-        "report_export": 6,
+        "final_findings": 6,
     }
 
     def __init__(self, scan: dict, ai: dict):
@@ -831,7 +913,7 @@ class LiveScanUI:
         elif event_type == "error":
             state["status"] = "error"
             self._line(event, "✗", "red")
-        elif event_type == "report_written":
+        elif event_type == "findings_prepared":
             self._line(event, "✓", "green")
         elif event_type in {"ai_note", "ai_hypothesis", "ai_strategy"}:
             self.blackboard.append({
@@ -893,60 +975,17 @@ async def stream_scan(
 def print_results(scan: dict, started: float) -> None:
     phase("RESULTS")
     scan_id = scan.get("id", "")
-    findings = (
-        scan.get("triaged_findings")
-        or scan.get("findings")
-        or scan.get("raw_findings")
-        or []
-    )
-    counts = Counter(str(item.get("severity", "INFO")).upper() for item in findings)
     elapsed = max(0, int(time.monotonic() - started))
-    analysis = scan.get("analysis", {})
-    coverage = analysis.get("coverage", {})
-    readiness = _scan_readiness_summary(scan)
-    table = Table(box=box.ROUNDED, title="Scan summary")
-    table.add_column("Metric")
-    table.add_column("Value")
-    table.add_row("Scan ID", str(scan_id))
-    table.add_row("Target", str(scan.get("target", "")))
-    table.add_row("Mode", str(scan.get("mode", "")))
-    table.add_row("Status", str(scan.get("status", "")))
-    table.add_row("Duration", "{:02d}:{:02d}:{:02d}".format(
-        elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
-    ))
-    table.add_row(
-        "Discovered URLs", str(len(scan.get("recon", {}).get("urls", [])))
-    )
-    table.add_row(
-        "Tested requests",
-        str(scan.get("rate_limiter", {}).get("total_requests", 0)),
-    )
-    table.add_row(
-        "Confirmed findings", str(len(scan.get("confirmed_findings", [])))
-    )
-    table.add_row(
-        "Candidate findings", str(len(scan.get("candidate_findings", [])))
-    )
-    table.add_row("Report-ready issues", str(readiness["report_ready_issues"]))
-    table.add_row("Manual-check findings", str(readiness["manual_check_findings"]))
-    table.add_row("Proof-blocked findings", str(readiness["proof_blocked_findings"]))
-    table.add_row(
-        "Coverage", "{}%".format(coverage.get("coverage_percent", 0))
-    )
-    for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
-        table.add_row(severity, str(counts.get(severity, 0)))
-    console.print(table)
-    _print_findings_table(scan)
-    report_paths = scan.get("report_paths", {})
-    if report_paths:
-        console.print("[bold]Reports:[/bold]")
-        for report_format, path in report_paths.items():
-            console.print("  {}: {}".format(report_format, path))
+    if not isinstance(scan.get("final_findings"), dict):
+        scan["final_findings"] = final_findings(scan)
+    console.print(render_final_tables(scan, scan["final_findings"]), markup=False)
     console.print(
-        "\nNext:\n[cyan]burpollama report --scan-id {}[/cyan]\n"
-        "[cyan]burpollama report --scan-id {} --format readiness[/cyan]\n"
-        "[cyan]burpollama report --scan-id {} --format hackerone[/cyan]".format(
-            scan_id, scan_id, scan_id
+        "Scan ID: {}\nDuration: {:02d}:{:02d}:{:02d}\nNext: [cyan]burpollama findings --scan-id {}[/cyan]".format(
+            escape(str(scan_id)),
+            elapsed // 3600,
+            (elapsed % 3600) // 60,
+            elapsed % 60,
+            escape(str(scan_id)),
         )
     )
 
@@ -977,15 +1016,15 @@ def _findings_table_rows(scan: dict) -> list[dict]:
     rows = []
     if isinstance(gate, dict) and gate:
         buckets = (
-            ("Report-ready", gate.get("valid_bugs", []) or []),
-            ("Manual-check", gate.get("needs_more_proof", []) or []),
-            ("Manual-check", gate.get("candidates", []) or []),
-            ("Info", gate.get("informational", []) or []),
+            ("Great Finding", gate.get("valid_bugs", []) or []),
+            ("Needs Manual Check", gate.get("needs_more_proof", []) or []),
+            ("Needs Manual Check", gate.get("candidates", []) or []),
+            ("Informational", gate.get("informational", []) or []),
         )
     elif "confirmed_findings" in scan or "candidate_findings" in scan:
         buckets = (
-            ("Report-ready", scan.get("confirmed_findings", []) or []),
-            ("Manual-check", scan.get("candidate_findings", []) or []),
+            ("Great Finding", scan.get("confirmed_findings", []) or []),
+            ("Needs Manual Check", scan.get("candidate_findings", []) or []),
         )
     else:
         buckets = (("Observed", scan.get("triaged_findings") or scan.get("findings") or scan.get("raw_findings") or []),)
@@ -1025,10 +1064,10 @@ def _finding_badge(finding: dict, readiness: str) -> str:
 
 def _short_readiness(readiness: str) -> str:
     return {
-        "Report-ready": "Ready",
-        "Manual-check": "Manual",
+        "Great Finding": "Great",
+        "Needs Manual Check": "Manual",
         "Observed": "Observed",
-        "Info": "Info",
+        "Informational": "Info",
     }.get(readiness, readiness)
 
 
@@ -1058,7 +1097,7 @@ def _print_findings_table(scan: dict, limit: int = 15) -> None:
         )
     console.print(table)
     if len(rows) > limit:
-        console.print("[dim]{} additional finding(s) omitted; use readiness or marketplace reports for the full list.[/dim]".format(len(rows) - limit))
+        console.print("[dim]{} additional finding(s) omitted; use `burpollama findings --latest` for the full list.[/dim]".format(len(rows) - limit))
 
 
 def _scan_readiness_summary(scan: dict) -> dict:
@@ -1087,11 +1126,11 @@ def _scan_readiness_summary(scan: dict) -> dict:
             str(finding.get("vuln_type") or "").strip().lower(),
         ))
     return {
-        "report_ready_issues": len(issue_keys),
-        "report_ready_findings": len(valid),
+        "great_finding_issues": len(issue_keys),
+        "great_findings": len(valid),
         "manual_check_findings": len(manual),
         "proof_blocked_findings": len(proof_blocked),
-        "missing_report_ready_artifacts": _missing_report_ready_artifacts(valid),
+        "missing_evidence_artifacts": _missing_evidence_artifacts(valid),
     }
 
 
@@ -1107,7 +1146,7 @@ def _finding_artifact_path(finding: dict) -> str:
     return str(path or "").strip()
 
 
-def _missing_report_ready_artifacts(findings: list[dict]) -> int:
+def _missing_evidence_artifacts(findings: list[dict]) -> int:
     missing = 0
     for finding in findings:
         path = _finding_artifact_path(finding)
@@ -1213,7 +1252,7 @@ async def command_benchmark(args) -> int:
     from coverage_intelligence import compute_coverage
     from zero_fp_gate import apply_zero_fp_gate
     from core.agents.base import ScanContext
-    from core.agents.report_agent import ReportAgent
+    from core.agents.final_findings_presenter_agent import FinalFindingsPresenterAgent
     from core.benchmarks.juice_shop import JuiceShopBenchmark
     from core.events import event_bus
     from core.ratelimit import RateLimiter
@@ -1287,14 +1326,499 @@ async def command_benchmark(args) -> int:
         + gated.get("candidates", [])
         + gated.get("informational", [])
     )
-    await ReportAgent().execute(context)
+    await FinalFindingsPresenterAgent().execute(context)
     context.scan["status"] = "complete"
     context.scan["phase"] = "complete"
-    context.scan["finished"] = datetime.utcnow().isoformat()
+    context.scan["finished"] = datetime.now(timezone.utc).isoformat()
     context.scan["agent_status"] = context.scheduler.snapshot()
     context.scan["rate_limiter"] = context.rate_limiter.snapshot()
     scan_store.save(context.scan, context.triaged_findings)
     print_results(context.scan, started)
+    return 0
+
+
+BURP_IMPORT_DIR = ROOT / "data" / "burp-imports"
+
+
+def _load_latest_burp_import() -> dict:
+    path = BURP_IMPORT_DIR / "latest.json"
+    if not path.exists():
+        raise RuntimeError("No Burp import found. Run: burpollama burp import <file> --program program.yml")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _program_target_from_scope(program_profile) -> str:
+    for entry in program_profile.in_scope:
+        text = str(entry).strip()
+        if text and not text.startswith("!"):
+            return normalized_target(text.lstrip("*."))
+    return ""
+
+
+def _autopilot_target(args, program_profile=None) -> str:
+    if getattr(args, "target", ""):
+        return normalized_target(args.target)
+    if getattr(args, "from_burp", "") == "latest":
+        imported = _load_latest_burp_import()
+        if imported.get("target"):
+            return normalized_target(imported["target"])
+    if program_profile:
+        return _program_target_from_scope(program_profile)
+    return ""
+
+
+def _manual_auth_required_message(target: str) -> str:
+    return (
+        'Authorization confirmation required: "I confirm I am authorized to test this target." '
+        "For non-interactive use, pass --yes and --scope {}.".format(
+            host_scope_entry(target) or "target.com"
+        )
+    )
+
+
+def _redacted_auth_profile(path: str) -> dict[str, Any]:
+    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("auth profile must be a JSON object: {}".format(path))
+    profile = {
+        "name": str(data.get("name") or Path(path).stem),
+        "base_url": str(data.get("base_url") or ""),
+        "cookies": {str(key): "[REDACTED]" for key in dict(data.get("cookies") or {})},
+        "headers": {str(key): "[REDACTED]" for key in dict(data.get("headers") or {})},
+        "role": str(data.get("role") or ""),
+        "notes": str(data.get("notes") or ""),
+    }
+    from core.findings import redact_json
+
+    return redact_json(profile)
+
+
+def _load_auth_profiles(paths: list[str] | None) -> list[dict[str, Any]]:
+    profiles = [_redacted_auth_profile(path) for path in (paths or [])]
+    if len(profiles) > 2:
+        raise ValueError("At most two --auth-profile files are supported for safe comparison.")
+    return profiles
+
+
+def _burp_url_metadata(urls: list[str]) -> dict[str, Any]:
+    patterns = {
+        "auth_endpoints": re.compile(r"(?i)/(login|logout|signin|signup|password|reset|mfa|oauth|sso)(/|$)"),
+        "object_id_endpoints": re.compile(r"/(?:[A-Za-z0-9_-]+/)*(\d+|[0-9a-fA-F-]{16,})(?:[/?#]|$)"),
+        "upload_endpoints": re.compile(r"(?i)/(upload|file|files|attachment|avatar|media)(/|$)"),
+        "graphql_endpoints": re.compile(r"(?i)/graphql(?:/|$)|query="),
+        "redirect_parameters": re.compile(r"(?i)[?&](next|url|redirect|return|continue|dest|destination)="),
+        "admin_routes": re.compile(r"(?i)/(admin|administrator|dashboard|manage|internal)(/|$)"),
+        "api_routes": re.compile(r"(?i)/api/|/v[0-9]+/"),
+    }
+    return {
+        key: [url for url in urls if pattern.search(url)]
+        for key, pattern in patterns.items()
+    }
+
+
+def _burp_passive_findings(urls: list[str], imported: dict) -> list[dict[str, Any]]:
+    metadata = _burp_url_metadata(urls)
+    findings: list[dict[str, Any]] = []
+
+    def add(key: str, title: str, severity: str, evidence: str, manual_step: str) -> None:
+        matches = metadata.get(key, [])
+        if not matches:
+            return
+        findings.append({
+            "id": "burp-{}".format(key.replace("_", "-")),
+            "source": "burp-import",
+            "title": title,
+            "vuln_type": title,
+            "severity": severity,
+            "confidence": 65,
+            "url": matches[0],
+            "evidence": "{}: {} example(s), e.g. {}".format(evidence, len(matches), matches[0]),
+            "description": "Passive Burp import observation. No replay was performed.",
+            "business_impact": "Imported traffic shows a high-value surface that may contain bounty-relevant authorization or workflow issues.",
+            "manual_check_needed": manual_step,
+            "missing_proof": "No replay or two-account proof from imported traffic",
+            "evidence_strength": "weak",
+            "exploitability_status": "candidate",
+            "redaction_status": "redacted",
+        })
+
+    add("object_id_endpoints", "IDOR/BOLA candidate from Burp traffic", "HIGH", "Object ID route observed", "Use two authorized accounts and test whether User A can access User B's object response for the same endpoint shape.")
+    add("upload_endpoints", "Upload testing candidate from Burp traffic", "MEDIUM", "Upload route observed", "If upload testing is allowed, upload a benign text/image file and verify storage, content-type, and access controls only on owned test data.")
+    add("graphql_endpoints", "GraphQL endpoint candidate from Burp traffic", "MEDIUM", "GraphQL route observed", "Confirm GraphQL testing permission, then manually check introspection and authorization with authorized accounts.")
+    add("redirect_parameters", "Open redirect parameter candidate from Burp traffic", "MEDIUM", "Redirect-like parameter observed", "Manually test a harmless external URL parameter only if the program allows redirect testing.")
+    add("admin_routes", "Exposed admin route candidate from Burp traffic", "MEDIUM", "Admin route observed", "Check whether the route is only a login page or exposes sensitive admin functionality to the current authorized role.")
+    add("auth_endpoints", "Authentication workflow manual-check candidate", "MEDIUM", "Auth route observed", "Review account enumeration, password reset, MFA, and session behavior with owned authorized test accounts.")
+    add("api_routes", "API route cluster from Burp traffic", "INFO", "API routes observed", "Cluster API routes by resource and manually review object ownership, excessive data exposure, and role boundaries.")
+    return findings
+
+
+def _normalize_url_for_import(url: str) -> str:
+    from core.scanner import normalize_scan_url
+
+    return normalize_scan_url(url).rstrip("#")
+
+
+def _urls_from_burp_file(path: str, scope_entries: list[str]) -> list[str]:
+    source = Path(path)
+    found: list[str] = []
+    if source.suffix.lower() == ".har":
+        payload = json.loads(source.read_text(encoding="utf-8", errors="replace"))
+        for entry in (((payload.get("log") or {}).get("entries")) or []):
+            request = entry.get("request") if isinstance(entry, dict) else {}
+            if isinstance(request, dict) and request.get("url"):
+                found.append(str(request["url"]))
+    else:
+        try:
+            for _event, elem in ElementTree.iterparse(str(source), events=("end",)):
+                if elem.text:
+                    found.extend(re.findall(r"https?://[^\s\"'<>]+", elem.text))
+                elem.clear()
+        except ElementTree.ParseError:
+            text = source.read_text(encoding="utf-8", errors="replace")
+            found.extend(re.findall(r"https?://[^\s\"'<>]+", text))
+    scope = None
+    target = (
+        _program_target_from_scope(SimpleNamespace(in_scope=scope_entries))
+        if scope_entries
+        else (found[0] if found else "")
+    )
+    if target and scope_entries:
+        scope = ScanScope(target, scope_entries)
+    urls = []
+    for url in found:
+        cleaned = _normalize_url_for_import(url.rstrip(".,);]"))
+        if scope and not scope.allows(cleaned):
+            continue
+        urls.append(cleaned)
+    return list(dict.fromkeys(urls))
+
+
+def _offline_burp_scan(args, target: str, program_profile, warnings: list[str]) -> dict:
+    imported = _load_latest_burp_import()
+    scope_entries = program_profile.scope_entries if program_profile else list(getattr(args, "scope", None) or [])
+    urls = _urls_from_burp_file(imported["path"], scope_entries)
+    passive_findings = _burp_passive_findings(urls, imported)
+    scan_id = "burp-import-{}".format(int(time.time()))
+    scan = {
+        "id": scan_id,
+        "target": target,
+        "status": "complete",
+        "mode": "passive",
+        "goal": "burp-import-analysis",
+        "program_profile": program_profile.to_dict() if program_profile else {
+            "program": "not provided",
+            "automated_scanning_allowed": "user-confirmed",
+        },
+        "program": program_profile.name if program_profile else "not provided",
+        "automated_scanning_allowed": program_profile.scanner_permission_label if program_profile else "user-confirmed",
+        "program_warnings": warnings,
+        "recon": {"urls": urls, "burp_import": imported},
+        "raw_findings": passive_findings,
+        "triaged_findings": passive_findings,
+        "analysis": {
+            "burp_import": imported,
+            "burp_import_metadata": _burp_url_metadata(urls),
+            "no_replay": True,
+        },
+        "auth_profiles": _load_auth_profiles(getattr(args, "auth_profile", None)),
+        "agent_status": {
+            "scope": {},
+            "recon": {},
+            "final-findings-presenter": {},
+        },
+        "options": {"output": args.output},
+    }
+    scan["final_findings"] = final_findings(scan)
+    scan["artifact_paths"] = write_scan_artifacts(scan, args.output)
+    return scan
+
+
+def _resolve_target_host(target: str) -> tuple[bool, str]:
+    host = urlparse(normalized_target(target)).hostname or ""
+    if not host:
+        return False, "target has no hostname"
+    try:
+        socket.getaddrinfo(host, None)
+        return True, "resolves"
+    except OSError as exc:
+        return False, "{}: {}".format(type(exc).__name__, exc)
+
+
+def _plan_for_target(args, program_profile) -> dict[str, Any]:
+    target = normalized_target(args.target)
+    allowed, scope_reason = program_profile.target_allowed(target)
+    mode, warnings = program_profile.choose_mode(args.mode, args.goal)
+    rate_limit, concurrency = program_profile.safe_limits(
+        getattr(args, "rate_limit", program_profile.max_rps),
+        getattr(args, "concurrency", program_profile.max_concurrency),
+    )
+    validation = program_profile.validation_errors()
+    checks_allowed = ["scope validation", "passive reconnaissance", "header review", "Burp import analysis"]
+    checks_blocked = []
+    if program_profile.scanner_permission_label != "yes" or mode == "passive":
+        checks_blocked.append("active scanner probes")
+    if program_profile.upload_testing_allowed is not True:
+        checks_blocked.append("upload testing")
+    if program_profile.auth_testing_allowed is not True:
+        checks_blocked.append("authenticated access-control comparison")
+    if program_profile.graphql_introspection_allowed is not True:
+        checks_blocked.append("GraphQL introspection")
+    if program_profile.oob_testing_allowed is not True:
+        checks_blocked.append("OOB testing")
+    if program_profile.cloud_ai_allowed is not True:
+        checks_blocked.append("cloud AI")
+    agents = ["Scope Guardian", "Recon", "Crawler", "Header/Cookie", "Final Findings Presenter"]
+    if mode != "passive":
+        agents.extend(["Access Control", "GraphQL", "Upload", "Redirect", "Rate Limit"])
+    return {
+        "target": target,
+        "scope_allowed": allowed,
+        "scope_reason": scope_reason or ("in scope" if allowed else "outside scope"),
+        "mode": mode,
+        "warnings": warnings,
+        "program_warnings": validation,
+        "scanner_permission": program_profile.scanner_permission_label,
+        "rate_limit": rate_limit,
+        "concurrency": concurrency,
+        "cloud_ai_allowed": program_profile.cloud_ai_allowed,
+        "auth_testing_allowed": program_profile.auth_testing_allowed,
+        "upload_testing_allowed": program_profile.upload_testing_allowed,
+        "oob_testing_allowed": program_profile.oob_testing_allowed,
+        "checks_allowed": checks_allowed,
+        "checks_blocked": checks_blocked,
+        "agents": agents,
+        "estimated_request_budget": int(rate_limit * 60),
+        "active_reason": "active checks enabled by program.yml" if mode != "passive" and program_profile.scanner_permission_label == "yes" else "active checks disabled because permission is missing, false, or passive mode was selected",
+        "recommended_command": "burpollama ai-autopilot {} --program {} --goal {} --mode {} --multi-agent --final-output terminal".format(target, program_profile.path, args.goal, mode),
+    }
+
+
+async def command_preflight(args) -> int:
+    program_profile = load_program_profile(args.program)
+    plan = _plan_for_target(args, program_profile)
+    resolves, resolve_reason = _resolve_target_host(plan["target"])
+    table = Table(title="BurpOllama Preflight", box=box.SIMPLE_HEAVY)
+    table.add_column("Check")
+    table.add_column("Result")
+    rows = [
+        ("Target", plan["target"]),
+        ("Target resolves", "yes" if resolves else "no ({})".format(resolve_reason)),
+        ("In scope", "yes" if plan["scope_allowed"] else "no ({})".format(plan["scope_reason"])),
+        ("Scanner allowed", str(program_profile.scanner_allowed).lower() if program_profile.scanner_allowed is not None else "unknown"),
+        ("Automated testing allowed", str(program_profile.automated_testing_allowed).lower() if program_profile.automated_testing_allowed is not None else "unknown"),
+        ("Mode allowed", "yes" if plan["mode"] == args.mode or not program_profile.allowed_modes else "no; requested mode changed"),
+        ("Effective mode", plan["mode"]),
+        ("Max RPS", str(plan["rate_limit"])),
+        ("Max concurrency", str(plan["concurrency"])),
+        ("Cloud AI allowed", str(plan["cloud_ai_allowed"]).lower() if plan["cloud_ai_allowed"] is not None else "unknown"),
+        ("Auth testing allowed", str(plan["auth_testing_allowed"]).lower() if plan["auth_testing_allowed"] is not None else "unknown"),
+        ("Upload testing allowed", str(plan["upload_testing_allowed"]).lower() if plan["upload_testing_allowed"] is not None else "unknown"),
+        ("OOB allowed", str(plan["oob_testing_allowed"]).lower() if plan["oob_testing_allowed"] is not None else "unknown"),
+        ("Blocked checks", ", ".join(plan["checks_blocked"]) or "none"),
+        ("Recommended safe command", plan["recommended_command"]),
+    ]
+    for key, value in rows:
+        table.add_row(key, escape(str(value)))
+    console.print(table)
+    for warning in plan["program_warnings"] + plan["warnings"]:
+        console.print("[yellow]{}[/yellow]".format(escape(warning)))
+    if plan["scanner_permission"] == "unknown":
+        console.print("[yellow]Scanner permission is unknown; recommended command is passive-only.[/yellow]")
+    return 0 if resolves and plan["scope_allowed"] else 1
+
+
+def _print_dry_run_plan(plan: dict[str, Any]) -> None:
+    console.print("Dry Run Plan")
+    console.print("Scope status: {}".format("in scope" if plan["scope_allowed"] else plan["scope_reason"]))
+    console.print("Scanner permission status: {}".format(plan["scanner_permission"]))
+    console.print("Agents that would run: {}".format(", ".join(plan["agents"])))
+    console.print("Checks allowed: {}".format(", ".join(plan["checks_allowed"]) or "none"))
+    console.print("Checks blocked: {}".format(", ".join(plan["checks_blocked"]) or "none"))
+    console.print("Estimated request budget: {} requests/minute".format(plan["estimated_request_budget"]))
+    console.print("Reason active checks are disabled/enabled: {}".format(plan["active_reason"]))
+    console.print("Recommended command: {}".format(plan["recommended_command"]))
+
+
+async def command_ai_autopilot(args) -> int:
+    program_profile = load_program_profile(args.program) if args.program else None
+    target = _autopilot_target(args, program_profile)
+    if not target:
+        raise RuntimeError("Pass a target URL or use --from-burp latest with a prior Burp import.")
+
+    warnings: list[str] = []
+    if program_profile:
+        allowed, reason = program_profile.target_allowed(target)
+        if not allowed:
+            raise PermissionError(reason)
+        if reason:
+            warnings.append(reason)
+        mode, mode_warnings = program_profile.choose_mode(args.mode, args.goal)
+        warnings.extend(mode_warnings)
+        rate_limit, concurrency = program_profile.safe_limits(args.rate_limit, args.concurrency)
+        scope_entries = program_profile.scope_entries
+    else:
+        if not getattr(args, "yes", False) or not getattr(args, "scope", None):
+            if sys.stdin.isatty():
+                answer = console.input(
+                    '[bold yellow]Type "I confirm I am authorized to test this target" to continue: [/bold yellow]'
+                )
+                if answer.strip() == "I confirm I am authorized to test this target":
+                    args.scope = list(getattr(args, "scope", None) or []) or [host_scope_entry(target)]
+                else:
+                    console.print("[red]Authorization confirmation did not match.[/red]")
+                    return 2
+            else:
+                console.print("[red]{}[/red]".format(escape(_manual_auth_required_message(target))))
+                return 2
+        if not getattr(args, "scope", None):
+            console.print("[red]{}[/red]".format(escape(_manual_auth_required_message(target))))
+            return 2
+        mode = "passive" if args.goal in {"recon", "passive-analysis", "manual-check", "burp-import-analysis"} else args.mode
+        rate_limit = args.rate_limit
+        concurrency = args.concurrency
+        scope_entries = _combined_scope_entries(args)
+        if not scope_entries:
+            scope_entries = [host_scope_entry(target)]
+
+    if getattr(args, "dry_run_plan", False):
+        if not program_profile:
+            raise RuntimeError("--dry-run-plan requires --program so permissions can be evaluated.")
+        plan_args = SimpleNamespace(
+            target=target,
+            mode=args.mode,
+            goal=args.goal,
+            rate_limit=args.rate_limit,
+            concurrency=args.concurrency,
+        )
+        _print_dry_run_plan(_plan_for_target(plan_args, program_profile))
+        return 0
+
+    if program_profile and program_profile.cloud_ai_allowed is False:
+        warnings.append("Cloud AI is not allowed by program.yml. AI agents disabled.")
+        ai_requested = False
+    else:
+        ai_requested = _scan_ai_enabled(args, await _ai_status(args.ai_provider, args.model))
+
+    if program_profile:
+        if program_profile.upload_testing_allowed is False:
+            warnings.append("Upload testing is disabled by program.yml; upload findings stay manual-check only.")
+        if program_profile.auth_testing_allowed is False and getattr(args, "auth_profile", None):
+            warnings.append("Authenticated testing is disabled by program.yml; ignoring --auth-profile values.")
+            args.auth_profile = []
+        if program_profile.graphql_introspection_allowed is False:
+            warnings.append("GraphQL introspection is disabled by program.yml; GraphQL findings stay passive/manual-check.")
+        if program_profile.oob_testing_allowed is False and args.oob_server:
+            warnings.append("OOB testing is disabled by program.yml; ignoring --oob-server.")
+            args.oob_server = ""
+        if any(item.lower() in {"dos", "brute_force", "brute-force", "waf_bypass", "evasion"} for item in program_profile.forbidden_tests):
+            warnings.append("Forbidden tests are blocked by program.yml.")
+
+    if args.goal == "burp-import-analysis" and getattr(args, "from_burp", "") == "latest":
+        result = _offline_burp_scan(args, target, program_profile, warnings)
+        if args.final_output == "json":
+            console.print_json(json.dumps({
+                "scan_id": result.get("id"),
+                "target": result.get("target"),
+                "goal": result.get("goal"),
+                "mode": result.get("mode"),
+                "program": result.get("program_profile", {}),
+                "automated_scanning_allowed": result.get("automated_scanning_allowed"),
+                "warnings": warnings,
+                "findings": result["final_findings"],
+            }, ensure_ascii=False, sort_keys=True))
+        else:
+            banner()
+            for warning in warnings:
+                console.print("[yellow]{}[/yellow]".format(escape(warning)))
+            console.print(render_final_tables(result, result["final_findings"]), markup=False)
+        return 0
+
+    prepared = scanner.prepare(
+        target,
+        mode,
+        authorization_confirmed=True,
+        allowed_domains=scope_entries,
+        concurrency=concurrency,
+        rate_limit=rate_limit,
+        timeout=args.timeout,
+        retries=args.retries,
+        time_budget=args.time_budget,
+        max_urls=args.max_urls,
+        ai_provider=args.ai_provider,
+        ai_enabled=ai_requested,
+        model=args.model,
+        output=args.output,
+        oob_server=args.oob_server,
+        no_external_tools=args.no_external_tools or args.goal in {"passive-analysis", "burp-import-analysis"},
+        goal=args.goal,
+        final_output=args.final_output,
+        program_profile=program_profile.to_dict() if program_profile else {
+            "program": "not provided",
+            "automated_scanning_allowed": "user-confirmed",
+            "in_scope": scope_entries,
+        },
+    )
+    prepared["program_warnings"] = warnings
+    prepared["auth_profiles"] = _load_auth_profiles(getattr(args, "auth_profile", None))
+    if len(prepared["auth_profiles"]) == 1:
+        prepared.setdefault("program_warnings", []).append("One auth profile supplied; IDOR/BOLA items require manual two-account validation.")
+    if len(prepared["auth_profiles"]) == 2:
+        prepared.setdefault("analysis", {})["access_control_comparison"] = {
+            "profiles": [profile.get("name") for profile in prepared["auth_profiles"]],
+            "safe_compare_enabled": True,
+        }
+    if getattr(args, "from_burp", ""):
+        prepared["burp_import"] = _load_latest_burp_import()
+
+    if args.final_output != "json":
+        banner()
+        for warning in warnings:
+            console.print("[yellow]{}[/yellow]".format(escape(warning)))
+
+    result = await scanner.run_prepared(prepared)
+    result["program_warnings"] = warnings
+    if args.final_output == "json":
+        findings = final_findings(result)
+        console.print_json(json.dumps({
+            "scan_id": result.get("id"),
+            "target": result.get("target"),
+            "goal": result.get("goal"),
+            "mode": result.get("mode"),
+            "program": result.get("program_profile", {}),
+            "automated_scanning_allowed": result.get("automated_scanning_allowed"),
+            "warnings": warnings,
+            "findings": findings,
+        }, ensure_ascii=False, sort_keys=True))
+    else:
+        console.print(render_final_tables(result, final_findings(result)), markup=False)
+    return 0 if str(result.get("status", "")).lower() not in {"failed", "error"} else 1
+
+
+async def command_burp(args) -> int:
+    if args.burp_command != "import":
+        return 1
+    source = Path(args.file).expanduser()
+    if not source.exists():
+        raise RuntimeError("Burp import file not found: {}".format(source))
+    program_profile = load_program_profile(args.program) if args.program else None
+    scope_entries = program_profile.scope_entries if program_profile else []
+    urls = _urls_from_burp_file(str(source), scope_entries)
+    BURP_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "path": str(source),
+        "program": program_profile.to_dict() if program_profile else {},
+        "target": _program_target_from_scope(program_profile) if program_profile else "",
+        "size_bytes": source.stat().st_size,
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+        "url_count": len(urls),
+        "metadata": _burp_url_metadata(urls),
+        "secret_redaction": "final output and artifacts redact cookies, authorization headers, tokens, emails, and common secrets",
+        "no_replay": True,
+    }
+    latest = BURP_IMPORT_DIR / "latest.json"
+    latest.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    console.print("[green]Imported Burp history metadata[/green]: {}".format(escape(str(source))))
+    console.print("[cyan]Next: burpollama ai-autopilot --from-burp latest --goal burp-import-analysis --final-output chat[/cyan]")
     return 0
 
 
@@ -1433,25 +1957,64 @@ def command_validate(args) -> int:
 
 
 async def command_report(args) -> int:
+    console.print(
+        "[yellow]This command is deprecated. Use `burpollama findings --latest` instead.[/yellow]"
+    )
+    return 2
+
+
+async def command_findings(args) -> int:
     scan_id = _resolve_scan_id(args)
     scan = scan_store.get(scan_id)
     if not scan:
         raise RuntimeError("Local scan not found: {}".format(scan_id))
-    body = render_report(scan, args.format)
-    output = args.output
-    if not output and args.format in {"hackerone", "bugcrowd"}:
-        output = str(
-            Path("reports")
-            / str(scan.get("id") or scan_id)
-            / REPORT_FILENAMES[args.format]
+    findings = scan.get("final_findings")
+    if not isinstance(findings, dict):
+        findings = final_findings(scan)
+    filtered = filter_final_findings(
+        findings,
+        show_info=args.show_info,
+        show_rejected=args.show_rejected,
+        show_all=args.show_all,
+        min_rate=args.min_rate,
+        min_confidence=args.min_confidence,
+    )
+    if args.json_output:
+        console.print_json(json.dumps({
+            "scan_id": scan_id,
+            "target": scan.get("target", ""),
+            "findings": filtered,
+            "counts": findings.get("counts", {}),
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    if (
+        not args.show_info
+        and not args.show_rejected
+        and not args.show_all
+        and not args.min_rate
+        and not args.min_confidence
+    ):
+        console.print(render_final_tables(scan, findings), markup=False)
+        return 0
+    table = Table(box=box.ROUNDED, title="Filtered Findings")
+    table.add_column("#", justify="right")
+    table.add_column("Status")
+    table.add_column("Finding")
+    table.add_column("Rate")
+    table.add_column("Confidence", justify="right")
+    table.add_column("Affected Asset")
+    table.add_column("Next Step")
+    for index, finding in enumerate(filtered, start=1):
+        table.add_row(
+            str(index),
+            str(finding.get("status", "")),
+            str(finding.get("title", "")),
+            str(finding.get("rate", "")),
+            "{}%".format(finding.get("confidence", 0)),
+            str(finding.get("affected_asset", "")),
+            str(finding.get("manual_check_needed") or finding.get("next_step") or ""),
         )
-    if output:
-        path = Path(output)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-        console.print("[green]✓ Saved {}[/green]".format(escape(str(path))))
-    else:
-        console.print(body, markup=False)
+    console.print(table)
     return 0
 
 
@@ -1498,14 +2061,14 @@ async def command_status(args) -> int:
 async def command_history(args) -> int:
     scans = scan_store.list(getattr(args, "limit", 100))
     table = Table(title="Scan history", box=box.ROUNDED)
-    for column in ("Scan ID", "Target", "Status", "Ready", "Manual", "Proof", "Started"):
+    for column in ("Scan ID", "Target", "Status", "Great", "Manual", "Proof", "Started"):
         table.add_column(column)
     for scan in scans:
         scan_id = str(scan.get("scan_id", ""))
         stored = scan_store.get(scan_id) or scan
         readiness = _scan_readiness_summary(stored)
         if getattr(args, "ready_only", False) and not (
-            readiness["report_ready_issues"]
+            readiness["great_finding_issues"]
             or readiness["manual_check_findings"]
             or readiness["proof_blocked_findings"]
         ):
@@ -1514,7 +2077,7 @@ async def command_history(args) -> int:
             scan_id,
             str(scan.get("target", "")),
             str(scan.get("status", "")),
-            str(readiness["report_ready_issues"]),
+            str(readiness["great_finding_issues"]),
             str(readiness["manual_check_findings"]),
             str(readiness["proof_blocked_findings"]),
             str(scan.get("started_at", "")),
@@ -1524,52 +2087,10 @@ async def command_history(args) -> int:
 
 
 async def command_readiness_check(args) -> int:
-    scan_id = _resolve_scan_id(args)
-    scan = scan_store.get(scan_id)
-    if not scan:
-        raise RuntimeError("Local scan not found: {}".format(scan_id))
-    readiness = _scan_readiness_summary(scan)
-    reason = ""
-    if readiness["missing_report_ready_artifacts"]:
-        reason = "report-ready findings are missing evidence artifacts"
-    elif getattr(args, "require_report_ready", False) and not readiness["report_ready_issues"]:
-        reason = "no report-ready issues found"
-    elif not (readiness["report_ready_issues"] or readiness["manual_check_findings"]):
-        reason = "no report-ready or manual-check findings found"
-    passed = not reason
-    decision = {
-        "scan_id": scan_id,
-        "target": str(scan.get("target", "")),
-        "passed": passed,
-        "reason": reason or "scan has actionable bounty output",
-        "require_report_ready": bool(getattr(args, "require_report_ready", False)),
-        "readiness": readiness,
-    }
-    if getattr(args, "output", None):
-        output = Path(args.output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
-    if getattr(args, "json", False):
-        console.print(json.dumps(decision, indent=2, sort_keys=True))
-    else:
-        table = Table(title="Readiness check", box=box.ROUNDED)
-        table.add_column("Metric")
-        table.add_column("Value")
-        table.add_row("Scan ID", scan_id)
-        table.add_row("Target", decision["target"])
-        table.add_row("Report-ready issues", str(readiness["report_ready_issues"]))
-        table.add_row("Report-ready findings", str(readiness["report_ready_findings"]))
-        table.add_row("Manual-check findings", str(readiness["manual_check_findings"]))
-        table.add_row("Proof-blocked findings", str(readiness["proof_blocked_findings"]))
-        table.add_row("Missing report-ready artifacts", str(readiness["missing_report_ready_artifacts"]))
-        console.print(table)
-        if passed:
-            console.print("[green]PASS[/green] {}".format(decision["reason"]))
-        else:
-            console.print("[red]FAIL[/red] {}.".format(decision["reason"]))
-        if getattr(args, "output", None):
-            console.print("[green]✓ Wrote readiness decision {}[/green]".format(escape(str(args.output))))
-    return 0 if passed else 3
+    console.print(
+        "[yellow]This command is deprecated. Use `burpollama findings --latest` instead.[/yellow]"
+    )
+    return 2
 
 
 async def command_scope_check(args) -> int:
@@ -1672,12 +2193,12 @@ def _scope_preflight_runbook(target: str, scope_file: str) -> list[str]:
     scan_command = (
         "python cli.py scan {} --mode passive --yes --scope-file {} "
         "--max-urls 100 --time-budget 900 --no-ai --no-external-tools "
-        "--output reports\\authorized-program"
+        "--output scans\\authorized-program"
     ).format(target, scope_file)
     return [
         scan_command,
-        "python cli.py report --latest --format readiness",
-        "python cli.py readiness-check --latest",
+        "python cli.py findings --latest",
+        "python cli.py findings --latest --json",
         "python cli.py history --ready-only --limit 20",
     ]
 
@@ -2011,7 +2532,7 @@ async def command_skills(args) -> int:
         table.add_row("Mode", result["mode"])
         table.add_row("Run directory", result["run_dir"])
         table.add_row("Evidence", result["evidence_path"])
-        table.add_row("Report", result["report_path"])
+        table.add_row("Findings", result["findings_path"])
         for record in result.get("records", []):
             table.add_row("Final status", str(record.get("final_status", "")))
             table.add_row(
@@ -2056,19 +2577,29 @@ async def command_doctor(args) -> int:
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
     add("Virtual environment", in_venv, sys.prefix, blocking=False)
     env = config_status()
-    add(".env", bool(env.get("env_exists")), env.get("path", ""))
-    database = scan_store.status()
-    add("Local scan database", bool(database.get("writable")), database.get("database", ""))
-    report_dir = ROOT / "reports"
+    add(".env", True, env.get("path", "not required for passive scans"), blocking=False)
+    config_dir = Path.home() / ".burpollama"
     try:
-        report_dir.mkdir(parents=True, exist_ok=True)
-        probe = report_dir / ".write-test"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        probe = config_dir / ".write-test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        reports_ok = True
+        config_ok = True
     except OSError:
-        reports_ok = False
-    add("Reports directory", reports_ok, str(report_dir))
+        config_ok = False
+    add("Config directory writable", config_ok, str(config_dir))
+    database = scan_store.status()
+    add("Local scan database", bool(database.get("writable")), database.get("database", ""))
+    scans_dir = ROOT / "scans"
+    try:
+        scans_dir.mkdir(parents=True, exist_ok=True)
+        probe = scans_dir / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        scans_ok = True
+    except OSError:
+        scans_ok = False
+    add("Scans directory writable", scans_ok, str(scans_dir))
     evidence_dir = ROOT / "evidence"
     try:
         evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -2189,21 +2720,22 @@ async def command_doctor(args) -> int:
         dependency_detail,
     )
     launcher = shutil.which("burpollama")
-    launcher_ok = bool(launcher)
-    if launcher:
-        try:
-            launcher_path = Path(launcher).resolve()
-            launcher_text = launcher_path.read_text(
-                encoding="utf-8", errors="ignore"
-            )
-            launcher_ok = launcher_path.exists() and "cli.py" in launcher_text
-        except OSError:
-            launcher_ok = False
+    launcher_ok = bool(launcher and Path(launcher).exists())
     add("CLI launcher", launcher_ok, launcher or "not found in PATH", blocking=False)
     add(
         "Dashboard (optional)",
         True,
         "available with `burpollama serve`; not required for scans",
+    )
+    add(
+        "Safe defaults",
+        True,
+        "passive mode by default; program.yml required for preflight; final findings only",
+    )
+    add(
+        "Report generation dependency",
+        True,
+        "none; old reports directory is not required",
     )
 
     table = Table(title="BurpOllama doctor", box=box.ROUNDED)
@@ -2326,6 +2858,12 @@ async def command_serve(args, open_browser: bool = False) -> int:
 async def async_main(args) -> int:
     if args.command == "scan":
         return await command_scan(args)
+    if args.command == "ai-autopilot":
+        return await command_ai_autopilot(args)
+    if args.command == "burp":
+        return await command_burp(args)
+    if args.command == "preflight":
+        return await command_preflight(args)
     if args.command == "benchmark":
         return await command_benchmark(args)
     if args.command == "watch":
@@ -2334,6 +2872,8 @@ async def async_main(args) -> int:
         return await command_recon(args)
     if args.command == "report":
         return await command_report(args)
+    if args.command == "findings":
+        return await command_findings(args)
     if args.command == "scope-check":
         return await command_scope_check(args)
     if args.command == "status":
@@ -2376,7 +2916,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped by user.[/yellow]")
         return 130
-    except (RuntimeError, httpx.HTTPError, OSError, json.JSONDecodeError) as exc:
+    except (RuntimeError, PermissionError, httpx.HTTPError, OSError, json.JSONDecodeError) as exc:
         if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
             22, 32,
         }:

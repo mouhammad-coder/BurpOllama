@@ -1,8 +1,4 @@
-"""
-reporter.py — Bug bounty / pentest report generator
-Phase 4: Converts triaged findings into a structured Markdown report.
-Format compatible with HackerOne, Bugcrowd, and Intigriti submissions.
-"""
+"""Legacy formatting helpers retained for compatibility tests."""
 
 from datetime import datetime
 import csv

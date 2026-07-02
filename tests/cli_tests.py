@@ -49,18 +49,16 @@ class CliTests(unittest.TestCase):
             parser.parse_args(["watch", "--scan-id", "abc123"]).scan_id,
             "abc123",
         )
-        self.assertEqual(
-            parser.parse_args(
-                ["report", "--scan-id", "abc123", "--format", "sarif"]
-            ).format,
-            "sarif",
-        )
-        self.assertTrue(
-            parser.parse_args(["report", "--latest", "--format", "readiness"]).latest
-        )
+        self.assertTrue(parser.parse_args(["findings", "--latest"]).latest)
+        self.assertTrue(parser.parse_args(["findings", "--latest", "--show-info"]).show_info)
+        self.assertTrue(parser.parse_args(["findings", "--latest", "--show-rejected"]).show_rejected)
+        self.assertTrue(parser.parse_args(["findings", "--latest", "--show-all"]).show_all)
+        self.assertTrue(parser.parse_args(["findings", "--latest", "--json"]).json_output)
+        self.assertEqual(parser.parse_args(["findings", "--latest", "--min-rate", "high"]).min_rate, "high")
+        self.assertEqual(parser.parse_args(["findings", "--latest", "--min-confidence", "80"]).min_confidence, 80)
         self.assertTrue(parser.parse_args(["history", "--ready-only"]).ready_only)
         self.assertTrue(
-            parser.parse_args(["readiness-check", "--latest", "--require-report-ready"]).require_report_ready
+            parser.parse_args(["readiness-check", "--latest", "--require-great-finding"]).require_great_finding
         )
         self.assertTrue(parser.parse_args(["readiness-check", "--latest", "--json"]).json)
         self.assertEqual(parser.parse_args(["doctor"]).command, "doctor")
@@ -100,7 +98,7 @@ class CliTests(unittest.TestCase):
             })
         self.assertEqual(len(printer.finding_ids), 1)
 
-    def test_print_results_includes_readiness_summary(self):
+    def test_print_results_includes_final_findings_summary(self):
         stream = io.StringIO()
         console = Console(file=stream, force_terminal=False, width=120)
         scan = {
@@ -127,6 +125,8 @@ class CliTests(unittest.TestCase):
                                 "severity": "MEDIUM",
                                 "url": "https://example.test/admin",
                                 "confidence": 94,
+                                "business_impact": "Sensitive browser-side controls are missing on an admin surface.",
+                                "evidence_complete": True,
                                 "evidence_artifact": {"artifact_path": "evidence/scan/header-csp.json"},
                             },
                             {
@@ -134,10 +134,12 @@ class CliTests(unittest.TestCase):
                                 "vuln_type": "Missing Security Headers",
                                 "severity": "MEDIUM",
                                 "url": "https://example.test/account",
+                                "business_impact": "Sensitive browser-side controls are missing on an account surface.",
+                                "evidence_complete": True,
                             },
                         ],
-                    "needs_more_proof": [{"title": "SSRF candidate", "url": "https://example.test/fetch"}],
-                    "candidates": [{"title": "Open redirect candidate"}],
+                    "needs_more_proof": [{"title": "SSRF candidate", "url": "https://example.test/fetch", "confidence": 60, "severity": "HIGH", "business_impact": "Could trigger server-side fetches."}],
+                    "candidates": [{"title": "Open redirect candidate", "confidence": 60, "severity": "MEDIUM", "business_impact": "Could redirect users externally."}],
                     "informational": [],
                 },
             },
@@ -145,14 +147,12 @@ class CliTests(unittest.TestCase):
         with patch.object(cli, "console", console):
             cli.print_results(scan, started=0)
         output = stream.getvalue()
-        self.assertIn("Report-ready issues", output)
-        self.assertIn("Manual-check findings", output)
-        self.assertIn("Proof-blocked findings", output)
-        self.assertIn("Bounty findings", output)
+        self.assertIn("Scan Finished", output)
+        self.assertIn("Great Findings", output)
+        self.assertIn("Needs Manual Check", output)
         self.assertIn("content-security-policy", output)
         self.assertIn("https://example.test/adm", output)
-        self.assertIn("Ready", output)
-        self.assertIn("Manual", output)
+        self.assertIn("Manual validation required", output)
         self.assertIn("1", output)
         self.assertIn("2", output)
 
@@ -192,7 +192,7 @@ class CliTests(unittest.TestCase):
             code = asyncio.run(cli.command_history(SimpleNamespace()))
         output = stream.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("Ready", output)
+        self.assertIn("Great", output)
         self.assertIn("Manual", output)
         self.assertIn("Proof", output)
         self.assertIn("scan-1", output)
@@ -229,7 +229,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("ready", output)
         self.assertNotIn("empty", output)
 
-    def test_report_latest_uses_most_recent_scan(self):
+    def test_findings_latest_uses_most_recent_scan(self):
         stream = io.StringIO()
         console = Console(file=stream, force_terminal=False, width=120)
 
@@ -247,136 +247,41 @@ class CliTests(unittest.TestCase):
                     "triaged_findings": [],
                 }
 
-        args = SimpleNamespace(scan_id=None, latest=True, format="readiness", output=None)
+        args = SimpleNamespace(
+            scan_id=None,
+            latest=True,
+            show_info=False,
+            show_rejected=False,
+            show_all=False,
+            json_output=False,
+            min_rate="",
+            min_confidence=0,
+        )
         with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
-            code = asyncio.run(cli.command_report(args))
+            code = asyncio.run(cli.command_findings(args))
         self.assertEqual(code, 0)
-        self.assertIn("Bounty Readiness Audit", stream.getvalue())
+        self.assertIn("Scan Finished", stream.getvalue())
 
-    def test_readiness_check_passes_with_available_report_ready_artifact(self):
+    def test_readiness_check_is_deprecated_and_does_not_write_json(self):
         stream = io.StringIO()
         console = Console(file=stream, force_terminal=False, width=120)
-
-        with tempfile.TemporaryDirectory() as temp:
-            artifact = Path(temp) / "readiness-artifact.json"
-            artifact.write_text("{}", encoding="utf-8")
-
-            class _Store:
-                def get(self, scan_id):
-                    if scan_id != "scan-ready":
-                        raise AssertionError(scan_id)
-                    return {
-                        "target": "https://example.test",
-                        "analysis": {
-                            "zero_fp_gate": {
-                                "valid_bugs": [{
-                                    "title": "Missing CSP",
-                                    "vuln_type": "Header",
-                                    "severity": "MEDIUM",
-                                    "evidence_artifact": {"artifact_path": str(artifact)},
-                                }],
-                                "needs_more_proof": [],
-                                "candidates": [],
-                                "informational": [],
-                            }
-                        },
-                    }
-
-            args = SimpleNamespace(scan_id="scan-ready", latest=False, require_report_ready=True)
-            with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
-                code = asyncio.run(cli.command_readiness_check(args))
-        self.assertEqual(code, 0)
-        output = stream.getvalue()
-        self.assertIn("PASS", output)
-        self.assertIn("Missing report-ready artifacts", output)
-
-    def test_readiness_check_fails_when_report_ready_artifact_missing(self):
-        stream = io.StringIO()
-        console = Console(file=stream, force_terminal=False, width=120)
-
-        class _Store:
-            def get(self, scan_id):
-                return {
-                    "target": "https://example.test",
-                    "analysis": {
-                        "zero_fp_gate": {
-                            "valid_bugs": [{
-                                "title": "Missing CSP",
-                                "vuln_type": "Header",
-                                "severity": "MEDIUM",
-                                "evidence_artifact": {"artifact_path": "missing-artifact.json"},
-                            }],
-                            "needs_more_proof": [],
-                            "candidates": [],
-                            "informational": [],
-                        }
-                    },
-                }
-
-        args = SimpleNamespace(scan_id="scan-ready", latest=False, require_report_ready=False)
-        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
-            code = asyncio.run(cli.command_readiness_check(args))
-        self.assertEqual(code, 3)
-        self.assertIn("FAIL", stream.getvalue())
-
-    def test_readiness_check_require_report_ready_fails_on_manual_only_scan(self):
-        stream = io.StringIO()
-        console = Console(file=stream, force_terminal=False, width=120)
-
-        class _Store:
-            def get(self, scan_id):
-                return {
-                    "target": "https://example.test",
-                    "analysis": {
-                        "zero_fp_gate": {
-                            "valid_bugs": [],
-                            "needs_more_proof": [{"title": "SSRF candidate"}],
-                            "candidates": [],
-                            "informational": [],
-                        }
-                    },
-                }
-
-        args = SimpleNamespace(scan_id="scan-manual", latest=False, require_report_ready=True)
-        with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
-            code = asyncio.run(cli.command_readiness_check(args))
-        self.assertEqual(code, 3)
-        self.assertIn("no report-ready issues", stream.getvalue())
-
-    def test_readiness_check_writes_json_decision(self):
-        stream = io.StringIO()
-        console = Console(file=stream, force_terminal=False, width=120)
-
-        class _Store:
-            def get(self, scan_id):
-                return {
-                    "target": "https://example.test",
-                    "analysis": {
-                        "zero_fp_gate": {
-                            "valid_bugs": [],
-                            "needs_more_proof": [{"title": "SSRF candidate"}],
-                            "candidates": [],
-                            "informational": [],
-                        }
-                    },
-                }
-
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "readiness.json"
             args = SimpleNamespace(
                 scan_id="scan-manual",
                 latest=False,
-                require_report_ready=False,
+                require_great_finding=False,
                 json=True,
                 output=str(output),
             )
-            with patch.object(cli, "console", console), patch.object(cli, "scan_store", _Store()):
+            with patch.object(cli, "console", console):
                 code = asyncio.run(cli.command_readiness_check(args))
-            payload = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(code, 0)
-        self.assertTrue(payload["passed"])
-        self.assertEqual(payload["readiness"]["manual_check_findings"], 1)
-        self.assertIn('"passed": true', stream.getvalue())
+            self.assertFalse(output.exists())
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "This command is deprecated. Use `burpollama findings --latest` instead.",
+            stream.getvalue(),
+        )
 
     def test_benchmark_check_reports_unreachable_target(self):
         class _Client:

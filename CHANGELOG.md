@@ -1,9 +1,20 @@
+## Unreleased
+
+- Added final-findings model with Great Findings and Needs Manual Check terminal output.
+- Added goal-based `ai-autopilot` workflow.
+- Added `program.yml` scope and permission enforcement.
+- Added passive Burp import and Burp import analysis.
+- Added `preflight` command for scope, permission, rate-limit, and mode checks.
+- Added `--dry-run-plan` for no-request scan planning.
+- Added local lab and benchmark validation paths.
+- Removed report generation from the primary user workflow; final findings are printed directly.
+
 ## v1.4
-- CLI bug bounty readiness workflow verified on an explicitly authorized live program target
-- `scope-check --audit` now emits a CLI runbook for safe passive scan, readiness report, readiness gate, and ready-only history
-- `report --latest` and `history --ready-only` shortcuts for faster report triage
-- Readiness reports show missing report-ready artifact counts and artifact availability
-- New `readiness-check` CLI gate with JSON/output support and nonzero failure codes for automation
+- CLI bug bounty workflow verified on an explicitly authorized live program target
+- `scope-check --audit` now emits a CLI runbook for safe passive scan and findings review
+- `findings --latest` and `history --ready-only` shortcuts for faster finding triage
+- Final findings show missing evidence artifact counts and artifact availability
+- Deprecated compatibility checks now direct users to final findings
 - Final scan output now includes a compact bounty findings table in the terminal
 - Evidence artifacts are ignored by default so private scan data is not committed accidentally
 - All v1.3 features included
@@ -19,7 +30,7 @@
 - SSRF: passive parameter detection + OOB stub
 - CORS: misconfiguration detection including * + credentials
 - Open redirect: passive parameter observation
-- Report export: HackerOne and Bugcrowd markdown format
+- Legacy marketplace text helpers retained only for compatibility
 - External tools: Katana, Nuclei, TruffleHog, Gitleaks wrappers
 - All v1.1 features included
 

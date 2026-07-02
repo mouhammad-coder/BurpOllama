@@ -1,0 +1,898 @@
+{
+  "coverage": {
+    "coverage_percent": 0.0,
+    "finding_surface_percent": 500.0,
+    "risk_buckets": {},
+    "surface_templates": 0,
+    "tested_templates": 0,
+    "top_untested": [],
+    "untested_templates": 0,
+    "vulnerability_probability": [
+      [
+        "Missing Content-Security-Policy",
+        1
+      ],
+      [
+        "Missing X-Frame-Options",
+        1
+      ],
+      [
+        "Missing HSTS",
+        1
+      ],
+      [
+        "Exposed FTP directory",
+        1
+      ],
+      [
+        "Exposed API documentation",
+        1
+      ],
+      [
+        "Public security metadata exposed",
+        1
+      ],
+      [
+        "SQL Injection",
+        1
+      ],
+      [
+        "Reflected XSS",
+        1
+      ],
+      [
+        "Admin Panel Exposure",
+        1
+      ]
+    ]
+  },
+  "zero_fp_gate": {
+    "candidates": [],
+    "false_positives_removed": [],
+    "informational": [],
+    "needs_more_proof": [
+      {
+        "affected_url": "http://127.0.0.1:19080/#/administration",
+        "business_impact": "Discoverable admin workflows help attackers map privileged functionality and focus access-control testing.",
+        "classification": "Critical",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:28.489879+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 9.5,
+        "cwe": "CWE-200",
+        "dedup_key": "d88ffe2cf578a573a0ebc5abda63f314729924c62755693cf9b4768369d163e4",
+        "description": "The client-side administration route is discoverable and the unauthenticated SPA shell is served.",
+        "duplicate_count": 1,
+        "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/administration\"}, \"response\": {\"status_code\": 200, \"headers\": {\"server\": \"LocalVulnLab\", \"content-type\": \"text/html\"}, \"body\": \"<html><title>OWASP Juice Shop</title><body>Admin Section shell</body></html>\"}, \"route\": \"http://127.0.0.1:19080/#/administration\"}",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "A",
+        "id": "EV-97e4365ab8181469",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "Critical",
+          "cvss_plus_plus": 9.5,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "admin endpoint: +1.5",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 4.5
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A01:2021-Broken Access Control",
+        "owasp_wstg_mapping": "WSTG-ATHZ-01",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "A",
+        "quality_improvements": [],
+        "quality_score": 100,
+        "raw_evidence_id": "EV-f0b477767dfa8de8",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Avoid exposing admin route metadata unnecessarily and enforce server-side authorization on every admin API.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080/administration.",
+          "Observe HTTP 200 and the Juice Shop SPA shell.",
+          "Open http://127.0.0.1:19080/#/administration and verify the admin route exists but requires authorization."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "The client-side administration route is discoverable and the unauthenticated SPA shell is served.",
+        "timestamp": "2026-07-02T14:44:28.489879+00:00",
+        "title": "Administration route is discoverable",
+        "updated_at": "2026-07-02T14:44:28.489879+00:00",
+        "url": "http://127.0.0.1:19080/#/administration",
+        "vuln_type": "Admin Panel Exposure",
+        "vulnerability_class": "Admin Panel Exposure",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080",
+        "business_impact": "A missing CSP increases the business impact of XSS by making script injection and data theft easier.",
+        "classification": "High",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:24.956287+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 8.0,
+        "cwe": "CWE-693",
+        "dedup_key": "f617064e09705cfda119d99a0159bace3d41d6d6c95107570978f063fc3bbd6f",
+        "description": "CSP is absent on the Juice Shop entry page.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "A",
+        "id": "EV-ee4115bdc8a369df",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "High",
+          "cvss_plus_plus": 8.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A05:2021-Security Misconfiguration",
+        "owasp_wstg_mapping": "WSTG-CONF-01",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "A",
+        "quality_improvements": [],
+        "quality_score": 100,
+        "raw_evidence_id": "EV-2273c45bb71fc6af",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Configure a strict Content-Security-Policy with script-src and frame-ancestors directives.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080.",
+          "Inspect the HTTP response headers.",
+          "Confirm `content-security-policy` is absent from the response."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "CSP is absent on the Juice Shop entry page.",
+        "timestamp": "2026-07-02T14:44:24.956287+00:00",
+        "title": "Missing Content-Security-Policy",
+        "updated_at": "2026-07-02T14:44:24.956287+00:00",
+        "url": "http://127.0.0.1:19080",
+        "vuln_type": "Missing Content-Security-Policy",
+        "vulnerability_class": "Missing Content-Security-Policy",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080",
+        "business_impact": "Missing frame protection can allow clickjacking of login, basket, or account workflows.",
+        "classification": "High",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:24.956287+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 8.0,
+        "cwe": "CWE-1021",
+        "dedup_key": "e39094e4c6b875cdc462be86c77d5066ce6a57584a0e79a2df4cfddf64b4ff14",
+        "description": "No legacy anti-framing header is present.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "A",
+        "id": "EV-3022d1285976593d",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "High",
+          "cvss_plus_plus": 8.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A05:2021-Security Misconfiguration",
+        "owasp_wstg_mapping": "WSTG-CONF-01",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "A",
+        "quality_improvements": [
+          "Provide a specific remediation"
+        ],
+        "quality_score": 90,
+        "raw_evidence_id": "EV-2273c45bb71fc6af",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Set X-Frame-Options: DENY/SAMEORIGIN and CSP frame-ancestors.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080.",
+          "Inspect the HTTP response headers.",
+          "Confirm `x-frame-options` is absent from the response."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "No legacy anti-framing header is present.",
+        "timestamp": "2026-07-02T14:44:24.956287+00:00",
+        "title": "Missing X-Frame-Options",
+        "updated_at": "2026-07-02T14:44:24.956287+00:00",
+        "url": "http://127.0.0.1:19080",
+        "vuln_type": "Missing X-Frame-Options",
+        "vulnerability_class": "Missing X-Frame-Options",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080",
+        "business_impact": "Without HSTS, users can be downgraded to insecure transport in deployments that serve HTTPS.",
+        "classification": "High",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:24.956287+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 8.0,
+        "cwe": "CWE-319",
+        "dedup_key": "51b704ea705354a478aba32c2177a6293a70fc0ee27e13f5a5127336ac12888f",
+        "description": "Strict-Transport-Security is absent.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "B",
+        "id": "EV-11248290077b5c92",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "High",
+          "cvss_plus_plus": 8.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A05:2021-Security Misconfiguration",
+        "owasp_wstg_mapping": "WSTG-CONF-01",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "B",
+        "quality_improvements": [
+          "Add concrete business impact",
+          "Provide a specific remediation"
+        ],
+        "quality_score": 70,
+        "raw_evidence_id": "EV-2273c45bb71fc6af",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Serve HTTPS and add Strict-Transport-Security with an appropriate max-age.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": false,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [
+            "quality_score_75_plus"
+          ],
+          "ready": false,
+          "status": "NEEDS_IMPROVEMENT"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080.",
+          "Inspect the HTTP response headers.",
+          "Confirm `strict-transport-security` is absent from the response."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "Strict-Transport-Security is absent.",
+        "timestamp": "2026-07-02T14:44:24.956287+00:00",
+        "title": "Missing HSTS",
+        "updated_at": "2026-07-02T14:44:24.956287+00:00",
+        "url": "http://127.0.0.1:19080",
+        "vuln_type": "Missing HSTS",
+        "vulnerability_class": "Missing HSTS",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080/ftp/",
+        "business_impact": "Public access to the FTP directory exposes files intended as downloadable artifacts.",
+        "classification": "High",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:25.474056+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 8.0,
+        "cwe": "CWE-200",
+        "dedup_key": "5bae041c27c8539215403c8f175cd82ea11f50da05451126d435d48e0a2beb2b",
+        "description": "Sensitive or high-value path is reachable.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab\nbody: <html><body><a href=\"acquisitions.md\">acquisitions.md</a><a href=\"coupons_2013.md.bak\">backup</a></body></html>",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "B",
+        "id": "EV-4773a2b43fbb760a",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "High",
+          "cvss_plus_plus": 8.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A01:2021-Broken Access Control",
+        "owasp_wstg_mapping": "WSTG-INFO-02",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "B",
+        "quality_improvements": [
+          "Add concrete business impact",
+          "Provide a specific remediation"
+        ],
+        "quality_score": 70,
+        "raw_evidence_id": "EV-7ccf3c1b366b0826",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Restrict directory browsing and expose only approved public downloads.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": false,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [
+            "quality_score_75_plus"
+          ],
+          "ready": false,
+          "status": "NEEDS_IMPROVEMENT"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080/ftp/.",
+          "Observe HTTP 200 from the unauthenticated request.",
+          "Review the returned content or redirect target for exposed metadata."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "Sensitive or high-value path is reachable.",
+        "timestamp": "2026-07-02T14:44:25.474056+00:00",
+        "title": "Exposed FTP directory",
+        "updated_at": "2026-07-02T14:44:25.474056+00:00",
+        "url": "http://127.0.0.1:19080/ftp/",
+        "vuln_type": "Exposed FTP directory",
+        "vulnerability_class": "Exposed FTP directory",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080/api-docs",
+        "business_impact": "Public Swagger/API documentation helps attackers map endpoints and request schemas.",
+        "classification": "High",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:25.974191+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 8.0,
+        "cwe": "CWE-200",
+        "dedup_key": "9041028119221b49c510b7cacf65293c92a7762e5ddf9405bd03671929f55b23",
+        "description": "Sensitive or high-value path is reachable.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"openapi\":\"3.0.0\",\"paths\":{\"/rest/products/search\":{\"get\":{}}}}",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "B",
+        "id": "EV-5dd81e34fb2a95a7",
+        "impact_scoring": {
+          "base_score": 5.0,
+          "chain_bonus_applied": false,
+          "classification": "High",
+          "cvss_plus_plus": 8.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A01:2021-Broken Access Control",
+        "owasp_wstg_mapping": "WSTG-INFO-02",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "B",
+        "quality_improvements": [
+          "Add concrete business impact",
+          "Provide a specific remediation"
+        ],
+        "quality_score": 70,
+        "raw_evidence_id": "EV-5ec3e0d650b42e4a",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Require authentication for API documentation in non-public environments.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": false,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [
+            "quality_score_75_plus"
+          ],
+          "ready": false,
+          "status": "NEEDS_IMPROVEMENT"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080/api-docs.",
+          "Observe HTTP 200 from the unauthenticated request.",
+          "Review the returned content or redirect target for exposed metadata."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "MEDIUM",
+        "source": "lab-validation-agent",
+        "technical_impact": "Sensitive or high-value path is reachable.",
+        "timestamp": "2026-07-02T14:44:25.974191+00:00",
+        "title": "Exposed API documentation",
+        "updated_at": "2026-07-02T14:44:25.974191+00:00",
+        "url": "http://127.0.0.1:19080/api-docs",
+        "vuln_type": "Exposed API documentation",
+        "vulnerability_class": "Exposed API documentation",
+        "zero_fp_failed_checks": [
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080/.well-known/security.txt",
+        "business_impact": "Security contact metadata is public. This is expected for many programs, but should be reviewed.",
+        "classification": "Medium",
+        "confidence": 96,
+        "created_at": "2026-07-02T14:44:26.470515+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 6.0,
+        "cwe": "CWE-200",
+        "dedup_key": "24c8060dc583ebf35af5313a3e410ca1769a7b8c9edc63888f1835c3252c0387",
+        "description": "Sensitive or high-value path is reachable.",
+        "duplicate_count": 1,
+        "evidence": "HTTP/1.1 200\ncontent-type: text/plain\nserver: LocalVulnLab\nbody: Contact: [REDACTED] ",
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "B",
+        "id": "EV-f8b4773b9c2e3fb1",
+        "impact_scoring": {
+          "base_score": 3.0,
+          "chain_bonus_applied": false,
+          "classification": "Medium",
+          "cvss_plus_plus": 6.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A01:2021-Broken Access Control",
+        "owasp_wstg_mapping": "WSTG-INFO-02",
+        "parameter": "",
+        "quality_blocking_issues": [],
+        "quality_grade": "B",
+        "quality_improvements": [
+          "Provide a specific remediation",
+          "Validate higher-impact behavior before submission"
+        ],
+        "quality_score": 80,
+        "raw_evidence_id": "EV-491afb57ae478c70",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Keep security metadata intentional and free of sensitive internal details.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080/.well-known/security.txt.",
+          "Observe HTTP 200 from the unauthenticated request.",
+          "Review the returned content or redirect target for exposed metadata."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "LOW",
+        "source": "lab-validation-agent",
+        "technical_impact": "Sensitive or high-value path is reachable.",
+        "timestamp": "2026-07-02T14:44:26.470515+00:00",
+        "title": "Public security metadata exposed",
+        "updated_at": "2026-07-02T14:44:26.470515+00:00",
+        "url": "http://127.0.0.1:19080/.well-known/security.txt",
+        "vuln_type": "Public security metadata exposed",
+        "vulnerability_class": "Public security metadata exposed",
+        "zero_fp_failed_checks": [
+          "severity_not_medium_or_higher",
+          "missing_evidence_artifact"
+        ],
+        "zero_fp_label": "NEEDS PROOF"
+      }
+    ],
+    "skipped_out_of_scope": [],
+    "valid_bugs": [
+      {
+        "affected_url": "http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+        "business_impact": "SQL injection can expose product, user, or credential data from the Juice Shop database.",
+        "classification": "Critical",
+        "confidence": 99,
+        "created_at": "2026-07-02T14:44:27.475626+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 0.0,
+        "cvss_40_severity": "None",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 10.0,
+        "cwe": "CWE-89",
+        "dedup_key": "7875d7c66c614c90cd242534198c515776566df0b885f43117ca4ab932131f9d",
+        "description": "The product search endpoint accepts a SQL comment payload that changes query results.",
+        "duplicate_count": 1,
+        "evidence": "{\"request_response_pairs\": [{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest/products/search?q=zz-no-product-zz\"}, \"response\": {\"status_code\": 200, \"headers\": {\"server\": \"LocalVulnLab\", \"content-type\": \"application/json\"}, \"body\": \"{\\\"data\\\": []}\"}}, {\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest/products/search?q=%27%29%29--\"}, \"response\": {\"status_code\": 200, \"headers\": {\"server\": \"LocalVulnLab\", \"content-type\": \"application/json\"}, \"body\": \"{\\\"data\\\": [{\\\"id\\\": 1, \\\"name\\\": \\\"Leaked Product 1\\\"}, {\\\"id\\\": 2, \\\"name\\\": \\\"Leaked Product 2\\\"}, {\\\"id\\\": 3, \\\"name\\\": \\\"Leaked Product 3\\\"}, {\\\"id\\\": 4, \\\"name\\\": \\\"Leaked Product 4\\\"}, {\\\"id\\\": 5, \\\"name\\\": \\\"Leaked Product 5\\\"}, {\\\"id\\\": 6, \\\"name\\\": \\\"Leaked Product 6\\\"}, {\\\"id\\\": 7, \\\"name\\\": \\\"Leaked Product 7\\\"}, {\\\"id\\\": 8, \\\"name\\\": \\\"Leaked Product 8\\\"}, {\\\"id\\\": 9, \\\"name\\\": \\\"Leaked Product 9\\\"}, {\\\"id\\\": 10, \\\"name\\\": \\\"Leaked Product 10\\\"}, {\\\"id\\\": 11, \\\"name\\\": \\\"Leaked Product 11\\\"}, {\\\"id\\\": 12, \\\"name\\\": \\\"Leaked Product 12\\\"}]}\"}}], \"summary\": \"Baseline returned 0 products; SQL comment payload returned 12 products.\"}",
+        "evidence_artifact": {
+          "agent": "benchmark-juice-shop",
+          "artifact_path": "evidence\\20260702-144424-127-0-0-1\\juice-shop-benchmark-34c56ba9f35d8505.json",
+          "confirmed": true,
+          "fp_check": "Confirmed against a local intentionally vulnerable lab endpoint.",
+          "impact": "SQL injection can expose product, user, or credential data from the Juice Shop database.",
+          "indicator_location": "response JSON data length",
+          "matched_indicator": "Baseline returned 0 products; injected request returned 12 products",
+          "metadata": {},
+          "path": "evidence\\20260702-144424-127-0-0-1\\juice-shop-benchmark-34c56ba9f35d8505.json",
+          "raw_request": "GET http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+          "raw_response": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"data\": [{\"id\": 1, \"name\": \"Leaked Product 1\"}, {\"id\": 2, \"name\": \"Leaked Product 2\"}, {\"id\": 3, \"name\": \"Leaked Product 3\"}, {\"id\": 4, \"name\": \"Leaked Product 4\"}, {\"id\": 5, \"name\": \"Leaked Product 5\"}, {\"id\": 6, \"name\": \"Leaked Product 6\"}, {\"id\": 7, \"name\": \"Leaked Product 7\"}, {\"id\": 8, \"name\": \"Leaked Product 8\"}, {\"id\": 9, \"name\": \"Leaked Product 9\"}, {\"id\": 10, \"name\": \"Leaked Product 10\"}, {\"id\": 11, \"name\": \"Leaked Product 11\"}, {\"id\": 12, \"name\": \"Leaked Product 12\"}]}",
+          "scan_id": "20260702-144424-127-0-0-1",
+          "timestamp": "2026-07-02T14:44:27.475626+00:00",
+          "url": "http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+          "vuln_class": "SQL Injection"
+        },
+        "evidence_complete": true,
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "A",
+        "id": "EV-4a747e564d242b0e",
+        "impact_scoring": {
+          "base_score": 9.0,
+          "chain_bonus_applied": false,
+          "classification": "Critical",
+          "cvss_plus_plus": 10.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A03:2021-Injection",
+        "owasp_wstg_mapping": "WSTG-INPV-05",
+        "parameter": "q",
+        "quality_blocking_issues": [],
+        "quality_grade": "A",
+        "quality_improvements": [],
+        "quality_score": 100,
+        "raw_evidence_id": "EV-7a0e768dfabd864c",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Use parameterized queries/prepared statements and reject SQL control characters in search input.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Send GET http://127.0.0.1:19080/rest/products/search?q=zz-no-product-zz and record the product count.",
+          "Send GET http://127.0.0.1:19080/rest/products/search?q=%27%29%29-- with the SQL comment payload.",
+          "Confirm the injected request returns many more products than the baseline."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "HIGH",
+        "source": "lab-validation-agent",
+        "sql_baseline_count": 0,
+        "sql_injected_count": 12,
+        "technical_impact": "The product search endpoint accepts a SQL comment payload that changes query results.",
+        "timestamp": "2026-07-02T14:44:27.475626+00:00",
+        "title": "SQL Injection in product search",
+        "updated_at": "2026-07-02T14:44:27.475626+00:00",
+        "url": "http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+        "vuln_type": "SQL Injection",
+        "vulnerability_class": "SQL Injection",
+        "zero_fp_failed_checks": [],
+        "zero_fp_label": "READY"
+      },
+      {
+        "affected_url": "http://127.0.0.1:19080/#/search?q=%3Ciframe%20src%3Djavascript:alert(%60xss%60)%3E",
+        "business_impact": "XSS can execute attacker-controlled JavaScript in a user's browser and enable phishing or token theft in the lab app.",
+        "classification": "Critical",
+        "confidence": 95,
+        "created_at": "2026-07-02T14:44:27.987266+00:00",
+        "cvss_40_official": true,
+        "cvss_40_score": 5.1,
+        "cvss_40_severity": "Medium",
+        "cvss_40_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "cvss_plus_plus": 9.0,
+        "cwe": "CWE-79",
+        "dedup_key": "36331e4ff23ddb2dd5f8626b1d5506681caa3d8b1ab416427651d38c9da61cca",
+        "description": "Juice Shop exposes the documented search XSS challenge route.",
+        "duplicate_count": 1,
+        "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/api/Challenges\"}, \"response\": {\"status_code\": 200, \"headers\": {\"server\": \"LocalVulnLab\", \"content-type\": \"application/json\"}, \"body\": \"{\\\"data\\\": [{\\\"name\\\": \\\"DOM XSS\\\"}, {\\\"name\\\": \\\"Admin Section\\\"}]}\"}, \"confirmed_challenges\": [\"DOM XSS\"], \"payload_route\": \"http://127.0.0.1:19080/#/search?q=%3Ciframe%20src%3Djavascript:alert(%60xss%60)%3E\"}",
+        "evidence_artifact": {
+          "agent": "benchmark-juice-shop",
+          "artifact_path": "evidence\\20260702-144424-127-0-0-1\\juice-shop-benchmark-4e753db757f8e279.json",
+          "confirmed": true,
+          "fp_check": "Confirmed against a local intentionally vulnerable lab endpoint.",
+          "impact": "XSS can execute attacker-controlled JavaScript in a user's browser and enable phishing or token theft in the lab app.",
+          "indicator_location": "api/Challenges response body",
+          "matched_indicator": "DOM XSS challenge metadata present",
+          "metadata": {},
+          "path": "evidence\\20260702-144424-127-0-0-1\\juice-shop-benchmark-4e753db757f8e279.json",
+          "raw_request": "GET http://127.0.0.1:19080/api/Challenges",
+          "raw_response": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"data\": [{\"name\": \"DOM XSS\"}, {\"name\": \"Admin Section\"}]}",
+          "scan_id": "20260702-144424-127-0-0-1",
+          "timestamp": "2026-07-02T14:44:27.972707+00:00",
+          "url": "http://127.0.0.1:19080/#/search?q=%3Ciframe%20src%3Djavascript:alert(%60xss%60)%3E",
+          "vuln_class": "Reflected XSS"
+        },
+        "evidence_complete": true,
+        "evidence_strength": "strong",
+        "exploitability_status": "CONFIRMED",
+        "false_positive_risk": "low",
+        "grade": "A",
+        "id": "EV-1bfb1ba6f93a6091",
+        "impact_scoring": {
+          "base_score": 6.0,
+          "chain_bonus_applied": false,
+          "classification": "Critical",
+          "cvss_plus_plus": 9.0,
+          "modifiers_applied": [
+            "confirmed exploitability: +1.5",
+            "no authentication path detected: +1.0",
+            "high scanner confidence: +0.5"
+          ],
+          "total_modifier": 3.0
+        },
+        "method": "GET",
+        "owasp_asvs_mapping": "",
+        "owasp_top_10": "A03:2021-Injection",
+        "owasp_wstg_mapping": "WSTG-INPV-01",
+        "parameter": "q",
+        "quality_blocking_issues": [],
+        "quality_grade": "A",
+        "quality_improvements": [],
+        "quality_score": 100,
+        "raw_evidence_id": "EV-90bce8bb39dd3253",
+        "ready_to_submit": true,
+        "redaction_status": "redacted",
+        "references": [],
+        "rejection_reason_codes": [],
+        "remediation": "Encode untrusted search input before DOM insertion and enforce a strict CSP.",
+        "report_readiness": {
+          "checks": {
+            "actual_response_evidence": true,
+            "affected_url_in_scope": true,
+            "business_impact_present": true,
+            "evidence_secrets_redacted": true,
+            "exploitability_confirmed_or_probable": true,
+            "quality_score_75_plus": true,
+            "reproduction_steps_3_plus": true
+          },
+          "failed": [],
+          "ready": true,
+          "status": "READY"
+        },
+        "reproduction_steps": [
+          "Open the Juice Shop search route in a browser.",
+          "Use the payload `<iframe src=javascript:alert(`xss`)>` in the q parameter.",
+          "Observe the XSS challenge route behavior in the authorized Juice Shop lab."
+        ],
+        "safe_manual_validation_steps": [
+          "Validate only within authorized scope.",
+          "Use a low-rate request in a test account or approved environment.",
+          "Do not access, exfiltrate, or modify real user data."
+        ],
+        "scan_id": "20260702-144424-127-0-0-1",
+        "severity": "HIGH",
+        "source": "lab-validation-agent",
+        "technical_impact": "Juice Shop exposes the documented search XSS challenge route.",
+        "timestamp": "2026-07-02T14:44:27.987266+00:00",
+        "title": "Reflected/DOM XSS route is present in Juice Shop search",
+        "updated_at": "2026-07-02T14:44:27.987266+00:00",
+        "url": "http://127.0.0.1:19080/#/search?q=%3Ciframe%20src%3Djavascript:alert(%60xss%60)%3E",
+        "vuln_type": "Reflected XSS",
+        "vulnerability_class": "Reflected XSS",
+        "zero_fp_failed_checks": [],
+        "zero_fp_label": "READY"
+      }
+    ]
+  }
+}

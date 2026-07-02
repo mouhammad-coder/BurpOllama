@@ -29,7 +29,7 @@ SAFETY MODEL (non-negotiable):
 
 FINDING MODEL ("BurpOllama" finding dict) -- identical to the rest of the
 toolkit so findings flow straight into the triage prompt, chain analyzer, and
-H1/Bugcrowd report generators:
+final findings presentation:
     id, title, vulnerability_class, affected_url, method, parameter, severity,
     confidence, exploitability_status, evidence, reproduction_steps,
     business_impact, technical_impact, remediation, cwe, cvss_plus_plus,

@@ -14,6 +14,7 @@ import httpx
 from finding_model import normalize_finding
 
 from core.agents.base import BaseAgent, ScanContext
+from core.evidence import write_evidence_artifact
 from core.events import EventType
 
 
@@ -162,6 +163,11 @@ class JuiceShopBenchmark(BaseAgent):
         return response
 
     def _finding(self, context, **values) -> dict:
+        raw_request = values.pop("raw_request", "")
+        raw_response = values.pop("raw_response", "")
+        matched_indicator = values.pop("matched_indicator", "")
+        indicator_location = values.pop("indicator_location", "")
+        artifact_confirmed = bool(values.pop("artifact_confirmed", False))
         values.setdefault("source", "lab-validation-agent")
         values.setdefault("confidence", 96)
         values.setdefault("exploitability_status", "confirmed")
@@ -170,6 +176,23 @@ class JuiceShopBenchmark(BaseAgent):
         values.setdefault("redaction_status", "redacted")
         values.setdefault("owasp_top_10", "A05:2021-Security Misconfiguration")
         values.setdefault("owasp_wstg_mapping", "WSTG-CONF-01")
+        if raw_request and raw_response and matched_indicator and indicator_location:
+            values["evidence_artifact"] = write_evidence_artifact(
+                context.scan,
+                title=str(values.get("title") or values.get("vuln_type") or "Lab finding"),
+                url=str(values.get("url") or context.scan.get("target") or ""),
+                raw_request=raw_request,
+                raw_response=raw_response,
+                matched_indicator=matched_indicator,
+                indicator_location=indicator_location,
+                agent=self.name,
+                vuln_class=str(values.get("vuln_type") or values.get("title") or "Lab finding"),
+                impact=str(values.get("business_impact") or "Confirmed local lab impact."),
+                fp_check=str(values.get("fp_check") or "Confirmed against a local intentionally vulnerable lab endpoint."),
+                confirmed=artifact_confirmed,
+                filename_prefix="juice-shop-benchmark",
+            )
+            values["evidence_complete"] = True
         return normalize_finding(values, scan_id=context.scan["id"])
 
     def _header_findings(self, context, base: str, response: httpx.Response) -> list[dict]:
@@ -212,6 +235,8 @@ class JuiceShopBenchmark(BaseAgent):
                     description=description,
                     evidence=_http_evidence(response.status_code, response.headers),
                     business_impact=impact,
+                    missing_proof="Header absence alone needs exploitability context.",
+                    manual_check_needed="Pair this with an exploitable clickjacking, XSS, or transport-risk workflow before prioritizing.",
                     reproduction_steps=[
                         "Send GET {}.".format(base),
                         "Inspect the HTTP response headers.",
@@ -260,6 +285,8 @@ class JuiceShopBenchmark(BaseAgent):
                     description="Sensitive or high-value path is reachable.",
                     evidence=_http_evidence(response.status_code, response.headers, response.text),
                     business_impact=impact,
+                    missing_proof="Reachability is confirmed, but sensitive impact is not proven.",
+                    manual_check_needed="Review the exposed content locally and confirm whether it contains non-public data or privileged schemas.",
                     reproduction_steps=[
                         "Send GET {}.".format(url),
                         "Observe HTTP {} from the unauthenticated request.".format(response.status_code),
@@ -316,6 +343,7 @@ class JuiceShopBenchmark(BaseAgent):
                 description="The product search endpoint accepts a SQL comment payload that changes query results.",
                 evidence=json.dumps(evidence, ensure_ascii=False),
                 business_impact="SQL injection can expose product, user, or credential data from the Juice Shop database.",
+                next_step="Reproduce the baseline and injected requests in the local lab and preserve the response-count mismatch.",
                 reproduction_steps=[
                     "Send GET {} and record the product count.".format(clean_url),
                     "Send GET {} with the SQL comment payload.".format(injected_url),
@@ -327,6 +355,14 @@ class JuiceShopBenchmark(BaseAgent):
                 owasp_wstg_mapping="WSTG-INPV-05",
                 sql_baseline_count=clean_count,
                 sql_injected_count=injected_count,
+                raw_request="GET {}".format(injected_url),
+                raw_response=_http_evidence(injected.status_code, injected.headers, injected.text),
+                matched_indicator="Baseline returned {} products; injected request returned {} products".format(
+                    clean_count,
+                    injected_count,
+                ),
+                indicator_location="response JSON data length",
+                artifact_confirmed=True,
             )]
         return []
 
@@ -364,6 +400,7 @@ class JuiceShopBenchmark(BaseAgent):
                     "payload_route": route,
                 }, ensure_ascii=False),
                 business_impact="XSS can execute attacker-controlled JavaScript in a user's browser and enable phishing or token theft in the lab app.",
+                next_step="Open the local lab route in a browser and confirm JavaScript execution with the documented benign payload.",
                 reproduction_steps=[
                     "Open the Juice Shop search route in a browser.",
                     "Use the payload `<iframe src=javascript:alert(`xss`)>` in the q parameter.",
@@ -373,6 +410,11 @@ class JuiceShopBenchmark(BaseAgent):
                 cwe="CWE-79",
                 owasp_top_10="A03:2021-Injection",
                 owasp_wstg_mapping="WSTG-INPV-01",
+                raw_request="GET {}".format(challenges_url),
+                raw_response=_http_evidence(challenges.status_code, challenges.headers, challenges.text),
+                matched_indicator="DOM XSS challenge metadata present",
+                indicator_location="api/Challenges response body",
+                artifact_confirmed=True,
             ))
         admin_url = base.rstrip("/") + "/#/administration"
         admin_http = await self._get(context, client, base.rstrip("/") + "/administration")
@@ -394,6 +436,8 @@ class JuiceShopBenchmark(BaseAgent):
                     "route": admin_url,
                 }, ensure_ascii=False),
                 business_impact="Discoverable admin workflows help attackers map privileged functionality and focus access-control testing.",
+                missing_proof="No authenticated role comparison or privileged API access proof.",
+                manual_check_needed="Use two local lab roles and confirm whether admin APIs enforce server-side authorization.",
                 reproduction_steps=[
                     "Send GET {}.".format(base.rstrip("/") + "/administration"),
                     "Observe HTTP 200 and the Juice Shop SPA shell.",

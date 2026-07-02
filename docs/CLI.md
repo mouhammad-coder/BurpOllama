@@ -1,53 +1,262 @@
 # BurpOllama CLI
 
-The Rich terminal interface is BurpOllama's primary workflow. Normal commands
-run the scanner directly and do not connect to FastAPI.
+The CLI is the primary BurpOllama workflow. It runs scans directly, streams progress, and ends with final findings tables. It does not require FastAPI or the dashboard.
 
-Setup installs the `burpollama` launcher under `~/.local/bin`. You can also
-replace `burpollama` in every example with `python3 cli.py`.
-
-## Scan modes
+## Scan
 
 ```bash
-# Safe default (passive)
-burpollama scan https://authorized.example
+# Passive default
+burpollama scan https://authorized.example --yes
 
-# Balanced authorized bounty workflow
-burpollama scan https://authorized.example --mode bounty
+# Balanced authorized bounty mode
+burpollama scan https://authorized.example --mode bounty --yes
 
-# Deeper authorized workflow
-burpollama scan https://authorized.example --mode deep
+# Deep authorized mode
+burpollama scan https://authorized.example --mode deep --yes
 
 # Explicit scope and bounded execution
-burpollama scan https://authorized.example --mode bounty \
-  --scope authorized.example --concurrency 5 --rate-limit 2 \
-  --max-urls 100 --time-budget 900 --yes
+burpollama scan https://authorized.example --mode bounty --yes \
+  --scope authorized.example \
+  --concurrency 5 --rate-limit 2 \
+  --max-urls 100 --time-budget 900 \
+  --output scans/authorized-program
 ```
 
-Passive mode does not run active vulnerability tests. Bounty and deep modes ask
-you to confirm that you own the target or have written permission. For a
-non-interactive authorized job:
+Passive mode avoids active vulnerability tests. Bounty and deep modes require confirmation that you own the target or have written permission. Use `--yes` only for authorized targets.
+
+## AI Autopilot Goals
+
+## Command Examples
+
+Preflight:
 
 ```bash
-burpollama scan https://authorized.example --mode bounty --yes
+burpollama preflight https://target.com --program program.yml
 ```
 
-Use `--scope authorized.example` to enforce an explicit domain allowlist. The
-option can be repeated.
+Passive bounty scan:
 
-Before scanning a program scope file, run a preflight audit:
+```bash
+burpollama ai-autopilot https://target.com --program program.yml --goal bounty-hunt --mode passive --multi-agent --final-output terminal
+```
+
+Dry run:
+
+```bash
+burpollama ai-autopilot https://target.com --program program.yml --goal bounty-hunt --dry-run-plan
+```
+
+Burp analysis:
+
+```bash
+burpollama burp import burp-history.xml --program program.yml
+burpollama ai-autopilot --from-burp latest --goal burp-import-analysis --final-output terminal
+```
+
+Access control:
+
+```bash
+burpollama ai-autopilot https://target.com --program program.yml --goal access-control --auth-profile userA.json --auth-profile userB.json --final-output terminal
+```
+
+Latest findings:
+
+```bash
+burpollama findings --latest
+burpollama findings --latest --json
+burpollama findings --latest --show-all
+```
+
+Recommended first command:
+
+```bash
+burpollama preflight https://target.com --program program.yml
+```
+
+Recommended passive bounty workflow:
+
+```bash
+burpollama ai-autopilot https://target.com \
+  --program program.yml \
+  --goal bounty-hunt \
+  --mode passive \
+  --multi-agent \
+  --final-output terminal
+```
+
+Dry-run the plan without sending scan requests:
+
+```bash
+burpollama ai-autopilot https://target.com \
+  --program program.yml \
+  --goal bounty-hunt \
+  --dry-run-plan
+```
+
+Supported goals:
+
+```text
+recon
+bounty-hunt
+access-control
+api-hunt
+passive-analysis
+manual-check
+burp-import-analysis
+```
+
+`recon` only discovers attack surface safely. `bounty-hunt` runs the full safe multi-agent bounty workflow. `access-control` focuses on IDOR/BOLA/BFLA and role/object ownership candidates. `api-hunt` focuses API, object IDs, GraphQL, auth-required endpoints, excessive data exposure, mass assignment, and CORS with impact. `passive-analysis` avoids active checks. `manual-check` focuses human-verification items. `burp-import-analysis` analyzes imported Burp traffic passively.
+
+Final output modes:
+
+```text
+--final-output chat      print final result directly for chat/Codex style output
+--final-output terminal  print final result directly for CLI display
+--final-output json      print machine-readable JSON to stdout
+```
+
+The default is `terminal`. Final results are always printed directly; users do not need to open `findings.json` to see the Great Findings and Needs Manual Check tables.
+
+Recommended access-control workflow:
+
+```bash
+burpollama ai-autopilot https://target.com \
+  --program program.yml \
+  --goal access-control \
+  --auth-profile userA.json \
+  --auth-profile userB.json \
+  --final-output terminal
+```
+
+Recommended Burp workflow:
+
+```bash
+burpollama burp import burp-history.xml --program program.yml
+burpollama ai-autopilot --from-burp latest \
+  --goal burp-import-analysis \
+  --final-output terminal
+```
+
+If no `program.yml` is provided, non-interactive use requires `--yes --scope target.com`. Scope is still enforced.
+
+## Program Profile
+
+Example `program.yml`:
+
+```yaml
+program: example
+platform: hackerone
+scanner_allowed: true
+automated_testing_allowed: true
+in_scope:
+  - example.com
+  - api.example.com
+out_of_scope:
+  - staging.example.com
+forbidden_tests:
+  - dos
+  - brute_force
+  - spam
+  - social_engineering
+  - destructive_actions
+allowed_modes:
+  - passive
+  - bounty
+max_rps: 2
+max_concurrency: 5
+auth_testing_allowed: true
+upload_testing_allowed: false
+graphql_introspection_allowed: false
+oob_testing_allowed: false
+cloud_ai_allowed: false
+notes: "Follow program rules strictly."
+```
+
+If `scanner_allowed` or `automated_testing_allowed` is false, active scanning is disabled. If scanner permission is missing, BurpOllama warns:
+
+```text
+Automated scanner permission is unknown. Running conservative passive checks only.
+```
+
+Common scan controls:
+
+```text
+--scope DOMAIN        in-scope domain; repeat for multiple domains
+--scope-file FILE     text scope file with includes and ! exclusions
+--concurrency N       bounded worker concurrency
+--rate-limit N        global requests per second across agents
+--timeout SECONDS     request timeout
+--retries N           bounded retry count
+--max-urls N          maximum discovered URLs carried into scan phases
+--time-budget SECONDS maximum runtime before partial findings are written
+--ai                  enable configured AI agents
+--no-ai               disable AI agents
+--ai-provider NAME    provider override
+--model MODEL         model override
+--output DIRECTORY    scan artifact root; default is scans
+--quiet               final output only
+--json                JSON event stream and final result
+--no-external-tools   skip optional Katana, Nuclei, TruffleHog, and Gitleaks
+--oob-server URL      explicit authorized OOB callback URL
+```
+
+## Final Findings
+
+Use `findings` to review stored scan results:
+
+```bash
+burpollama findings --latest
+burpollama findings --latest --show-info
+burpollama findings --latest --show-rejected
+burpollama findings --latest --show-all
+burpollama findings --latest --json
+burpollama findings --latest --min-rate high
+burpollama findings --latest --min-confidence 80
+burpollama findings --scan-id <scan-id>
+```
+
+Default output shows only:
+
+- `Great Finding`
+- `Needs Manual Check`
+
+Hidden by default:
+
+- `Informational`
+- `Rejected`
+
+`--json` prints stable JSON with `scan_id`, `target`, filtered `findings`, and status counts.
+
+## Finding Statuses
+
+| Status | CLI behavior |
+|---|---|
+| `Great Finding` | Printed in the Great Findings table. Requires high confidence, clear impact, complete evidence, and in-scope target. |
+| `Needs Manual Check` | Printed in the Needs Manual Check table. Includes observed evidence, missing proof, and exact manual step. |
+| `Informational` | Hidden by default. Use `--show-info` or `--show-all`. |
+| `Rejected` | Hidden by default. Use `--show-rejected` or `--show-all` for debugging. |
+
+Manual-check findings are used when a candidate needs two authorized accounts, authenticated cookies, program permission, active testing, impact confirmation, role comparison, file upload testing, GraphQL introspection permission, rate-limit testing, payment/order/workflow validation, or business logic understanding.
+
+## Deprecated Commands
+
+The old export command exits nonzero and prints:
+
+```bash
+This command is deprecated. Use `burpollama findings --latest` instead.
+```
+
+Use `findings` for terminal tables or JSON intended for local automation.
+
+## Scope Preflight
 
 ```bash
 burpollama scope-check --scope-file scope.txt --audit --target https://api.authorized.example
 ```
 
-The audit prints included/excluded rule counts, target scope status, and a safe
-passive scan command when the target is in scope. When `--write-manifest` is
-provided, it also writes a `cli_runbook` with the scan, readiness report,
-readiness gate, and ready-only history commands.
+The audit shows included/excluded rules, target scope status, warnings, and a safe scan command when the target is in scope.
 
-You can also normalize a saved HackerOne/Bugcrowd-style program JSON export
-before scanning:
+Normalize a saved program scope export:
 
 ```bash
 burpollama scope-check --program-json program-policy.json \
@@ -56,137 +265,7 @@ burpollama scope-check --program-json program-policy.json \
   --audit --target https://api.authorized.example
 ```
 
-Additional controls:
-
-```text
---concurrency N       bounded worker concurrency (default 5)
---rate-limit N        global requests per second (default 2)
---timeout SECONDS     request timeout
---retries N           bounded retry policy
---max-urls N          maximum discovered URLs carried into scan phases
---time-budget SECONDS maximum scan runtime before partial reports are written
---ai PROVIDER         preferred configured AI provider
---model MODEL         preferred model
---output DIRECTORY    report root directory
---quiet               final summary only
---json                JSON Lines events and final result
---follow              keep following until completion (direct scans already do)
-```
-
-During a scan, the terminal displays:
-
-- Phase transitions
-- The current vulnerability class
-- Tested URL counters
-- Key HTTP methods and response codes
-- WAF and throttle warnings
-- Findings as they are discovered
-- Severity totals and elapsed time
-- A persistent specialist-agent status table
-- Overall and per-agent progress bars
-- A live findings ticker
-- A final bounty findings table with finding name, target URL, severity,
-  readiness, and confidence
-
-When Cloudflare JavaScript challenges are detected, BurpOllama warns
-immediately and switches that scan to passive-only mode.
-
-## Watch a dashboard scan
-
-```bash
-burpollama watch --scan-id <scan-id>
-```
-
-This connects to `ws://127.0.0.1:8888/ws`, replays available scan logs, and
-continues streaming events in real time.
-
-The optional server is started only when requested:
-
-```bash
-burpollama serve
-burpollama dashboard
-```
-
-## Reconnaissance
-
-```bash
-burpollama recon https://authorized.example
-burpollama recon https://authorized.example --mode deep
-```
-
-## Benchmarks
-
-Use benchmark mode only for local authorized labs. Check that OWASP Juice Shop
-is reachable before running validation probes:
-
-```bash
-burpollama benchmark juice-shop --check
-burpollama benchmark juice-shop --yes
-```
-
-## Reports
-
-```bash
-burpollama report --scan-id <scan-id>
-burpollama report --scan-id <scan-id> --format hackerone
-burpollama report --scan-id <scan-id> --format bugcrowd
-burpollama report --scan-id <scan-id> --format readiness
-burpollama report --scan-id <scan-id> --format sarif --output results.sarif
-```
-
-Available formats are `markdown`, `hackerone`, `bugcrowd`, `json`, `csv`,
-`sarif`, and `readiness`. The readiness audit summarizes report-ready issues,
-manual-check findings, missing report-ready artifacts, and proof blockers
-before you decide what to submit.
-
-Use `--latest` to work with the most recent stored scan:
-
-```bash
-burpollama report --latest --format readiness
-burpollama report --latest --format hackerone
-```
-
-## Bug bounty readiness gate
-
-`readiness-check` is the CLI pass/fail gate for authorized program work. It is
-designed for the final step after a bounded scan:
-
-```bash
-burpollama readiness-check --latest
-burpollama readiness-check --latest --require-report-ready
-burpollama readiness-check --latest --json --output readiness-decision.json
-```
-
-The command exits `0` when the scan has actionable report-ready or manual-check
-output and all report-ready evidence artifacts exist. It exits `3` when:
-
-- no report-ready or manual-check findings exist
-- `--require-report-ready` is used and no report-ready issue exists
-- a report-ready finding references a missing evidence artifact
-
-The JSON output contains:
-
-```json
-{
-  "passed": true,
-  "reason": "scan has actionable bounty output",
-  "scan_id": "scan-id",
-  "target": "https://authorized.example",
-  "readiness": {
-    "report_ready_issues": 1,
-    "report_ready_findings": 1,
-    "manual_check_findings": 3,
-    "proof_blocked_findings": 2,
-    "missing_report_ready_artifacts": 0
-  }
-}
-```
-
-Use the gate as a hard stop before spending time writing a report. A passing
-gate means the scan produced something actionable; it does not replace program
-policy review or manual validation of low-context findings.
-
-## Operations
+## Other Commands
 
 ```bash
 burpollama status
@@ -196,22 +275,53 @@ burpollama history
 burpollama history --ready-only --limit 20
 burpollama validate "IDOR on /api/users/{id}" --url https://authorized.example/api/users/1
 burpollama analyze --file captured-traffic.json
+burpollama recon https://authorized.example --yes
 ```
 
-`analyze` imports the passive analyzer directly; it does not require the server.
+## Local Smoke Test
 
-## Local persistence
-
-Standalone scans and reports are stored in `~/.burpollama/scans.db`. The
-`history` and `report` commands read that database directly.
-
-Every completed or interrupted scan also writes a report bundle under
-`reports/<scan-id>/` unless `--output` selects another directory.
-
-`--api` applies only to dashboard-oriented commands such as `watch`:
+Use local labs only. Do not use smoke tests against public targets.
 
 ```bash
-burpollama --api http://127.0.0.1:9000 watch --scan-id <scan-id>
+# Start your local lab, for example OWASP Juice Shop on localhost:3000.
+burpollama benchmark juice-shop --check
+burpollama benchmark juice-shop --yes
+burpollama findings --latest
+# Stop the local lab when finished.
 ```
 
-Only scan systems you own or have explicit written authorization to test.
+Verify the final terminal output contains Great Findings or useful Needs Manual Check opportunities before testing any authorized external program.
+
+## Optional Dashboard
+
+```bash
+burpollama serve
+burpollama dashboard
+burpollama watch --scan-id <scan-id>
+```
+
+`watch` connects to the local dashboard WebSocket and replays scan events.
+
+## Local Persistence
+
+Standalone scan metadata is stored in `~/.burpollama/scans.db`. Internal scan artifacts are written under:
+
+```text
+scans/<scan-id>/
+  findings.json
+  evidence-board.json
+  agent-messages.jsonl
+  agent-decisions.jsonl
+  agent-graph.json
+  scan-log.jsonl
+```
+
+Only final findings and internal scan data are written.
+
+## Safe Usage Notes
+
+- Never scan systems without written authorization.
+- Do not run bounty or deep mode unless the program permits active checks.
+- Do not perform brute force, DoS, WAF bypass/evasion, destructive exploitation, arbitrary shell execution, or auto-submission.
+- Rate-limit findings usually require manual validation because BurpOllama avoids high-volume testing.
+- Upload, payment, order, workflow, GraphQL introspection, and role-comparison findings usually need manual permission and controlled test accounts.

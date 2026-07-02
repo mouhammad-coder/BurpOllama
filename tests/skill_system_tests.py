@@ -165,10 +165,17 @@ class SkillSystemTests(unittest.TestCase):
                             )
                         )
             evidence = json.loads(Path(result["evidence_path"]).read_text(encoding="utf-8"))
+            findings_path = Path(result["findings_path"])
+            self.assertTrue(findings_path.exists())
+            self.assertFalse((findings_path.parent / "report.md").exists())
+            self.assertFalse((findings_path.parent / "candidates.md").exists())
+            findings = json.loads(findings_path.read_text(encoding="utf-8"))
         record = evidence["evidence"][0]
         self.assertEqual(record["final_status"], "Likely Vulnerable")
         self.assertFalse(record["proof_performed"])
         self.assertFalse(record["proof_of_control_allowed"])
+        self.assertEqual(findings["findings"][0]["status"], "Needs Manual Check")
+        self.assertIn("Confirm the program permits", findings["findings"][0]["manual_check_needed"])
 
 
 if __name__ == "__main__":

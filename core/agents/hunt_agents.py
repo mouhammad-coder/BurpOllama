@@ -61,6 +61,16 @@ class HuntCoordinatorAgent(BaseAgent):
     async def run(self, context: ScanContext):
         plan = context.scan.get("adaptive_plan", {})
         enabled = list(plan.get("enabled_modules", []))
+        goal = str(getattr(context.options, "goal", "") or context.scan.get("goal") or "bounty-hunt")
+        if goal == "recon":
+            await context.emit(
+                EventType.SKIPPED,
+                agent=self.name,
+                phase=self.phase,
+                message="Recon goal selected; vulnerability hunt skipped.",
+                reason="goal_recon",
+            )
+            return context.raw_findings
         if context.options.mode == "passive":
             # Existing active detector engine remains disabled in passive mode.
             await self._passive_observations(context)
@@ -146,6 +156,24 @@ class HuntCoordinatorAgent(BaseAgent):
                 )
                 return
             agent = agent_for_class(event.get("vulnerability_class", ""))
+            status_code = int(event.get("status_code") or 0)
+            body_hint = str(event.get("body_hint") or event.get("body") or "").lower()
+            block_hint = status_code in {401, 403, 503} and any(
+                marker in body_hint
+                for marker in ("cloudflare", "attention required", "access denied", "blocked", "captcha")
+            )
+            if status_code == 429 or block_hint:
+                downshifted = context.rate_limiter.record_response(status_code, block_hint=block_hint)
+                if downshifted:
+                    message = "Target appears to be rate-limiting or blocking requests. Continuing in conservative mode."
+                    context.scan.setdefault("program_warnings", []).append(message)
+                    await context.emit(
+                        EventType.THROTTLED,
+                        agent=agent,
+                        phase=self.phase,
+                        message=message,
+                        status_code=status_code,
+                    )
             if event.get("type") == "throttled":
                 await context.emit(
                     EventType.THROTTLED,
@@ -248,7 +276,27 @@ class HuntCoordinatorAgent(BaseAgent):
         from core.agents.upload_agent import UploadAgent
         from core.agents.xss_agent import XSSAgent
 
+        goal = str(getattr(context.options, "goal", "") or context.scan.get("goal") or "bounty-hunt")
         await context.scheduler.run("header", lambda: HeaderAgent().execute(context))
+        if goal == "manual-check":
+            context.scan["raw_findings"] = context.raw_findings
+            return context.raw_findings
+        if goal == "access-control":
+            await context.scheduler.gather_safe([
+                ("auth", lambda: AuthAgent().execute(context)),
+                ("access-control", lambda: AccessControlAgent().execute(context)),
+            ])
+            context.scan["raw_findings"] = context.raw_findings
+            return context.raw_findings
+        if goal == "api-hunt":
+            await context.scheduler.gather_safe([
+                ("auth", lambda: AuthAgent().execute(context)),
+                ("access-control", lambda: AccessControlAgent().execute(context)),
+                ("graphql", lambda: GraphQLAgent().execute(context)),
+                ("rate-limit", lambda: RateLimitAgent().execute(context)),
+            ])
+            context.scan["raw_findings"] = context.raw_findings
+            return context.raw_findings
         await context.scheduler.gather_safe([
             ("auth", lambda: AuthAgent().execute(context)),
             (

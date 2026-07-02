@@ -1,501 +1,144 @@
 # BurpOllama
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-89.6%25-blue?style=for-the-badge&logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/License-Private-red?style=for-the-badge" alt="Private License">
-  <img src="https://img.shields.io/badge/Platform-Kali%20Linux-black?style=for-the-badge&logo=linux" alt="Kali Linux">
-  <img src="https://img.shields.io/badge/AI-Local%20%2B%20Cloud-green?style=for-the-badge" alt="Local and Cloud AI">
-  <img src="https://img.shields.io/badge/Classes-39%20Vuln%20Classes-orange?style=for-the-badge" alt="39 Vulnerability Classes">
-</p>
+BurpOllama is a CLI-first authorized bug bounty scanner. It locks every run to explicit user-provided scope, uses safe passive defaults, and ends with a terminal summary of:
 
-<p align="center">
-<b>CLI-first authorized security scanner with live request streaming, 39 vulnerability
-classes, optional AI triage, proof validation, and bounty-ready reports.</b>
-</p>
+1. Great Findings
+2. Needs Manual Check
 
----
+It does not discover random public programs, auto-submit findings, or generate report drafts. Internal scan artifacts are written under `scans/<scan-id>/`.
 
-## Bug Bounty Readiness
+## Safety
 
-BurpOllama is ready to use as a CLI-first helper for authorized bug bounty
-programs. It has been exercised end-to-end on an explicitly authorized live
-program target and produced:
+Use BurpOllama only on systems you own or where you have explicit written authorization. Respect the program scope, rate limits, and prohibited testing rules.
 
-- report-ready issue groups with durable evidence artifacts
-- manual-check findings with safe validation steps
-- HackerOne/Bugcrowd-ready report drafts
-- a machine-readable readiness decision that passes only when actionable output
-  exists and report-ready evidence files are present
+BurpOllama must not be used for brute force, DoS, WAF bypass, stealth/evasion, destructive exploitation, credential attacks, arbitrary shell execution, or out-of-scope scanning.
 
-It is not a magic submit button. Program policy still decides what is eligible,
-and low-context findings such as public admin routes, login pages, rate-limit
-signals, or cookie observations should be manually reviewed before submission.
+Do not submit tool-generated findings without human verification.
 
-Recommended authorized-program workflow:
+## Install
 
 ```bash
-# 1. Write or import the exact program scope.
-printf "example.com\n*.example.com\n" > scope.txt
-
-# 2. Verify that the target is in scope and generate the CLI runbook.
-burpollama scope-check --scope-file scope.txt \
-  --audit --target https://www.example.com \
-  --write-manifest preflight.json
-
-# 3. Run the bounded passive scan from the runbook.
-burpollama scan https://www.example.com --mode passive --yes \
-  --scope-file scope.txt \
-  --max-urls 100 --time-budget 900 \
-  --no-ai --no-external-tools \
-  --output reports/authorized-program
-
-# 4. Review bounty readiness and marketplace report drafts.
-burpollama report --latest --format readiness
-burpollama report --latest --format hackerone
-
-# 5. Enforce a pass/fail gate for CI or manual workflow.
-burpollama readiness-check --latest \
-  --json --output reports/authorized-program/readiness-decision.json
-```
-
-Use `--require-report-ready` when you want the gate to fail unless at least one
-report-ready issue exists:
-
-```bash
-burpollama readiness-check --latest --require-report-ready
-```
-
-Exit codes:
-
-- `0`: actionable output exists and report-ready artifacts are present
-- `3`: no actionable findings, no report-ready issues when required, or missing
-  report-ready artifacts
-
-Always run only against assets you own or where you have explicit written
-authorization, and keep generated evidence private.
-
-## Terminal First
-
-BurpOllama now puts the terminal first. Start an authorized scan and watch the
-reconnaissance, tested URLs, HTTP responses, vulnerability classes, throttle
-events, errors, and findings as they happen:
-
-```bash
-python3 cli.py scan https://target.example --mode passive
-```
-
-Or use the installed launcher:
-
-```bash
-burpollama scan https://target.example --mode passive
-```
-
-The default is passive mode, so this is equivalent:
-
-```bash
-burpollama scan https://target.example
-```
-
-```text
-╔════════════════════════════════════════════════════════╗
-║ BurpOllama — Authorized Security Scanner               ║
-╚════════════════════════════════════════════════════════╝
-Target: https://target.example
-Mode:   Safe Passive Scan
-
-──────────────────── PHASE 1 — RECONNAISSANCE ────────────────────
-[19:31:01] ✓ Direct probe: https://target.example → HTTP 200
-[19:31:02] → Crawling: https://target.example/api/users
-[19:31:03] ✓ Found: /admin → 403
-
-────────────────── PHASE 2 — VULNERABILITY HUNT ──────────────────
-[19:31:10] Testing [1/50] SQL Injection...
-[19:31:10] → Testing URL 1/47 https://target.example/api/users
-[19:31:11] GET https://target.example/api/users → HTTP 200
-[19:31:15] Testing [20/50] Security Headers...
-[19:31:16] ⚠ FINDING: Missing Content-Security-Policy
-
-────────────────────────── RESULTS ───────────────────────────────
-✓ Scan complete in 4m 32s
-  HIGH: 2  MEDIUM: 5  LOW: 3  INFO: 8
-```
-
-No FastAPI process or browser is required. Scan history and reports are stored
-directly in local SQLite under `~/.burpollama/`. The dashboard remains an
-optional wrapper around the same scanner.
-
-## What It Does
-
-BurpOllama runs locally and:
-
-- Discovers attack surface automatically
-- Streams every scan phase, tested URL, and key response to the terminal
-- Tests 39 specialized vulnerability classes
-- Confirms findings with actual proof (not just detection)
-- Prints a final terminal findings table with finding, target URL, severity,
-  readiness, and confidence
-- Scores findings with official CVSS 4.0 and business-aware impact scoring
-- Builds exploit chains connecting related vulnerabilities
-- Exports HackerOne, Bugcrowd, Markdown, JSON, CSV, and SARIF reports
-- Writes readiness audits and pass/fail readiness decision manifests
-- Works with Ollama, Gemini, OpenAI, Anthropic, other compatible providers, or no AI
-
-**No mandatory cloud dependency. No mandatory AI key. Runs on your machine.**
-
-> Use BurpOllama only on systems you own or have explicit written authorization to test.
-
----
-
-## CLI Commands
-
-| Command | Purpose |
-|---|---|
-| `burpollama scan <target>` | Start the default passive scan and stream it live |
-| `burpollama scan <target> --mode passive` | Safe passive-only scan |
-| `burpollama scan <target> --mode bounty` | Balanced authorized active scan |
-| `burpollama scan <target> --mode deep` | Deep authorized scan |
-| `burpollama scan <target> --mode bounty --concurrency 5 --rate-limit 2` | Tune bounded concurrency and request rate |
-| `burpollama scan <target> --scope example.com` | Lock every request to an explicit domain |
-| `burpollama scan <target> --json` | Stream machine-readable JSON events |
-| `burpollama scan <target> --quiet` | Show only final results and report paths |
-| `burpollama recon <target>` | Run reconnaissance directly |
-| `burpollama watch --scan-id <id>` | Watch a dashboard/API scan through WebSocket |
-| `burpollama status` | Check standalone scanner, database, and AI readiness |
-| `burpollama doctor` | Diagnose Python, packages, tools, storage, AI, and launcher |
-| `burpollama version` | Print the installed version |
-| `burpollama history` | List scans stored in local SQLite |
-| `burpollama history --ready-only` | List scans with report-ready/manual-check output |
-| `burpollama report --scan-id <id>` | Print the completed report |
-| `burpollama report --latest --format readiness` | Print the latest bounty readiness audit |
-| `burpollama report --scan-id <id> --format hackerone` | Export HackerOne format |
-| `burpollama readiness-check --latest` | Exit nonzero unless actionable bounty output exists |
-| `burpollama readiness-check --latest --require-report-ready` | Require at least one report-ready issue |
-| `burpollama validate "IDOR on /api/users/{id}"` | Classify a finding candidate |
-| `burpollama analyze --file traffic.json` | Analyze captured Burp traffic |
-| `burpollama serve` | Start the optional FastAPI dashboard |
-| `burpollama dashboard` | Start the optional server and open the UI |
-
-Passive mode is the default. Bounty and deep modes show a legal warning and
-require authorization confirmation. For non-interactive use on an explicitly
-authorized target, add `--yes`. Restrict a scan with repeatable
-`--scope example.com` arguments; discovered out-of-scope URLs are filtered by
-ScopePolicy.
-
-### Controlled Specialist Agents
-
-BurpOllama uses a bounded scheduler rather than unconstrained autonomous loops:
-
-- ReconAgent — reachability, target profiling, technology and optional tools
-- CrawlerAgent — scoped URL, form, source and route discovery
-- JavaScriptAgent — hidden endpoints, route hints and interesting parameters
-- HeaderAgent — passive headers, cookies and CORS observations
-- AuthAgent — non-destructive session and login-flow observations
-- AccessControlAgent — IDOR/BOLA/BFLA candidates; Session A/B required for proof
-- InjectionAgent — mode-gated SQLi, SSTI and command-injection tests
-- XSSAgent — passive sinks/reflections or authorized active checks
-- RateLimitAgent — bounded checks without brute-force behavior
-- AITriageAgent — optional redacted summaries; never hidden chain-of-thought
-- ReportAgent — Markdown, JSON, CSV, SARIF, HackerOne and Bugcrowd exports
-
-All agents share one ScopePolicy, EventBus, RateLimiter, Scheduler and SQLite
-FindingStore. Ctrl+C requests a cooperative stop and writes partial reports.
-
-### Dashboard Companion
-
-Run `burpollama dashboard`, then open
-[http://127.0.0.1:8888/ui](http://127.0.0.1:8888/ui). A scan started in the
-dashboard can be followed live in another terminal:
-
-```bash
-burpollama watch --scan-id <scan-id>
-```
-
----
-
-## Vulnerability Classes (39 Total)
-
-| Category | Classes |
-|----------|---------|
-| Injection | SQLi, NoSQL, Command, SSTI, CRLF, Host Header |
-| XSS | Reflected, Stored, DOM, Blind |
-| Access Control | IDOR/BOLA, BFLA, Auth Bypass, Privilege Escalation |
-| Authentication | JWT attacks, OAuth flows, Session security/fixation, Default credentials |
-| API Security | Mass assignment, GraphQL auth, API version bypass, Rate limiting |
-| Server-Side | SSRF (OOB required), Path traversal/LFI, XXE candidates |
-| Client-Side | CSRF, Clickjacking, Browser storage, Prototype pollution, Behavioral anomaly |
-| Infrastructure | Subdomain takeover, Secret exposure and validation, Security headers |
-| Advanced | WebSocket security, HTTP Request Smuggling, Exploit chain detection, ATO chain analysis |
-
----
-
-## Key Features
-
-### Zero False Positive Mode
-
-Findings must pass a 12-point proof check before reaching Valid Bugs.
-Weak signals stay in Candidates. Only confirmed proof reaches reports.
-
-### CVSS++ Impact Scoring
-
-Goes beyond standard CVSS. Adds business impact, chain bonuses,
-exploitability status, and AI confidence adjustment.
-
-### Exploit Chain Builder
-
-Connects individual findings into multi-step attack paths.
-IDOR + missing rate limit = Account Takeover chain.
-Open redirect + OAuth = Token theft chain.
-
-### Dual-Session IDOR Proof
-
-Configure Session A and Session B cookies.
-The tool automatically proves unauthorized cross-session data access.
-
-### OOB Confirmation
-
-SSRF, blind SQLi, blind XSS, and command injection require
-interactsh callback confirmation before being marked as confirmed.
-
-### Adaptive Scan Engine
-
-Automatically classifies targets as LIGHT, BALANCED, or DEEP.
-Adjusts modules, concurrency, and AI usage based on target complexity.
-
-### AI Privacy Guard
-
-Local Ollama is preferred. Cloud AI is off by default.
-Secrets, tokens, and cookies are redacted before any AI analysis.
-
-### Provider-Agnostic AI
-
-Local Ollama, Gemini, Groq, Mistral, DeepSeek, OpenAI, Anthropic, Together,
-and custom OpenAI-compatible endpoints with automatic failover.
-Includes cost-aware routing, while local models remain free to run.
-
-### Hunter Ecosystem
-
-- Polished `burpollama` terminal CLI
-- Nine bounded specialist agent profiles
-- Safe optional-tool adapters for recon, validation, discovery, secrets,
-  takeover, cloud, WAF, and Web3 tooling
-- Advisory JSON/CSV scope aggregation
-- Daily fresh-scope monitoring across public HackerOne, Bugcrowd, Intigriti,
-  YesWeHack, and Federacy data, with optional ProjectDiscovery Chaos enrichment
-- Pheromone-weighted swarm blackboard with decaying signals, independent agent
-  trigger predicates, and a live campaign frontier
-- Scope-drift enforcement that revalidates authorization between scan phases
-- SARIF 2.1 export for GitHub code scanning and CI security dashboards
-- Persistent SQLite technique and outcome memory
-- Evidence-driven WSTG / API / bug-bounty playbook planning with next-best
-  test recommendations and coverage gaps
-- Static Solidity candidate analysis
-- Harness guidance for Claude Code, Codex, and OpenCode
-- Community issue templates, contribution guidance, and security policy
-
-See [CLI](docs/CLI.md), [agents](docs/AGENTS.md),
-[external tools](docs/EXTERNAL_TOOLS.md), and [Web3](docs/WEB3.md).
-
----
-
-## Quick Start on Kali Linux
-
-### One-line installation
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mouhammad-coder/BurpOllama/main/install.sh | bash
-```
-
-### Manual installation
-
-```bash
-git clone https://github.com/mouhammad-coder/BurpOllama.git
+git clone https://github.com/your-org/BurpOllama.git
 cd BurpOllama
-bash setup.sh
-```
-
-Setup creates `.env`, installs the Python environment, creates isolated optional
-tool environments, and installs the `burpollama` launcher under
-`~/.local/bin`. It does not start a server.
-
-```bash
+python -m pip install --upgrade pip
+python -m pip install -e .
+burpollama --help
 burpollama doctor
-burpollama status
-burpollama scan https://your-authorized-target.example --mode passive
 ```
 
-If `~/.local/bin` is not in your shell path:
+Supported Python versions: 3.10, 3.11, and 3.12. The CLI is tested on Windows and Linux/Kali-style environments.
+
+## Quick Local Test
+
+Use local targets only for smoke tests. Do not point smoke tests at public targets.
 
 ```bash
-python3 cli.py scan https://your-authorized-target.example --mode passive
+# Optional: run the benchmark target locally if you use OWASP Juice Shop.
+burpollama benchmark juice-shop --check
+burpollama benchmark juice-shop --yes
+
+# Review final findings.
+burpollama findings --latest
 ```
 
----
+Expected outcome: the benchmark path prints final findings, including Great Findings and Needs Manual Check opportunities when the local lab is available. Stop the local lab when finished.
 
-## AI Setup
+## program.yml Setup
 
-AI is optional. Scanning and raw findings continue to work with no provider.
+Start from `examples/program.yml` and replace every `example.com` entry with the exact authorized program scope.
 
-### Option A — Local Ollama (Private, No API Key)
+```yaml
+program: example-authorized-program
+scanner_allowed: true
+automated_testing_allowed: true
+in_scope:
+  - example.com
+out_of_scope:
+  - staging.example.com
+forbidden_tests:
+  - dos
+  - brute_force
+  - spam
+  - social_engineering
+  - destructive_actions
+allowed_modes:
+  - passive
+  - bounty
+max_rps: 2
+max_concurrency: 5
+auth_testing_allowed: true
+upload_testing_allowed: false
+graphql_introspection_allowed: false
+oob_testing_allowed: false
+cloud_ai_allowed: false
+```
 
-BurpOllama never downloads an Ollama model automatically. Install and enable it
-only when you choose:
+If scanner permission is missing or unknown, BurpOllama defaults to conservative passive behavior.
+
+## Preflight
+
+Run preflight before scanning an authorized target:
 
 ```bash
-curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull mistral
+burpollama preflight https://target.com --program program.yml
 ```
 
-Then enable Ollama in **Dashboard → Settings → AI Configuration**.
+Preflight checks DNS resolution, scope status, scanner permission, automated testing permission, effective mode, rate limits, cloud AI permission, auth/upload/OOB permission, blocked checks, and the recommended safe command. It does not perform vulnerability testing.
 
-### Option B — Free Gemini API
+## Passive Authorized Scan
 
-1. Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).
-2. Enter the key in **Dashboard → Settings → AI Configuration**.
-3. Check Google AI Studio for the current free-tier limits.
-
-OpenAI, Anthropic, and compatible providers can be configured on the same page.
-
----
-
-## Architecture
-
-```text
-Target URL
-    ↓
-CLI authorization confirmation / Dashboard wizard
-    ↓
-Core Scanner (no HTTP API required)
-    ↓
-Phase 1: Target Check
-    ↓
-Phase 2: Reconnaissance
-(ReconAgent, CrawlerAgent, JavaScriptAgent)
-    ↓
-Phase 3: Vulnerability Hunt
-(bounded specialist agents, shared rate/scope controls)
-    ↓
-Phase 4: Optional AI Triage
-(redacted summaries or manual-review-only mode)
-    ↓
-Phase 5: Proof Validation
-(Zero FP gate, CVSS 4.0, attack graph, coverage)
-    ↓
-Phase 6: Report Export
-(HackerOne, Bugcrowd, Markdown, JSON, CSV, SARIF)
-```
-
-Burp Suite traffic can also be sent to the local analyzer through
-`BurpOllama.py`. Standalone CLI scans persist state and reports directly in
-SQLite; the optional FastAPI dashboard uses the same core scanner and event
-stream.
-
----
-
-## Offline Verification
-
-The repository includes a comprehensive test suite that blocks external
-network and DNS access and uses only local mock data:
+Recommended first scan:
 
 ```bash
-python tests/offline_test_suite.py
-python tests/e2e_pipeline_test.py
-python -m pytest -q -p no:cacheprovider -o python_files=*_tests.py
+burpollama ai-autopilot https://target.com --program program.yml --goal bounty-hunt --mode passive --multi-agent --final-output terminal
 ```
 
-The E2E test starts a local mock target, runs real recon and hunt phases, and
-verifies URL discovery, security-header detection, sensitive-path detection,
-and clean shutdown without network access.
+Dry-run the plan without sending scan requests:
 
-## Playbook and Coverage Brain
+```bash
+burpollama ai-autopilot https://target.com --program program.yml --goal bounty-hunt --dry-run-plan
+```
 
-BurpOllama now generates a deterministic analyst playbook for each scan:
+## Burp Import Workflow
 
-- `GET /scan/{scan_id}/playbook` returns ranked OWASP WSTG/API/bug-bounty
-  test classes, gaps, and next-best manual validation steps.
-- `GET /scan/{scan_id}/auth-coverage` shows whether authenticated and
-  dual-session authorization testing is actually ready, which sensitive
-  endpoint templates were discovered, and what still needs session setup.
-- `GET /intelligence/program/playbook?slug=<h1-slug>` creates an advisory
-  pre-scan playbook from public program scope.
-- `burpollama playbook --recon-json recon.json --findings-json findings.json`
-  builds the same playbook offline from exported artifacts.
-- `burpollama auth-coverage --recon-json recon.json --sessions-json sessions.json`
-  performs the same secret-safe auth readiness analysis offline.
+Burp imports are passive by default and do not replay requests.
 
-This helps distinguish “no findings found” from “high-risk areas were not
-covered yet,” which is critical for real bounty work.
+```bash
+burpollama burp import burp-history.xml --program program.yml
+burpollama ai-autopilot --from-burp latest --goal burp-import-analysis --final-output terminal
+```
 
----
+## Access-Control Workflow
 
-## Security and Authorization
+Use only owned, authorized test accounts.
 
-- Scan only assets you own or have written permission to test.
-- Keep `.env`, API keys, authentication cookies, and exported evidence private.
-- Respect program scope, request limits, and prohibited-testing rules.
-- Review candidate findings manually before submitting a bounty report.
+```bash
+burpollama ai-autopilot https://target.com --program program.yml --goal access-control --auth-profile userA.json --auth-profile userB.json --final-output terminal
+```
 
-### Fresh Scope Hunter
+Auth profiles support `name`, `base_url`, `cookies`, `headers`, `role`, and `notes`. Cookies and headers are redacted from output.
 
-The Autopilot page includes a daily first-mover monitor for newly observed
-public bounty scope additions. Its first successful fetch creates a baseline;
-only later additions are queued. Public feed data is advisory, so automatic
-scans require two independent gates:
+## Findings Command
 
-1. Save an explicit program authorization rule in Fresh Scope Hunter.
-2. Add the same exact domains to BurpOllama ScopePolicy.
+```bash
+burpollama findings --latest
+burpollama findings --latest --json
+burpollama findings --latest --show-all
+```
 
-Automatic launch is off by default. Active testing is never enabled by the
-monitor itself and continues to follow the selected scan mode. An optional
-BBRadar-compatible JSON endpoint can be set with `BBRADAR_FEED_URL`. Chaos DNS
-enrichment for authorized wildcard additions requires the `chaos` client and
-`PDCP_API_KEY`; missing either does not interrupt monitoring.
+Final output always includes stable sections such as Scan Finished, Target, Goal, Mode, Program, Scanner Permission, Great Findings, Needs Manual Check, and Best Next Safe Actions.
 
----
+## Troubleshooting
 
-## Passive Burp Suite Integration
+- `burpollama doctor` checks Python, packages, optional AI, Ollama status, config/scans writability, external tools, and safe defaults.
+- `Target is outside program.yml scope`: fix `in_scope` or the target URL before scanning.
+- `Scanner permission is unknown`: use passive mode until the program explicitly allows scanners.
+- No Great Findings: review Needs Manual Check, add authorized test users/cookies if allowed, and rerun within program rules.
+- Rate-limit, upload, GraphQL introspection, payment/order workflow, MFA, and access-control findings often require manual verification and explicit permission.
 
-Install Jython in Burp Suite, then load `BurpOllama.py` as a Python extension.
-Every request you browse passes through BurpOllama passive analysis automatically.
-WebSocket frames are also captured and analyzed.
+## Development
 
----
-
-## Requirements
-
-- Kali Linux (recommended) or Ubuntu 22+
-- Python 3.10+
-- 8 GB RAM minimum, 16 GB recommended
-- Optional: Go for recon tools and Ollama for local AI
-
----
-
-## Legal Notice
-
-Use BurpOllama only against targets you own or have explicit written permission
-to test. Unauthorized testing is illegal. Always read and follow the bug bounty
-program policy before scanning.
-
----
-
-## File Structure
-
-Core modules include:
-
-- `cli.py` — Primary Rich terminal interface and WebSocket log viewer
-- `core/scanner.py` — Direct six-phase scanner and agent coordinator
-- `core/scheduler.py` — Bounded concurrency and graceful cancellation
-- `core/events.py` — Typed in-process live scan events
-- `core/scope.py` — Per-scan host allowlist enforcement
-- `core/ratelimit.py` — Global request pacing and request budget
-- `core/storage.py` — SQLite scans, findings, evidence and report metadata
-- `core/agents/` — Controlled specialist agent implementations
-- `hunt_engine.py` — 39 vulnerability classes and live request events
-- `main.py` — FastAPI backend, scan orchestration, and WebSocket stream
-- `zero_fp_gate.py` — 12-point proof validation
-- `impact_scoring_engine.py` — Official CVSS 4.0 and business-impact scoring
-- `exploit_chain_engine.py` — Multi-step attack path builder
-- `adaptive_scan.py` — Intelligent scan depth classification
-- `triage_gate.py` — 3-tier AI triage with learning engine
-- `attack_graph.py` — Directed exploit chain graph
-- `idor_proof_engine.py` — Dual-session IDOR confirmation
-- `oob_engine.py` — interactsh OOB confirmation engine
+```bash
+python -m py_compile cli.py core\program_profile.py core\findings.py core\storage.py core\events.py core\scanner.py core\skills\runner.py core\skills\evidence.py core\agents\base.py core\agents\final_findings_presenter_agent.py core\benchmarks\juice_shop.py
+python -m pytest
+```

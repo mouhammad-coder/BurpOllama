@@ -1,0 +1,119 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burpollama"
+version = "3.2.0"
+description = "CLI-first authorized bug bounty scanner with final findings and safe program.yml enforcement."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Private"}
+authors = [
+  {name = "BurpOllama maintainers"}
+]
+dependencies = [
+  "fastapi==0.111.0",
+  "uvicorn[standard]==0.29.0",
+  "httpx==0.27.0",
+  "pydantic>=2.10.0",
+  "pydantic-core>=2.27.0",
+  "python-dotenv==1.0.1",
+  "psutil>=5.9.0",
+  "psycopg[binary,pool]>=3.2.1",
+  "cvss>=3.0.0",
+  "rich>=13.0.0",
+  "dnspython>=2.6.1"
+]
+
+[project.scripts]
+burpollama = "cli:main"
+
+[tool.setuptools]
+py-modules = [
+  "adaptive_scan",
+  "agent_registry",
+  "ai_privacy",
+  "ai_provider",
+  "api_version_tester",
+  "ato_chain_detector",
+  "attack_graph",
+  "auth_coverage_engine",
+  "auth_session",
+  "autonomous_planner",
+  "autopilot_state",
+  "behavioral_anomaly_detector",
+  "bounty_mode",
+  "burpollama_cli",
+  "BurpOllama",
+  "business_logic_classifier",
+  "business_logic_hunter",
+  "cli",
+  "config_manager",
+  "coverage_intelligence",
+  "coverage_v2",
+  "deduplication",
+  "delta_tracker",
+  "discovery_workflows",
+  "distributed_scheduler",
+  "dual_session",
+  "exploit_chain_analyzer",
+  "exploit_chain_engine",
+  "external_tools",
+  "finding_model",
+  "finding_quality",
+  "fp_eliminator",
+  "fresh_scope_hunter",
+  "gemini_client",
+  "graphql_auth_tester",
+  "h1_bugcrowd_reports",
+  "hunt_engine",
+  "hunt_sqli_advanced",
+  "idor_proof_engine",
+  "impact_scoring_engine",
+  "js_endpoint_extractor",
+  "jwt_attack_suite",
+  "learning_engine",
+  "main",
+  "oauth_tester",
+  "observability",
+  "oob_engine",
+  "playbook_engine",
+  "poc_generator",
+  "program_intelligence",
+  "prototype_pollution_tester",
+  "proxy_handler",
+  "recon_engine",
+  "recon_intelligence",
+  "report_quality_scorer",
+  "reporter",
+  "request_fingerprint",
+  "request_safety",
+  "request_smuggling_detector",
+  "resume_poll",
+  "review_queue",
+  "schema_parser",
+  "scope_drift_guard",
+  "scope_policy",
+  "secret_validator",
+  "security_hardening",
+  "smart_idor_detector",
+  "storage",
+  "swarm_blackboard",
+  "technique_memory",
+  "triage_gate",
+  "triage_prompt",
+  "utils",
+  "validation_enhancements",
+  "waf_bypass",
+  "waf_engine",
+  "waf_response_intelligence",
+  "web3_scanner",
+  "websocket_tester",
+  "xss_proof_engine",
+  "zero_fp_gate"
+]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["core", "core.*"]

@@ -20,6 +20,8 @@ class RateLimiter:
         self._last_request = 0.0
         self.total_requests = 0
         self.total_wait_seconds = 0.0
+        self.conservative_mode = False
+        self.block_events = 0
 
     async def acquire(self) -> float:
         async with self._lock:
@@ -33,10 +35,24 @@ class RateLimiter:
             self.total_requests += 1
             return wait
 
+    def record_response(self, status_code: int, *, block_hint: bool = False) -> bool:
+        if int(status_code or 0) == 429 or block_hint:
+            self.block_events += 1
+            old_rate = self.rate
+            self.rate = max(0.1, self.rate / 2.0)
+            self._interval = 1.0 / self.rate
+            if not self.conservative_mode:
+                self.conservative_mode = True
+                return True
+            return old_rate != self.rate
+        return False
+
     def snapshot(self) -> dict:
         return {
             "requests_per_second": self.rate,
             "max_requests": self.max_requests,
             "total_requests": self.total_requests,
             "total_wait_seconds": round(self.total_wait_seconds, 3),
+            "conservative_mode": self.conservative_mode,
+            "block_events": self.block_events,
         }

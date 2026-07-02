@@ -1,0 +1,405 @@
+{
+  "all": [
+    {
+      "affected_asset": "http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+      "bug_type_id": "sql_injection_candidate",
+      "bug_type_name": "SQL injection candidate",
+      "confidence": 99,
+      "evidence": "{\"request_response_pairs\": [{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest...",
+      "id": "EV-4a747e564d242b0e",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request_response_pairs\": [{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest...",
+      "rate": "High",
+      "raw_status_reason": [
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "SQL Injection in product search",
+      "why_it_matters": "SQL injection can expose product, user, or credential data from the Juice Shop database."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "reflected_xss_candidate",
+      "bug_type_name": "Reflected XSS candidate",
+      "confidence": 95,
+      "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/api/Challenges\"}, \"response\": {\"...",
+      "id": "EV-1bfb1ba6f93a6091",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/api/Challenges\"}, \"response\": {\"...",
+      "rate": "High",
+      "raw_status_reason": [
+        "impact_confirmation_required",
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Reflected/DOM XSS route is present in Juice Shop search",
+      "why_it_matters": "XSS can execute attacker-controlled JavaScript in a user's browser and enable phishing or token theft in the lab app."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/administration\"}, \"response\": {\"...",
+      "id": "EV-97e4365ab8181469",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "No authenticated session proof",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/administration\"}, \"response\": {\"...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "authenticated_cookies_required",
+        "impact_confirmation_required",
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Administration route is discoverable",
+      "why_it_matters": "Discoverable admin workflows help attackers map privileged functionality and focus access-control testing."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/api-docs",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"openapi\":\"3.0.0\",\"pa...",
+      "id": "EV-5dd81e34fb2a95a7",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"openapi\":\"3.0.0\",\"pa...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "impact_confirmation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Exposed API documentation",
+      "why_it_matters": "Public Swagger/API documentation helps attackers map endpoints and request schemas."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/ftp/",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab\nbody: <html><body><a href=\"acquisit...",
+      "id": "EV-4773a2b43fbb760a",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab\nbody: <html><body><a href=\"acquisit...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "active_testing_required",
+        "impact_confirmation_required"
+      ],
+      "safety_warning": "Do not perform active testing unless the program explicitly allows it.",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Exposed FTP directory",
+      "why_it_matters": "Public access to the FTP directory exposes files intended as downloadable artifacts."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-ee4115bdc8a369df",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing Content-Security-Policy",
+      "why_it_matters": "A missing CSP increases the business impact of XSS by making script injection and data theft easier."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-11248290077b5c92",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing HSTS",
+      "why_it_matters": "Without HSTS, users can be downgraded to insecure transport in deployments that serve HTTPS."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-3022d1285976593d",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing X-Frame-Options",
+      "why_it_matters": "Missing frame protection can allow clickjacking of login, basket, or account workflows."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/.well-known/security.txt",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/plain\nserver: LocalVulnLab\nbody: Contact: [REDACTED]",
+      "id": "EV-f8b4773b9c2e3fb1",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/plain\nserver: LocalVulnLab\nbody: Contact: [REDACTED]",
+      "rate": "Low",
+      "raw_status_reason": [
+        "impact_confirmation_required",
+        "unsafe_to_verify_automatically"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Public security metadata exposed",
+      "why_it_matters": "Security contact metadata is public. This is expected for many programs, but should be reviewed."
+    }
+  ],
+  "counts": {
+    "great": 0,
+    "informational": 0,
+    "manual": 9,
+    "rejected": 0
+  },
+  "great": [],
+  "informational": [],
+  "manual": [
+    {
+      "affected_asset": "http://127.0.0.1:19080/rest/products/search?q=%27%29%29--",
+      "bug_type_id": "sql_injection_candidate",
+      "bug_type_name": "SQL injection candidate",
+      "confidence": 99,
+      "evidence": "{\"request_response_pairs\": [{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest...",
+      "id": "EV-4a747e564d242b0e",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request_response_pairs\": [{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/rest...",
+      "rate": "High",
+      "raw_status_reason": [
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "SQL Injection in product search",
+      "why_it_matters": "SQL injection can expose product, user, or credential data from the Juice Shop database."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "reflected_xss_candidate",
+      "bug_type_name": "Reflected XSS candidate",
+      "confidence": 95,
+      "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/api/Challenges\"}, \"response\": {\"...",
+      "id": "EV-1bfb1ba6f93a6091",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/api/Challenges\"}, \"response\": {\"...",
+      "rate": "High",
+      "raw_status_reason": [
+        "impact_confirmation_required",
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Reflected/DOM XSS route is present in Juice Shop search",
+      "why_it_matters": "XSS can execute attacker-controlled JavaScript in a user's browser and enable phishing or token theft in the lab app."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/administration\"}, \"response\": {\"...",
+      "id": "EV-97e4365ab8181469",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "No authenticated session proof",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "{\"request\": {\"method\": \"GET\", \"url\": \"http://127.0.0.1:19080/administration\"}, \"response\": {\"...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "authenticated_cookies_required",
+        "impact_confirmation_required",
+        "partial_evidence"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Administration route is discoverable",
+      "why_it_matters": "Discoverable admin workflows help attackers map privileged functionality and focus access-control testing."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/api-docs",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"openapi\":\"3.0.0\",\"pa...",
+      "id": "EV-5dd81e34fb2a95a7",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: application/json\nserver: LocalVulnLab\nbody: {\"openapi\":\"3.0.0\",\"pa...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "impact_confirmation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Exposed API documentation",
+      "why_it_matters": "Public Swagger/API documentation helps attackers map endpoints and request schemas."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/ftp/",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab\nbody: <html><body><a href=\"acquisit...",
+      "id": "EV-4773a2b43fbb760a",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab\nbody: <html><body><a href=\"acquisit...",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "active_testing_required",
+        "impact_confirmation_required"
+      ],
+      "safety_warning": "Do not perform active testing unless the program explicitly allows it.",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Exposed FTP directory",
+      "why_it_matters": "Public access to the FTP directory exposes files intended as downloadable artifacts."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-ee4115bdc8a369df",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing Content-Security-Policy",
+      "why_it_matters": "A missing CSP increases the business impact of XSS by making script injection and data theft easier."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-11248290077b5c92",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing HSTS",
+      "why_it_matters": "Without HSTS, users can be downgraded to insecure transport in deployments that serve HTTPS."
+    },
+    {
+      "affected_asset": "127.0.0.1",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "id": "EV-3022d1285976593d",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/html\nserver: LocalVulnLab",
+      "rate": "Medium",
+      "raw_status_reason": [
+        "manual_validation_required"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Missing X-Frame-Options",
+      "why_it_matters": "Missing frame protection can allow clickjacking of login, basket, or account workflows."
+    },
+    {
+      "affected_asset": "http://127.0.0.1:19080/.well-known/security.txt",
+      "bug_type_id": "",
+      "bug_type_name": "",
+      "confidence": 96,
+      "evidence": "HTTP/1.1 200\ncontent-type: text/plain\nserver: LocalVulnLab\nbody: Contact: [REDACTED]",
+      "id": "EV-f8b4773b9c2e3fb1",
+      "manual_check_needed": "Validate only within authorized scope.",
+      "missing_proof": "Manual validation required",
+      "next_step": "Validate only within authorized scope.",
+      "observed": "HTTP/1.1 200\ncontent-type: text/plain\nserver: LocalVulnLab\nbody: Contact: [REDACTED]",
+      "rate": "Low",
+      "raw_status_reason": [
+        "impact_confirmation_required",
+        "unsafe_to_verify_automatically"
+      ],
+      "safety_warning": "",
+      "source": "lab-validation-agent",
+      "status": "Needs Manual Check",
+      "title": "Public security metadata exposed",
+      "why_it_matters": "Security contact metadata is public. This is expected for many programs, but should be reviewed."
+    }
+  ],
+  "rejected": [],
+  "schema_version": 1,
+  "target": "http://127.0.0.1:19080"
+}

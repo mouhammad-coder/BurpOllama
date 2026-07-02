@@ -1,0 +1,27 @@
+# Example only. Replace example.com with the exact authorized scope from
+# the bug bounty program before running BurpOllama.
+program: example-authorized-program
+platform: example
+scanner_allowed: true
+automated_testing_allowed: true
+in_scope:
+  - example.com
+out_of_scope:
+  - staging.example.com
+forbidden_tests:
+  - dos
+  - brute_force
+  - spam
+  - social_engineering
+  - destructive_actions
+allowed_modes:
+  - passive
+  - bounty
+max_rps: 2
+max_concurrency: 5
+auth_testing_allowed: true
+upload_testing_allowed: false
+graphql_introspection_allowed: false
+oob_testing_allowed: false
+cloud_ai_allowed: false
+notes: "Example only. Verify current program rules and replace all scope entries."

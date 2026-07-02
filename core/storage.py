@@ -1,4 +1,4 @@
-"""Durable standalone scan history and report storage."""
+"""Durable standalone scan history and finding storage."""
 
 from __future__ import annotations
 
@@ -245,31 +245,12 @@ class ScanStore:
         }
 
     def save_report(self, scan_id: str, report_format: str, path: str | Path) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO reports (
-                    scan_id, report_format, report_path, created_at
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (
-                    scan_id,
-                    str(report_format),
-                    str(Path(path)),
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
+        raise RuntimeError(
+            "This command is deprecated. Use `burpollama findings --latest` instead."
+        )
 
     def reports(self, scan_id: str) -> dict[str, str]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT report_format, report_path
-                FROM reports WHERE scan_id=? ORDER BY report_format
-                """,
-                (scan_id,),
-            ).fetchall()
-        return {row["report_format"]: row["report_path"] for row in rows}
+        return {}
 
 
 scan_store = ScanStore()

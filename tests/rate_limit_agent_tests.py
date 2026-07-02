@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.agents.rate_limit_agent import RateLimitAgent
+from core.ratelimit import RateLimiter
 
 
 class _Scheduler:
@@ -37,13 +38,13 @@ class _Scope:
 
 
 class _Context:
-    def __init__(self, recon, output, mode="passive"):
+    def __init__(self, recon, output, mode="passive", goal=""):
         self.scan = {
             "id": "rate-limit-test",
             "target": "https://example.com",
             "options": {"output": output},
         }
-        self.options = SimpleNamespace(mode=mode, timeout=1.0)
+        self.options = SimpleNamespace(mode=mode, timeout=1.0, goal=goal)
         self.recon = recon
         self.raw_findings = []
         self.tested_urls = set()
@@ -55,11 +56,26 @@ class _Context:
     async def emit(self, event_type, **data):
         self.events.append((event_type, data))
 
+    async def observe_response(self, *_args, **_kwargs):
+        return None
+
+
+class GlobalRateLimiterTests(unittest.TestCase):
+    def test_enters_conservative_mode_on_429(self):
+        limiter = RateLimiter(4.0)
+        changed = limiter.record_response(429)
+        snapshot = limiter.snapshot()
+        self.assertTrue(changed)
+        self.assertTrue(snapshot["conservative_mode"])
+        self.assertEqual(snapshot["requests_per_second"], 2.0)
+        self.assertEqual(snapshot["block_events"], 1)
+
 
 class _Response:
-    def __init__(self, status_code=200, headers=None):
+    def __init__(self, status_code=200, headers=None, text=""):
         self.status_code = status_code
         self.headers = headers or {}
+        self.text = text
 
 
 class _Client:
@@ -83,10 +99,10 @@ class _Client:
 
 
 class RateLimitAgentTests(unittest.TestCase):
-    def _run(self, recon, mode="passive"):
+    def _run(self, recon, mode="passive", goal=""):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        ctx = _Context(recon, temp.name, mode=mode)
+        ctx = _Context(recon, temp.name, mode=mode, goal=goal)
         findings = asyncio.run(RateLimitAgent().run(ctx))
         return ctx, findings
 
@@ -187,6 +203,23 @@ class RateLimitAgentTests(unittest.TestCase):
             }, mode="bounty")
         self.assertEqual(_Client.calls, 5)
         self.assertEqual(len(findings[0]["evidence_artifact"]["metadata"]["responses"]), 5)
+
+    def test_bounty_hunt_goal_is_observation_only(self):
+        _Client.calls = 0
+        _Client.statuses = [200] * 5
+        _Client.headers = {}
+        with patch("core.agents.rate_limit_agent.httpx.AsyncClient", _Client):
+            ctx, findings = self._run({
+                "http_observations": [{
+                    "url": "https://example.com/login",
+                    "headers": {},
+                    "status_code": 200,
+                }]
+            }, mode="bounty", goal="bounty-hunt")
+        self.assertTrue(findings)
+        self.assertEqual(_Client.calls, 0)
+        self.assertEqual(ctx.rate_limiter.calls, 0)
+        self.assertEqual(findings[0]["exploitability_status"], "candidate")
 
 
 if __name__ == "__main__":

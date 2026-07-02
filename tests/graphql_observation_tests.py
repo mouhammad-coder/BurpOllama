@@ -37,13 +37,17 @@ class _Scope:
 
 
 class _Context:
-    def __init__(self, recon, output, mode="passive"):
+    def __init__(self, recon, output, mode="passive", program_profile=None):
         self.scan = {
             "id": "graphql-observation-test",
             "target": "https://example.com",
             "options": {"output": output},
         }
-        self.options = SimpleNamespace(mode=mode, timeout=1.0)
+        self.options = SimpleNamespace(
+            mode=mode,
+            timeout=1.0,
+            program_profile=program_profile or {},
+        )
         self.recon = recon
         self.raw_findings = []
         self.tested_urls = set()
@@ -79,10 +83,10 @@ class _Client:
 
 
 class GraphQLObservationTests(unittest.TestCase):
-    def _run(self, recon, mode="passive"):
+    def _run(self, recon, mode="passive", program_profile=None):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        ctx = _Context(recon, temp.name, mode=mode)
+        ctx = _Context(recon, temp.name, mode=mode, program_profile=program_profile)
         findings = asyncio.run(GraphQLAgent().run(ctx))
         return ctx, findings
 
@@ -106,6 +110,7 @@ class GraphQLObservationTests(unittest.TestCase):
             ctx, findings = self._run(
                 {"urls": ["https://example.com/graphql"]},
                 mode="bounty",
+                program_profile={"graphql_introspection_allowed": True},
             )
         self.assertEqual(_Client.calls, [("https://example.com/graphql", INTROSPECTION_BODY)])
         self.assertEqual(ctx.rate_limiter.calls, 1)
@@ -119,6 +124,22 @@ class GraphQLObservationTests(unittest.TestCase):
         self.assertTrue(Path(artifact["artifact_path"]).exists())
         self.assertEqual(artifact["metadata"]["endpoint_url"], "https://example.com/graphql")
         self.assertIn("__schema", artifact["metadata"]["response_first_1kb"])
+
+    def test_no_introspection_without_program_permission(self):
+        _Client.calls = []
+        with patch("core.agents.graphql_agent.httpx.AsyncClient", _Client):
+            ctx, findings = self._run(
+                {"urls": ["https://example.com/graphql"]},
+                mode="bounty",
+                program_profile={"graphql_introspection_allowed": False},
+            )
+        self.assertTrue(findings)
+        self.assertEqual(_Client.calls, [])
+        self.assertEqual(ctx.rate_limiter.calls, 0)
+        self.assertTrue(any(
+            data.get("reason") == "graphql_introspection_not_allowed"
+            for _event, data in ctx.events
+        ))
 
     def test_no_introspection_in_passive_mode(self):
         _Client.calls = []

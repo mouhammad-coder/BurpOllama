@@ -11,7 +11,7 @@ import httpx
 
 from finding_model import normalize_finding
 
-from core.agents.base import BaseAgent, ScanContext
+from core.agents.base import BaseAgent, ScanContext, observe_response
 from core.evidence import write_evidence_artifact
 from core.events import EventType
 
@@ -149,8 +149,21 @@ class GraphQLAgent(BaseAgent):
 
     async def run(self, context: ScanContext):
         findings, candidate_urls = self._passive_findings(context)
-        if context.options.mode == "bounty":
+        program = getattr(context.options, "program_profile", {}) or {}
+        if (
+            context.options.mode == "bounty"
+            and isinstance(program, dict)
+            and program.get("graphql_introspection_allowed") is True
+        ):
             findings.extend(await self._check_introspection(context, candidate_urls))
+        elif context.options.mode == "bounty" and candidate_urls:
+            await context.emit(
+                EventType.SKIPPED,
+                agent=self.name,
+                phase=self.phase,
+                message="Skipped GraphQL introspection because program.yml did not explicitly allow it",
+                reason="graphql_introspection_not_allowed",
+            )
         context.raw_findings.extend(findings)
         context.scan["raw_findings"] = context.raw_findings
         for finding in findings:
@@ -327,6 +340,13 @@ class GraphQLAgent(BaseAgent):
                 else:
                     response_text = response.text or ""
                     status_code = response.status_code
+                    await observe_response(
+                        context,
+                        response.status_code,
+                        agent=self.name,
+                        phase=self.phase,
+                        body_hint=response_text[:512],
+                    )
                 if "__schema" not in response_text:
                     continue
                 title = "GraphQL introspection enabled"

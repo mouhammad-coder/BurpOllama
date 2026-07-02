@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import uuid
 from contextlib import closing, contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -117,7 +117,7 @@ class AutopilotStateStore:
 
     def create_run(self, scan_id: str, target: str, status: str = "queued", phase: str = "queued") -> str:
         token = "RESUME-" + uuid.uuid4().hex[:20]
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO autopilot_runs
@@ -129,7 +129,7 @@ class AutopilotStateStore:
 
     def update_run(self, scan_id: str, status: str | None = None, phase: str | None = None,
                    checkpoint: dict | None = None, finished: bool = False):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         existing = self.get_run(scan_id)
         merged_checkpoint = dict(existing.get("checkpoint", {}) if existing else {})
         if checkpoint:
@@ -165,7 +165,7 @@ class AutopilotStateStore:
 
     def upsert_task(self, scan_id: str, task_type: str, status: str,
                     checkpoint: dict | None = None, error: str = "") -> str:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         task_id = f"{scan_id}:{task_type}"
         with self._conn() as conn:
             row = conn.execute("SELECT attempts FROM autopilot_tasks WHERE id=?", (task_id,)).fetchone()
@@ -191,7 +191,7 @@ class AutopilotStateStore:
                 INSERT INTO autopilot_events (id, scan_id, event_type, payload_json, created_at)
                 VALUES (?,?,?,?,?)
             """, ("EV-" + uuid.uuid4().hex[:16], scan_id, event_type,
-                  json.dumps(payload or {}), datetime.utcnow().isoformat()))
+                  json.dumps(payload or {}), datetime.now(timezone.utc).isoformat()))
 
     def output(self, scan_id: str, agent: str, output_type: str, payload: dict):
         with self._conn() as conn:
@@ -199,7 +199,7 @@ class AutopilotStateStore:
                 INSERT INTO autopilot_agent_outputs (id, scan_id, agent, output_type, payload_json, created_at)
                 VALUES (?,?,?,?,?,?)
             """, ("OUT-" + uuid.uuid4().hex[:16], scan_id, agent, output_type,
-                  json.dumps(payload or {}), datetime.utcnow().isoformat()))
+                  json.dumps(payload or {}), datetime.now(timezone.utc).isoformat()))
 
     def recent_events(self, scan_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._conn() as conn:
@@ -239,3 +239,4 @@ class AutopilotStateStore:
 
 
 autopilot_state = AutopilotStateStore()
+

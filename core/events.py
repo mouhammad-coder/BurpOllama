@@ -28,7 +28,7 @@ class EventType(str, Enum):
     SKIPPED = "skipped"
     THROTTLED = "throttled"
     ERROR = "error"
-    REPORT_WRITTEN = "report_written"
+    FINDINGS_PREPARED = "findings_prepared"
     LOG = "log"
     SCAN_COMPLETED = "scan_completed"
     SCAN_INTERRUPTED = "scan_interrupted"

@@ -11,7 +11,7 @@ import httpx
 
 from finding_model import normalize_finding
 
-from core.agents.base import BaseAgent, ScanContext
+from core.agents.base import BaseAgent, ScanContext, observe_response
 from core.evidence import write_evidence_artifact
 from core.events import EventType
 
@@ -156,6 +156,13 @@ class XSSAgent(BaseAgent):
                 url=probe_url,
             )
             response = await client.get(probe_url)
+            await observe_response(
+                context,
+                response.status_code,
+                agent=self.name,
+                phase=self.phase,
+                body_hint=getattr(response, "text", "")[:512],
+            )
             context.tested_urls.add(probe_url)
             await context.emit(
                 EventType.RESPONSE_RECEIVED,

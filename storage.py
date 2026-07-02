@@ -13,7 +13,7 @@ import os
 import sqlite3
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from psycopg_pool import ConnectionPool  # type: ignore
@@ -99,7 +99,7 @@ class EventStore:
                         INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
                         VALUES (%s,%s,%s,%s,%s,%s)
                     """, (eid, stream_id, event_type, actor, json.dumps(payload),
-                          datetime.utcnow().isoformat()))
+                          datetime.now(timezone.utc).isoformat()))
                 conn.commit()
             return eid
         try:
@@ -108,7 +108,7 @@ class EventStore:
                     INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
                     VALUES (?,?,?,?,?,?)
                 """, (eid, stream_id, event_type, actor, json.dumps(payload),
-                      datetime.utcnow().isoformat()))
+                      datetime.now(timezone.utc).isoformat()))
         except sqlite3.OperationalError as exc:
             if "readonly" not in str(exc).lower():
                 raise
@@ -118,7 +118,7 @@ class EventStore:
                     INSERT INTO event_log (id, stream_id, event_type, actor, payload_json, created_at)
                     VALUES (?,?,?,?,?,?)
                 """, (eid, stream_id, event_type, actor, json.dumps(payload),
-                      datetime.utcnow().isoformat()))
+                      datetime.now(timezone.utc).isoformat()))
         return eid
 
     def audit(self, actor: str, action: str, target: str, payload: dict | None = None) -> str:
@@ -130,7 +130,7 @@ class EventStore:
                         INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
                         VALUES (%s,%s,%s,%s,%s,%s)
                     """, (aid, actor, action, target, json.dumps(payload or {}),
-                          datetime.utcnow().isoformat()))
+                          datetime.now(timezone.utc).isoformat()))
                 conn.commit()
             return aid
         try:
@@ -139,7 +139,7 @@ class EventStore:
                     INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
                     VALUES (?,?,?,?,?,?)
                 """, (aid, actor, action, target, json.dumps(payload or {}),
-                      datetime.utcnow().isoformat()))
+                      datetime.now(timezone.utc).isoformat()))
         except sqlite3.OperationalError as exc:
             if "readonly" not in str(exc).lower():
                 raise
@@ -149,7 +149,7 @@ class EventStore:
                     INSERT INTO audit_log (id, actor, action, target, payload_json, created_at)
                     VALUES (?,?,?,?,?,?)
                 """, (aid, actor, action, target, json.dumps(payload or {}),
-                      datetime.utcnow().isoformat()))
+                      datetime.now(timezone.utc).isoformat()))
         return aid
 
     def stream(self, stream_id: str, limit: int = 200) -> list[dict]:
@@ -198,3 +198,4 @@ class EventStore:
 
 
 event_store = EventStore()
+

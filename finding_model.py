@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from security_hardening import redact_secrets
@@ -32,7 +32,7 @@ STRONG_PROOF_TERMS = {
 
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def evidence_id(evidence: str) -> str:

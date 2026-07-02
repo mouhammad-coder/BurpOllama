@@ -106,7 +106,7 @@ class SkillRunner:
             "warning": "" if cache_hit else "knowledge cache missing; used bundled safe fingerprints",
             "records": [record],
             "evidence_path": str(run_dir / "evidence.json"),
-            "report_path": str(run_dir / "report.md"),
+            "findings_path": str(run_dir / "findings.json"),
         }
 
     async def _run_subdomain_takeover(

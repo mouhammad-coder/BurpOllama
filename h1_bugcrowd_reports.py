@@ -1,9 +1,7 @@
-"""h1_bugcrowd_reports.py
+"""Legacy marketplace-format compatibility helpers.
 
-Submission-quality report generators for HackerOne and Bugcrowd.
-
-    generate_h1_report(finding: dict)       -> str   # Markdown, H1 triager style
-    generate_bugcrowd_report(finding: dict) -> str   # Markdown, Bugcrowd VRT style
+    generate_h1_report(finding: dict)       -> str
+    generate_bugcrowd_report(finding: dict) -> str
 
 Both consume the SAME finding dict:
     title, vulnerability_class, affected_url, method, parameter,
@@ -11,7 +9,7 @@ Both consume the SAME finding dict:
     reproduction_steps, business_impact, technical_impact,
     remediation, cwe, cvss_plus_plus
 
-Design goal: land P1/P2 / Critical-High, not Informative. That means:
+Design goal: keep evidence and impact concise for authorized manual review:
   - Lead with plain-English impact a non-security PM understands.
   - Make severity defensible against the platform's own rubric.
   - Reproduction steps a non-technical triager can copy-paste and follow.
@@ -210,16 +208,10 @@ def _confidence_note(finding: Dict[str, Any]) -> str:
 
 
 # ===========================================================================
-# HACKERONE REPORT
+# LEGACY MARKETPLACE TEXT
 # ===========================================================================
 def generate_h1_report(finding: Dict[str, Any]) -> str:
-    """Generate a HackerOne-ready Markdown report from a finding dict.
-
-    The structure follows what H1 triagers reward: executive summary first,
-    explicit severity justification against the H1 rubric, copy-pasteable
-    reproduction steps, fenced evidence, business+technical impact, and
-    remediation with references.
-    """
+    """Format a finding for legacy marketplace-style manual review."""
     title = _get(finding, "title") or "Security Vulnerability"
     vclass = _get(finding, "vulnerability_class") or "Vulnerability"
     url = _get(finding, "affected_url")
@@ -353,16 +345,10 @@ def generate_h1_report(finding: Dict[str, Any]) -> str:
 
 
 # ===========================================================================
-# BUGCROWD REPORT
+# LEGACY MARKETPLACE TEXT
 # ===========================================================================
 def generate_bugcrowd_report(finding: Dict[str, Any]) -> str:
-    """Generate a Bugcrowd-ready Markdown report using VRT taxonomy.
-
-    Bugcrowd triagers expect: a VRT category, a priority (P1–P5), a tight
-    summary, deterministic repro steps, raw evidence, and impact phrased in
-    terms of risk to the program. We surface the VRT mapping explicitly so the
-    triager doesn't have to guess our intended rating.
-    """
+    """Format a finding for legacy marketplace-style manual review."""
     title = _get(finding, "title") or "Security Vulnerability"
     vclass = _get(finding, "vulnerability_class") or "Vulnerability"
     url = _get(finding, "affected_url")
