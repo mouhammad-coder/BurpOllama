@@ -26,7 +26,7 @@ burpollama --help
 burpollama doctor
 ```
 
-Supported Python versions: 3.10, 3.11, and 3.12. The CLI is tested on Windows and Linux/Kali-style environments.
+Supported Python versions: 3.11 and 3.12. The CLI is tested on Windows and Linux/Kali-style environments.
 
 ## Quick Local Test
 

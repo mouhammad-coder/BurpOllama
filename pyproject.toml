@@ -7,7 +7,7 @@ name = "burpollama"
 version = "3.2.0"
 description = "CLI-first authorized bug bounty scanner with final findings and safe program.yml enforcement."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "Private"}
 authors = [
   {name = "BurpOllama maintainers"}
